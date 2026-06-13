@@ -42,7 +42,18 @@ if errorlevel 1 (
     )
 )
 
-git add .
+echo Checking tracked ignored files...
+set "REMOVED_IGNORED=0"
+for /f "usebackq delims=" %%F in (`git ls-files -ci --exclude-standard`) do (
+    set "REMOVED_IGNORED=1"
+    echo Removing from git tracking: %%F
+    git rm --cached --ignore-unmatch "%%F"
+)
+if "!REMOVED_IGNORED!"=="0" (
+    echo No tracked ignored files to remove.
+)
+
+git add -A
 
 set "MSG=%~1"
 if "%MSG%"=="" set "MSG=update spotify mini"
