@@ -5,6 +5,9 @@ cd /d "%~dp0"
 set "APP_NAME=SpotifyMini"
 set "ENTRY=main.py"
 set "PYTHON=python"
+set "ROOT=%CD%"
+set "BUILD_WORK=%TEMP%\%APP_NAME%_build_%RANDOM%%RANDOM%"
+set "BUILD_DIST=%TEMP%\%APP_NAME%_dist_%RANDOM%%RANDOM%"
 
 where %PYTHON% >nul 2>nul
 if errorlevel 1 (
@@ -30,15 +33,23 @@ if not exist "%ENTRY%" (
     exit /b 1
 )
 
+if not exist "app.ico" (
+    echo Missing app.ico.
+    pause
+    exit /b 1
+)
+
 %PYTHON% -m PyInstaller ^
     --noconfirm ^
     --clean ^
+    --onefile ^
     --windowed ^
     --name "%APP_NAME%" ^
-    --distpath dist ^
-    --workpath build ^
-    --specpath build ^
-    --add-data "spt.png;." ^
+    --icon "%ROOT%\app.ico" ^
+    --distpath "%BUILD_DIST%" ^
+    --workpath "%BUILD_WORK%" ^
+    --specpath "%BUILD_WORK%" ^
+    --add-data "%ROOT%\spt.png;." ^
     --hidden-import PySide6.QtNetwork ^
     --hidden-import winrt.windows.media ^
     --hidden-import winrt.windows.media.control ^
@@ -97,17 +108,23 @@ if not exist "%ENTRY%" (
 
 if errorlevel 1 (
     echo Build failed.
-    pause
+    if exist "%BUILD_WORK%" rmdir /s /q "%BUILD_WORK%" >nul 2>nul
+    if exist "%BUILD_DIST%" rmdir /s /q "%BUILD_DIST%" >nul 2>nul
+    if /i not "%~1"=="--no-pause" pause
     exit /b 1
 )
 
-for %%D in (
-    "dist\%APP_NAME%\_internal\PySide6\Qt6\qml"
-    "dist\%APP_NAME%\_internal\PySide6\Qt6\translations"
-    "dist\%APP_NAME%\_internal\PySide6\Qt6\resources"
-) do (
-    if exist %%~D rmdir /s /q %%~D
+if not exist "dist" mkdir "dist"
+copy /Y "%BUILD_DIST%\%APP_NAME%.exe" "dist\%APP_NAME%.exe" >nul
+if errorlevel 1 (
+    echo Failed to copy final exe to dist.
+    if exist "%BUILD_WORK%" rmdir /s /q "%BUILD_WORK%" >nul 2>nul
+    if exist "%BUILD_DIST%" rmdir /s /q "%BUILD_DIST%" >nul 2>nul
+    if /i not "%~1"=="--no-pause" pause
+    exit /b 1
 )
 
-echo Build complete: dist\%APP_NAME%\%APP_NAME%.exe
-pause
+if exist "%BUILD_WORK%" rmdir /s /q "%BUILD_WORK%" >nul 2>nul
+if exist "%BUILD_DIST%" rmdir /s /q "%BUILD_DIST%" >nul 2>nul
+echo Build complete: dist\%APP_NAME%.exe
+if /i not "%~1"=="--no-pause" pause
