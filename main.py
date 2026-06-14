@@ -1769,6 +1769,9 @@ class Card(QWidget):
         self._bg = None
         new_pm = QPixmap(self._bg_pixmap())
         if old_pm is None or old_pm.isNull():
+            self._bg_fade_old = None
+            self._bg_fade_new = None
+            self._bg_fade_t = 1.0
             self.update()
             return
         ms = adur(300, 170)
@@ -2648,8 +2651,13 @@ class PlayerWindow(QWidget):
             self._save_timer.start()
             return
         bg_old = None
+        bg_can_animate = False
         if key in ("background_image", "background_image_mode") and self.card is not None:
-            bg_old = QPixmap(self.card._bg_pixmap())
+            target_bg_image = (value if key == "background_image"
+                               else SETTINGS.get("background_image", ""))
+            bg_can_animate = bool(str(target_bg_image or "").strip())
+            if bg_can_animate:
+                bg_old = QPixmap(self.card._bg_pixmap())
         if key == "font":
             value = safe_font_family(value)
             app = QApplication.instance()
@@ -2681,7 +2689,7 @@ class PlayerWindow(QWidget):
             if self._panel is not None and self._panel.isVisible():
                 self._panel.set_accent(self.card.accent(), force=True)
         elif key in ("background_image", "background_image_mode"):
-            self.card.transition_background(bg_old, animate=True)
+            self.card.transition_background(bg_old, animate=bg_can_animate)
         elif key in ("radius", "bg_opacity", "brightness", "antialias"):
             self.card.invalidate_bg()
             self.update()                # 陰影貼圖依圓角快取，重畫視窗
