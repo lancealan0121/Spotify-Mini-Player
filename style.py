@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import sys
 import time
 from collections import OrderedDict
 
@@ -9,7 +10,7 @@ import shiboken6
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication,
                            QImage, QPainter, QPainterPath, QPixmap)
 from PySide6.QtCore import (QEasingCurve, QObject, QRectF, Qt, QTimer,
-                            Signal)
+                            Signal, qInstallMessageHandler)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -782,6 +783,66 @@ _BAD_UI_FONTS = {
     "ms serif",
     "8514oem",
 }
+_QT_MESSAGE_HANDLER_INSTALLED = False
+_PREV_QT_MESSAGE_HANDLER = None
+
+
+def _font_substitution_names(name: str) -> tuple[str, ...]:
+    base = str(name or "").strip()
+    if not base:
+        return ()
+    return tuple(dict.fromkeys((
+        base,
+        base.lower(),
+        base.upper(),
+        base.title(),
+    )))
+
+
+def _format_qt_message(mode, context, message: str) -> str:
+    category = getattr(context, "category", "") or ""
+    prefix = ""
+    name = getattr(mode, "name", "")
+    if name.endswith("DebugMsg"):
+        prefix = "debug: "
+    elif name.endswith("InfoMsg"):
+        prefix = "info: "
+    elif name.endswith("WarningMsg"):
+        prefix = "warning: "
+    elif name.endswith("CriticalMsg"):
+        prefix = "critical: "
+    elif name.endswith("FatalMsg"):
+        prefix = "fatal: "
+    if category and category != "default":
+        return f"{category}: {message}"
+    return f"{prefix}{message}" if prefix else message
+
+
+def install_qt_message_filter():
+    """只靜音已知的 Windows DirectWrite 點陣字警告。
+
+    Qt 在初始化或原生控制項 fallback 時仍可能嘗試載入 Fixedsys 這類
+    .fon 點陣字，DirectWrite 會印出噪音警告；其他 Qt 訊息仍照常輸出。
+    """
+    global _QT_MESSAGE_HANDLER_INSTALLED, _PREV_QT_MESSAGE_HANDLER
+    if _QT_MESSAGE_HANDLER_INSTALLED:
+        return
+
+    def handler(mode, context, message):
+        text = str(message)
+        lower = text.lower()
+        category = getattr(context, "category", "") or ""
+        if (category == "qt.qpa.fonts"
+                and "CreateFontFaceFromHDC() failed" in text
+                and any(name in lower for name in _BAD_UI_FONTS)):
+            return
+        if _PREV_QT_MESSAGE_HANDLER is not None:
+            _PREV_QT_MESSAGE_HANDLER(mode, context, message)
+            return
+        print(_format_qt_message(mode, context, text), file=sys.stderr)
+
+    _PREV_QT_MESSAGE_HANDLER = qInstallMessageHandler(handler)
+    _QT_MESSAGE_HANDLER_INSTALLED = True
 
 
 def is_safe_ui_font(family: str) -> bool:
@@ -800,6 +861,24 @@ def safe_font_family(family: str | None = None) -> str:
         if candidate in fams:
             return candidate
     return _SAFE_UI_FONT
+
+
+def install_font_substitutions():
+    """全域攔截 Windows 點陣系統字體（Fixedsys/Terminal/System 等）。
+
+    這些 .fon 點陣字沒有 TrueType outline，Qt 的 DirectWrite 後端呼叫
+    `CreateFontFaceFromHDC()` 會失敗並噴 `qt.qpa.fonts` 警告，更糟的是
+    某些情況會在存取空 font face 時直接崩潰（exit code 0xC0000005）。
+    `safe_font_family()` 只能擋設定面板選到的字體，攔不住原生對話框、
+    系統 fallback 等以 `styleHint=AnyStyle` 明確請求這些 family 的來源；
+    這裡改用 Qt 全域字體替換表一次把它們導向安全 UI 字體。需在
+    QApplication 建立後、任何視窗建立前呼叫。"""
+    if QGuiApplication.instance() is None:
+        return
+    target = safe_font_family()
+    for bad in _BAD_UI_FONTS:
+        for name in _font_substitution_names(bad):
+            QFont.insertSubstitution(name, target)
 
 
 def _valid_hex(value) -> str | None:

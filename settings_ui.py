@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QDialog,
 
 from style import (AUTO_THEME_MODES, BACKGROUND_IMAGE_MODES, CARD_PRESETS,
                    CONTROLS_ALIGN,
-                   GLYPH_CHECK, GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_UP,
+                   GLYPH_CHECK, GLYPH_CHEVRON_DOWN,
                    GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
                    GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_MODES,
                    SEEK_STYLES, SETTINGS,
@@ -821,10 +821,14 @@ class PanelButton(QWidget):
         self._accent = QColor(accent) if accent else QColor("#1DB954")
         self._hover = 0.0
         self._press = 1.0
+        self._chevron_enabled = False
+        self._chevron_t = 0.0
         self._ha = Anim(self)
         self._ha.valueChanged.connect(self._on_hover)
         self._pa = Anim(self)
         self._pa.valueChanged.connect(self._on_press)
+        self._ca = Anim(self)
+        self._ca.valueChanged.connect(self._on_chevron)
         self.setFixedHeight(panel_px(30))
         self.setMinimumWidth(panel_px(86))
         self.setCursor(Qt.PointingHandCursor)
@@ -839,12 +843,32 @@ class PanelButton(QWidget):
         self._text = text
         self.update()
 
+    def set_chevron(self, open_: bool, animate: bool = True):
+        self._chevron_enabled = True
+        target = 1.0 if open_ else 0.0
+        self._ca.stop()
+        ms = adur(180, 100)
+        if (not animate or not anim_on() or ms <= 0
+                or not self.isVisible()):
+            self._chevron_t = target
+            self.update()
+            return
+        self._ca.setStartValue(self._chevron_t)
+        self._ca.setEndValue(target)
+        self._ca.setDuration(ms)
+        self._ca.setEasingCurve(QEasingCurve.OutCubic)
+        self._ca.start()
+
     def _on_hover(self, v):
         self._hover = float(v)
         self.update()
 
     def _on_press(self, v):
         self._press = float(v)
+        self.update()
+
+    def _on_chevron(self, v):
+        self._chevron_t = float(v)
         self.update()
 
     def _anim(self, anim: Anim, cur: float, to: float, ms: int):
@@ -895,7 +919,23 @@ class PanelButton(QWidget):
         p.setFont(panel_font(12, QFont.DemiBold if self._primary
                              else QFont.Normal))
         p.setPen(QColor(255, 255, 255, 235 if self._primary else 180))
-        p.drawText(r, Qt.AlignCenter, self._text)
+        text_rect = QRectF(r)
+        if self._chevron_enabled:
+            text_rect.adjust(panel_f(10), 0, -panel_f(28), 0)
+        p.drawText(text_rect, Qt.AlignCenter, self._text)
+        if self._chevron_enabled:
+            ar = QRectF(r.right() - panel_f(27), r.y(),
+                        panel_f(22), r.height())
+            center = ar.center()
+            p.setFont(panel_icon_font(9))
+            p.setPen(QColor(255, 255, 255,
+                            190 + round(45 * self._hover)))
+            p.save()
+            p.translate(center)
+            p.rotate(-90.0 + 90.0 * self._chevron_t)
+            p.translate(-center)
+            p.drawText(ar, Qt.AlignCenter, GLYPH_CHEVRON_DOWN)
+            p.restore()
 
 
 class ColorSlot(QWidget):
@@ -1006,23 +1046,70 @@ class SectionLabel(QLabel):
         super().__init__(parent)
         self._title = title
         self._collapsed = bool(collapsed)
+        self._arrow_t = 0.0 if self._collapsed else 1.0
+        self._arrow_anim = Anim(self)
+        self._arrow_anim.valueChanged.connect(self._on_arrow_anim)
         self.setCursor(Qt.PointingHandCursor)
+        self.setText("")
         self._refresh()
 
     def set_title(self, title: str):
         self._title = title
         self._refresh()
 
-    def set_collapsed(self, collapsed: bool):
+    def set_collapsed(self, collapsed: bool, animate: bool = True):
         collapsed = bool(collapsed)
         if collapsed == self._collapsed:
             return
         self._collapsed = collapsed
+        target = 0.0 if self._collapsed else 1.0
+        self._arrow_anim.stop()
+        ms = adur(170, 100)
+        if not animate or not anim_on() or ms <= 0 or not self.isVisible():
+            self._arrow_t = target
+            self._refresh()
+            return
+        self._arrow_anim.setStartValue(self._arrow_t)
+        self._arrow_anim.setEndValue(target)
+        self._arrow_anim.setDuration(ms)
+        self._arrow_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._arrow_anim.start()
         self._refresh()
 
+    def _on_arrow_anim(self, v):
+        self._arrow_t = float(v)
+        self.update()
+
     def _refresh(self):
-        glyph = "▸" if self._collapsed else "▾"
-        self.setText(f"{glyph} {self._title}")
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self):
+        fm = QFontMetricsF(self.font())
+        return QSize(round(panel_f(18) + fm.horizontalAdvance(self._title)),
+                     max(panel_px(19), round(fm.height() + panel_f(4))))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        p.setPen(QColor(255, 255, 255, 225))
+        arrow_rect = QRectF(0, 0, panel_f(16), self.height())
+        c = arrow_rect.center()
+        p.save()
+        p.translate(c)
+        p.rotate(-90.0 + 90.0 * self._arrow_t)
+        p.translate(-c)
+        p.setFont(panel_icon_font(9))
+        p.drawText(arrow_rect, Qt.AlignCenter, GLYPH_CHEVRON_DOWN)
+        p.restore()
+        p.setFont(self.font())
+        text_rect = QRectF(panel_f(18), 0,
+                           max(1.0, self.width() - panel_f(18)),
+                           self.height())
+        p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self._title)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -1293,6 +1380,9 @@ class CustomThemeDialog(QDialog):
             return
         base = self.pos()
         slide = panel_px(8)
+        # 先停掉上一個（淡入）動畫，避免兩個動畫同時改 opacity/pos 打架
+        if self._win_anim is not None:
+            self._win_anim.stop()
         anim = QVariantAnimation(self)
         self._win_anim = anim
         anim.setDuration(ms)
@@ -1316,7 +1406,11 @@ class CustomThemeDialog(QDialog):
 
         anim.valueChanged.connect(step)
         anim.finished.connect(finish)
-        anim.start(QVariantAnimation.DeleteWhenStopped)
+        # 不用 DeleteWhenStopped：其 pending deleteLater 會與 dialog（parent）
+        # 析構競爭，dialog 關閉後（或面板重建連帶銷毀）約 1~2 秒觸發
+        # use-after-free（exit 0xC0000409）。改由 parent 管理生命週期，
+        # 動畫物件隨 dialog 一起析構，不留懸空 timer。
+        anim.start()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1513,6 +1607,9 @@ class ColorEditDialog(QDialog):
             return
         base = self.pos()
         slide = panel_px(8)
+        # 先停掉上一個（淡入）動畫，避免兩個動畫同時改 opacity/pos 打架
+        if self._win_anim is not None:
+            self._win_anim.stop()
         anim = QVariantAnimation(self)
         self._win_anim = anim
         anim.setDuration(ms)
@@ -1536,7 +1633,11 @@ class ColorEditDialog(QDialog):
 
         anim.valueChanged.connect(step)
         anim.finished.connect(finish)
-        anim.start(QVariantAnimation.DeleteWhenStopped)
+        # 不用 DeleteWhenStopped：其 pending deleteLater 會與 dialog（parent）
+        # 析構競爭，dialog 關閉後（或面板重建連帶銷毀）約 1~2 秒觸發
+        # use-after-free（exit 0xC0000409）。改由 parent 管理生命週期，
+        # 動畫物件隨 dialog 一起析構，不留懸空 timer。
+        anim.start()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1847,6 +1948,9 @@ class SwatchRow(QWidget):
         self._ea = Anim(self)             # 展開/收合高度動畫
         self._ea.valueChanged.connect(self._on_h)
         self._ea.finished.connect(self._expand_done)
+        self._arrow_t = 1.0 if self._expanded else 0.0
+        self._arrow_anim = Anim(self)
+        self._arrow_anim.valueChanged.connect(self._on_arrow_anim)
         self._ha = Anim(self)             # 色票 hover 放大動畫
         self._ha.valueChanged.connect(self._on_hover_anim)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -1869,6 +1973,7 @@ class SwatchRow(QWidget):
         if reveal and self._current in self._keys:
             self._expanded = self._keys.index(self._current) >= self.COLS
             self._show_all = self._expanded
+            self._arrow_t = 1.0 if self._expanded else 0.0
         self._sel_pos = float(self._keys.index(self._current)
                               if self._current in self._keys else -1)
         self._sel_from = self._sel_pos
@@ -2046,6 +2151,10 @@ class SwatchRow(QWidget):
         self.size_changed.emit()
         self.update()
 
+    def _on_arrow_anim(self, v):
+        self._arrow_t = float(v)
+        self.update()
+
     def _on_hover_anim(self, v):
         t = float(v)
         self._hover_levels = [
@@ -2073,21 +2182,31 @@ class SwatchRow(QWidget):
 
     def _toggle_expand(self):
         self._ea.stop()            # 動畫中再點：從目前高度接著動
+        self._arrow_anim.stop()
         self._expanded = not self._expanded
         target = self.row_h() * self._rows()
+        arrow_target = 1.0 if self._expanded else 0.0
         ms = adur(280, 150)
         if not anim_on() or ms <= 0:
             self._show_all = self._expanded
+            self._arrow_t = arrow_target
             self.setFixedHeight(target)
             self.size_changed.emit()
             self.update()
             return
         self._show_all = True      # 往下展開/往上收合過程都看得到全部列
-        self._ea.setStartValue(float(self.height()))
+        start_h = float(self.height())
+        self._ea.setStartValue(start_h)
         self._ea.setEndValue(float(target))
         self._ea.setDuration(ms)
         self._ea.setEasingCurve(QEasingCurve.OutCubic)
         self._ea.start()
+        self._arrow_anim.setStartValue(self._arrow_t)
+        self._arrow_anim.setEndValue(arrow_target)
+        self._arrow_anim.setDuration(ms)
+        self._arrow_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._arrow_anim.start()
+        self.size_changed.emit()
 
     def _center(self, i: int) -> QPointF:
         row, col = divmod(i, self.COLS)
@@ -2268,8 +2387,13 @@ class SwatchRow(QWidget):
         tr = self._toggle_rect()
         p.setPen(QColor(255, 255, 255, 235 if self._hover == -2 else 145))
         p.setFont(panel_icon_font(10))
-        p.drawText(tr, Qt.AlignCenter,
-                   GLYPH_CHEVRON_UP if self._expanded else GLYPH_CHEVRON_DOWN)
+        c = tr.center()
+        p.save()
+        p.translate(c)
+        p.rotate(-90.0 + 90.0 * self._arrow_t)
+        p.translate(-c)
+        p.drawText(tr, Qt.AlignCenter, GLYPH_CHEVRON_DOWN)
+        p.restore()
 
     def sizeHint(self):
         from PySide6.QtCore import QSize
@@ -2765,6 +2889,9 @@ class _ScrollablePanelBody(_PanelBody):
     def set_viewport(self, width: int, height: int, content_h: int):
         self._content_h = max(1, int(content_h))
         self.content.resize(max(1, int(width)), max(int(height), self._content_h))
+        lay = self.content.layout()
+        if lay is not None:
+            lay.activate()
         self._offset = self._clamp(self._offset)
         self._target_offset = self._clamp(self._target_offset)
         self._place_content()
@@ -2778,6 +2905,12 @@ class _ScrollablePanelBody(_PanelBody):
     def _place_content(self):
         self.content.move(0, -round(self._offset))
         self.update()
+
+    def set_scroll_offset(self, value: float):
+        self._sa.stop()
+        self._offset = self._clamp(value)
+        self._target_offset = self._offset
+        self._place_content()
 
     def _on_scroll(self, value):
         self._offset = self._clamp(float(value))
@@ -2854,14 +2987,19 @@ class _PanelZoomOverlay(QWidget):
         self._buf: QPixmap | None = None
         self._buf2: QPixmap | None = None
         self._shadow_included = False
+        self._align_top = False     # True=頂部對齊不拉伸（分類切換用）
+        self._slide = 0.0           # align_top 時新圖上移入場量（邏輯像素）
         self.hide()
 
     def setup(self, old_pm: QPixmap, r0, new_pm: QPixmap, r1,
-              shadow_included: bool = False):
+              shadow_included: bool = False, align_top: bool = False,
+              slide: float = 0.0):
         self._old, self._new = old_pm, new_pm
         self._r0, self._r1 = QRectF(r0), QRectF(r1)
         self._t = 0.0
         self._shadow_included = bool(shadow_included)
+        self._align_top = bool(align_top)
+        self._slide = float(slide)
         dpr = self.devicePixelRatioF()
         bw = int(max(self._r0.width(), self._r1.width()) * dpr) + 2
         bh = int(max(self._r0.height(), self._r1.height()) * dpr) + 2
@@ -2898,24 +3036,37 @@ class _PanelZoomOverlay(QWidget):
             self._buf2 = QPixmap(int(bw) + 2, int(bh) + 2)
         target = QRectF(0, 0, bw, bh)
         t = self._t
+
+        def dst(pm: QPixmap, slide: float) -> QRectF:
+            # align_top：原始尺寸、頂部對齊（超出 buffer 的底部由 buffer 邊界
+            # 自然裁切，paintEvent 只取 cur_rect 大小 → 內容不縱向擠壓）；
+            # 否則整張拉伸填滿 target（縮放過渡用）
+            if self._align_top:
+                return QRectF(0.0, slide, pm.width(), pm.height())
+            return target
+
         self._buf.fill(Qt.transparent)
         p = QPainter(self._buf)
         aa(p)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         if self._new is not None and t > 0.0:
+            slide = self._slide * dpr * (1.0 - t)
             p.setOpacity(t)
-            p.drawPixmap(target, self._new, QRectF(self._new.rect()))
+            p.drawPixmap(dst(self._new, slide), self._new,
+                         QRectF(self._new.rect()))
         if self._old is not None and t < 1.0:
             if t <= 0.0:
                 p.setOpacity(1.0)
-                p.drawPixmap(target, self._old, QRectF(self._old.rect()))
+                p.drawPixmap(dst(self._old, 0.0), self._old,
+                             QRectF(self._old.rect()))
             else:
                 self._buf2.fill(Qt.transparent)
                 p2 = QPainter(self._buf2)
                 aa(p2)
                 p2.setRenderHint(QPainter.SmoothPixmapTransform, True)
                 p2.setOpacity(1.0 - t)
-                p2.drawPixmap(target, self._old, QRectF(self._old.rect()))
+                p2.drawPixmap(dst(self._old, 0.0), self._old,
+                              QRectF(self._old.rect()))
                 p2.end()
                 p.setOpacity(1.0)
                 p.setCompositionMode(QPainter.CompositionMode_Plus)
@@ -3145,14 +3296,15 @@ class SettingsPanel(QWidget):
         self._type_slide_anim.valueChanged.connect(self._on_type_slide)
         self._type_slide_anim.finished.connect(self._type_slide_done)
         self._type_slide_abort = False
-        self._category_overlay: _PanelZoomOverlay | None = None
-        self._category_final_size = None
-        self._category_from_size = QSize()
-        self._category_to_size = QSize()
-        self._category_slide_anim = Anim(self)
-        self._category_slide_anim.valueChanged.connect(self._on_category_slide)
-        self._category_slide_anim.finished.connect(self._category_slide_done)
-        self._category_slide_abort = False
+        self._type_direct = False
+        self._type_from_size = QSize()
+        self._type_to_size = QSize()
+        self._type_from_pos = QPoint()
+        self._type_to_pos = QPoint()
+        self._type_from_body = QRect()
+        self._type_to_body = QRect()
+        self._type_final_body = QRect()
+        self._type_to_content_h = 0
         self._lang_timer = QTimer(self)
         self._lang_timer.setSingleShot(True)
         self._lang_timer.timeout.connect(self.rebuild_for_language)
@@ -3170,6 +3322,11 @@ class SettingsPanel(QWidget):
         self._advanced_t = 0.0
         self._theme_row_h = 0
         self._theme_resize_anchor: QPoint | None = None
+        self._theme_scroll_from = 0.0
+        self._theme_scroll_to = 0.0
+        self._theme_row_from = 0
+        self._theme_row_to = 0
+        self._section_resize_anchor: QPoint | None = None
         self._advanced_anim = Anim(self)
         self._advanced_anim.valueChanged.connect(self._on_advanced_anim)
         self._advanced_anim.finished.connect(self._advanced_anim_done)
@@ -3333,6 +3490,13 @@ class SettingsPanel(QWidget):
             else:
                 h.addWidget(control)
                 h.addStretch(1)
+            row_h = max(lab.sizeHint().height(), control.height(),
+                        control.sizeHint().height())
+            host.setFixedHeight(max(1, row_h))
+            if top and hasattr(control, "size_changed"):
+                control.size_changed.connect(
+                    lambda host=host, control=control:
+                        host.setFixedHeight(max(1, control.height())))
             current_layout.addWidget(host)
             register_search(host, label_key)
             return control
@@ -3990,10 +4154,14 @@ class SettingsPanel(QWidget):
         resizing_theme = self.sw_theme._ea.state() == Anim.Running
         if resizing_theme and self._theme_resize_anchor is None:
             self._theme_resize_anchor = QPoint(self.pos())
+            self._theme_row_from = old_row_h
+            self._theme_row_to = self.sw_theme.row_h() * self.sw_theme._rows()
+            self._theme_scroll_from = getattr(self._body, "_offset", 0.0)
         if abs(delta) < 1:
-            if not resizing_theme and self._theme_resize_anchor is not None:
+            if not resizing_theme:
                 self._theme_resize_anchor = None
-                self._set_window_geometry(self.pos(), self.size(), animate=False)
+                self._theme_scroll_from = self._theme_scroll_to = 0.0
+                self._theme_row_from = self._theme_row_to = 0
             self.sw_theme.update()
             return
 
@@ -4010,27 +4178,42 @@ class SettingsPanel(QWidget):
             self.pos(), QSize(self.width(), max(1, self.height() + delta)))
         max_body_h = max(panel_px(160), geo.height() - pm * 2)
         body_geo = self._body.geometry()
-        old_content_h = getattr(self._body, "_content_h", self._body.height())
-        content_h = max(1, old_content_h + delta)
+        self._sync_section_container_heights()
+        content_h = self._panel_content_height(self._body, body_geo.width())
         body_h = min(content_h, max_body_h)
-        final_window_size = None
         if resizing_theme:
-            target_row_h = self.sw_theme.row_h() * self.sw_theme._rows()
-            final_content_h = max(1, old_content_h + target_row_h - old_row_h)
+            final_content_h = max(
+                1, content_h + self._theme_row_to - new_row_h)
             final_body_h = min(final_content_h, max_body_h)
-            final_window_size = QSize(
-                self.width(), max(self.height(), final_body_h + pm * 2))
+            final_max_offset = max(0.0, float(final_content_h - final_body_h))
+            self._theme_scroll_to = min(self._theme_scroll_from,
+                                        final_max_offset)
         self._body.setGeometry(body_geo.x(), body_geo.y(),
                                body_geo.width(), body_h)
         self._set_panel_viewport(self._body, body_geo.width(),
                                  body_h, content_h)
+        if resizing_theme:
+            span = self._theme_row_to - self._theme_row_from
+            if span:
+                t = (new_row_h - self._theme_row_from) / span
+                t = max(0.0, min(1.0, float(t)))
+            else:
+                t = 1.0
+            off = (self._theme_scroll_from
+                   + (self._theme_scroll_to - self._theme_scroll_from) * t)
+            self._body.set_scroll_offset(off)
+        else:
+            t = 1.0
+            off = getattr(self._body, "_offset", 0.0)
         target_size = QSize(self.width(), body_h + pm * 2)
         if resizing_theme and self._theme_resize_anchor is not None:
             self._geo_anim.stop()
-            if final_window_size is not None and self.size() != final_window_size:
-                self.setFixedSize(final_window_size)
-            if self.pos() != self._theme_resize_anchor:
-                self.move(self._theme_resize_anchor)
+            target_pos = self._bounded_window_pos(
+                self._theme_resize_anchor, target_size)
+            if self.size() != target_size:
+                self.setFixedSize(target_size)
+            if self.pos() != target_pos:
+                self.move(target_pos)
         else:
             if self._theme_resize_anchor is not None:
                 self._theme_resize_anchor = None
@@ -4133,9 +4316,8 @@ class SettingsPanel(QWidget):
     def _update_advanced_button(self):
         if not hasattr(self, "btn_advanced"):
             return
-        icon = GLYPH_CHEVRON_UP if self._advanced_open else GLYPH_CHEVRON_DOWN
-        self.btn_advanced._text = f"{tr('advanced')}  {icon}"
-        self.btn_advanced.update()
+        self.btn_advanced.set_text(tr("advanced"))
+        self.btn_advanced.set_chevron(self._advanced_open)
 
     def _category_content_rect(self) -> QRect:
         if self._body is None:
@@ -4163,57 +4345,90 @@ class SettingsPanel(QWidget):
             return
         if key == self._panel_category:
             return
-        if (SETTINGS.get("settings_panel_type") != "categories"
-                or self._body is None or not self.isVisible()
-                or self.search.text().strip()
-                or not anim_on() or adur(230, 130) <= 0):
+        if SETTINGS.get("settings_panel_type") != "categories":
             self._panel_category = key
-            self._apply_search(self.search.text())
-            return
-        if self._category_slide_anim.state() == Anim.Running:
-            self._category_slide_abort = True
-            self._category_slide_anim.stop()
-            self._category_slide_abort = False
-            if self._category_overlay is not None:
-                self._category_overlay.hide()
             if self._body is not None:
                 self._body.show()
                 self._body.raise_()
+                self._body.set_scroll_offset(0.0)
+            self._apply_search(self.search.text())
+            return
+        self._animate_category_switch(key)
+
+    def _animate_category_switch(self, key: str):
+        """categories 模式切分類：舊內容淡出、新內容上移淡入、面板高度平滑
+        過渡。沿用 scale 切換那套 _overlay/_zoom_anim/_zoom_done 基礎設施
+        （陰影、圓角、視窗收尾都已驗證），差別是 align_top 不縱向拉伸。"""
+        body = self._body
+        ms = adur(240, 130)
+        if (body is None or not anim_on() or ms <= 0
+                or not self.isVisible()):
+            self._panel_category = key
+            if body is not None:
+                body.show()
+                body.raise_()
+                body.set_scroll_offset(0.0)
+            self._apply_search(self.search.text(), relayout=False)
+            self._relayout(animate=False)
+            self.update()
+            return
+
+        # 縮放動畫（scale 或上一次分類切換）仍在跑：從目前合成畫面接續
+        if self._zoom_anim.state() == Anim.Running and self._overlay is not None:
+            self._zoom_restart = True
+            self._zoom_anim.stop()
+            self._zoom_restart = False
+            r0 = self._overlay.cur_rect().toRect()
+            old_pm = self._overlay.composite()
+        else:
+            r0 = body.geometry()
+            old_pm = body.grab()
+
         old_size = QSize(self.size())
-        old_pm = self._body.grab()
-        old_rect = QRectF(self._body.geometry())
+
+        # 套用新分類（categories 不重建 widget，只切 section 可見性）
         self._panel_category = key
         self._apply_search(self.search.text(), relayout=False)
-        final_size = self._apply_body_geometry(resize_window=False)
-        self._category_final_size = (final_size.width(), final_size.height())
-        self._category_from_size = QSize(old_size)
-        self._category_to_size = QSize(final_size)
-        self.setFixedSize(max(final_size.width(), old_size.width()),
-                          max(final_size.height(), old_size.height()))
-        new_pm = self._body.grab()
-        new_rect = QRectF(self._body.geometry())
-        self._body.hide()
-        if not isinstance(self._category_overlay, _PanelZoomOverlay):
-            self._category_overlay = _PanelZoomOverlay(self)
-        self._category_overlay.setGeometry(self.rect())
-        self._category_overlay.setup(old_pm, old_rect, new_pm, new_rect)
-        self.setFixedSize(old_size)
-        self._category_overlay.show()
-        self._category_overlay.raise_()
+        final_size = self._apply_body_geometry(resize_window=False,
+                                               animate=False)
+        body.show()             # restart 接續時 body 可能仍 hidden，grab 前先還原
+        body.set_scroll_offset(0.0)
+        body.raise_()
+        new_pm = body.grab()
+        r1 = body.geometry()
+        self._final_size = (final_size.width(), final_size.height())
+
+        # 視窗撐到新舊較大者，overlay 在內部以 align_top 交叉淡化＋上移；
+        # 高度差由 cur_rect 內插畫出，動畫結束 _zoom_done 收到最終尺寸
+        self.setFixedSize(max(self._final_size[0], old_size.width()),
+                          max(self._final_size[1], old_size.height()))
+        if self._overlay is None:
+            self._overlay = _PanelZoomOverlay(self)
+        self._overlay.setGeometry(self.rect())
+        self._overlay.setup(old_pm, r0, new_pm, r1,
+                            shadow_included=False, align_top=True,
+                            slide=panel_px(10))
+        self._overlay.show()
+        self._overlay.raise_()
+        body.hide()
         self.repaint()
 
-        self._category_slide_anim.setStartValue(0.0)
-        self._category_slide_anim.setEndValue(1.0)
-        self._category_slide_anim.setDuration(adur(230, 130))
-        self._category_slide_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._category_slide_anim.start()
+        self._zoom_anim.setStartValue(0.0)
+        self._zoom_anim.setEndValue(1.0)
+        self._zoom_anim.setDuration(ms)
+        self._zoom_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._zoom_anim.start()
+
+    def _section_toggle_anim_enabled(self) -> bool:
+        return SETTINGS.get("settings_panel_type", "normal") != "normal"
 
     def _toggle_section(self, group_id: str, header: SectionLabel,
                         container: QWidget):
         collapsed = not bool(self._section_collapsed.get(group_id, False))
         self._section_collapsed[group_id] = collapsed
-        header.set_collapsed(collapsed)
-        self._animate_section(group_id, container, collapsed)
+        animate = self._section_toggle_anim_enabled()
+        header.set_collapsed(collapsed, animate=animate)
+        self._animate_section(group_id, container, collapsed, animate=animate)
 
     def _section_content_height(self, container: QWidget) -> int:
         lay = container.layout()
@@ -4224,6 +4439,28 @@ class SettingsPanel(QWidget):
             hint = container.sizeHint().height()
         return max(0, hint)
 
+    def _sync_section_container_heights(self):
+        for _, _, _, group_id, container in self._section_groups:
+            if group_id in self._section_animating or not container.isVisible():
+                continue
+            h = self._section_content_height(container)
+            if container.height() != h:
+                container.setFixedHeight(h)
+
+    def _relayout_section_frame(self):
+        if self._section_resize_anchor is None:
+            self._relayout(animate=False)
+            return
+        self._geo_anim.stop()
+        final = self._apply_body_geometry(resize_window=False, animate=False)
+        target_pos = self._bounded_window_pos(
+            self._section_resize_anchor, final)
+        if self.size() != final:
+            self.setFixedSize(final)
+        if self.pos() != target_pos:
+            self.move(target_pos)
+        self.update()
+
     def _set_section_height(self, group_id: str, value: float):
         container = self._section_anim_containers.get(group_id)
         if container is None:
@@ -4232,7 +4469,7 @@ class SettingsPanel(QWidget):
         container.setFixedHeight(h)
         if h > 0 and not container.isVisible():
             container.show()
-        self._relayout(animate=False)
+        self._relayout_section_frame()
 
     def _on_section_anim(self, group_id: str, value):
         self._set_section_height(group_id, float(value))
@@ -4247,36 +4484,17 @@ class SettingsPanel(QWidget):
             container.setFixedHeight(0)
             container.hide()
             self._apply_search(self.search.text(), relayout=False)
-            self._relayout(animate=False)
+            self._relayout_section_frame()
         else:
             container.setFixedHeight(self._section_content_height(container))
             container.show()
-            self._relayout(animate=False)
-            QTimer.singleShot(
-                0, lambda gid=group_id, c=container:
-                self._release_section_height(gid, c))
-
-    def _release_section_height(self, group_id: str, container: QWidget):
-        if self._section_anim_containers.get(group_id) is not container:
-            return
-        if group_id in self._section_animating:
-            return
-        if bool(self._section_collapsed.get(group_id, False)):
-            return
-        container.setMinimumHeight(0)
-        container.setMaximumHeight(16777215)
+            self._relayout_section_frame()
+        self._section_resize_anchor = None
 
     def _animate_section(self, group_id: str, container: QWidget,
-                         collapsed: bool):
+                         collapsed: bool, animate: bool = True):
         anim = self._section_anims.get(group_id)
-        if anim is None:
-            anim = Anim(self)
-            anim.valueChanged.connect(
-                lambda v, gid=group_id: self._on_section_anim(gid, v))
-            anim.finished.connect(
-                lambda gid=group_id: self._section_anim_done(gid))
-            self._section_anims[group_id] = anim
-        if anim.state() == Anim.Running:
+        if anim is not None and anim.state() == Anim.Running:
             anim.stop()
         self._section_anim_containers[group_id] = container
         self._section_anim_targets[group_id] = bool(collapsed)
@@ -4287,18 +4505,40 @@ class SettingsPanel(QWidget):
             self._apply_search(self.search.text(), relayout=False)
             self._relayout(animate=False)
             return
-        self._section_animating.add(group_id)
+        ms = adur(260, 150)
+        should_animate = bool(animate and anim_on() and ms > 0
+                              and self.isVisible())
+        if should_animate:
+            self._section_animating.add(group_id)
+        else:
+            self._section_animating.discard(group_id)
         self._apply_search(self.search.text(), relayout=False)
-        full_h = self._section_content_height(container)
+        full_h = (self._section_content_height(container)
+                  if should_animate or not collapsed else 0)
         start = container.height() if container.isVisible() else 0
         if collapsed and start <= 0:
             start = full_h
         end = 0 if collapsed else full_h
-        ms = adur(260, 150)
-        if not anim_on() or ms <= 0 or not self.isVisible():
-            self._set_section_height(group_id, end)
-            self._section_anim_done(group_id)
+        if not should_animate:
+            self._stop_window_geometry_at_current()
+            if collapsed:
+                container.setFixedHeight(0)
+                container.hide()
+            else:
+                container.setFixedHeight(full_h)
+                container.show()
+            self._section_resize_anchor = None
+            self._relayout(animate=False)
             return
+        if anim is None:
+            anim = Anim(self)
+            anim.valueChanged.connect(
+                lambda v, gid=group_id: self._on_section_anim(gid, v))
+            anim.finished.connect(
+                lambda gid=group_id: self._section_anim_done(gid))
+            self._section_anims[group_id] = anim
+        self._stop_window_geometry_at_current()
+        self._section_resize_anchor = QPoint(self.pos())
         anim.setStartValue(start)
         anim.setEndValue(end)
         anim.setDuration(ms)
@@ -4309,6 +4549,7 @@ class SettingsPanel(QWidget):
         query = str(text or "").strip().lower()
         categorized = SETTINGS.get("settings_panel_type", "normal") == "categories"
         full_mode = SETTINGS.get("settings_panel_type", "normal") == "full"
+        section_animate = self._section_toggle_anim_enabled()
         any_advanced = False
         row_match: dict[QWidget, bool] = {}
         full_box_visible: dict[str, bool] = {}
@@ -4329,7 +4570,8 @@ class SettingsPanel(QWidget):
             category_match = (not categorized or query
                               or section_key == self._panel_category)
             collapsed = bool(self._section_collapsed.get(group_id, False))
-            lab.set_collapsed(collapsed and not query)
+            lab.set_collapsed(collapsed and not query,
+                              animate=section_animate)
             any_match = any(row_match.get(w, w.isVisible()) for w in children)
             animating = group_id in self._section_animating
             section_visible = category_match and (not query or any_match)
@@ -4358,6 +4600,8 @@ class SettingsPanel(QWidget):
         if full_mode:
             for key, box in self._full_box_sections.items():
                 box.setVisible(full_box_visible.get(key, False))
+
+        self._sync_section_container_heights()
 
         if (not categorized and query and any_advanced
                 and not self._advanced_open):
@@ -4462,6 +4706,7 @@ class SettingsPanel(QWidget):
             self._type_slide_abort = True
             self._type_slide_anim.stop()
             self._type_slide_abort = False
+            self._type_direct = False
             if self._type_overlay is not None:
                 self._type_overlay.hide()
         old_panel_type = self._current_panel_type
@@ -4470,20 +4715,27 @@ class SettingsPanel(QWidget):
         expanded = self.sw_theme.is_expanded()
         old_size = QSize(self.size())
         old_body = self._body
+        old_body.set_scroll_offset(0.0)
+        old_body_rect = QRect(old_body.geometry())
         old_advanced = self.advanced_box
         old_full_boxes = list(getattr(self, "_full_boxes", []))
+        ms = adur(280, 150)
+        freeze_updates = (not wide_capture and anim_on() and ms > 0
+                          and self.isVisible()
+                          and self.updatesEnabled())
+        if freeze_updates:
+            self.setUpdatesEnabled(False)
         if wide_capture:
             old_pm = self.grab()
             old_rect = QRectF(0, 0, old_size.width(), old_size.height())
-        else:
-            old_pm = old_body.grab()
-            old_rect = QRectF(old_body.geometry())
         for w in [old_body, old_advanced, *old_full_boxes]:
             if w is not None:
                 w.hide()
 
         final_size = self._build_body(expanded=expanded, resize_window=False)
         if self._body is None:
+            if freeze_updates:
+                self.setUpdatesEnabled(True)
             return
         self.setFixedSize(max(final_size.width(), old_size.width()),
                           max(final_size.height(), old_size.height()))
@@ -4494,19 +4746,57 @@ class SettingsPanel(QWidget):
         if self.advanced_box is not None and self._advanced_open:
             self.advanced_box.show()
             self._on_advanced_anim(1.0)
-        if wide_capture:
-            new_pm = self.grab().copy(0, 0, final_size.width(),
-                                      final_size.height())
-            new_rect = QRectF(0, 0, final_size.width(), final_size.height())
-        else:
-            new_pm = self._body.grab()
-            new_rect = QRectF(self._body.geometry())
         self._final_size = (final_size.width(), final_size.height())
+
+        if not wide_capture:
+            final_body = QRect(self._body.geometry())
+            final_content_h = int(getattr(self._body, "_content_h",
+                                          final_body.height()))
+            for w in [old_body, old_advanced, *old_full_boxes]:
+                if w is not None:
+                    w.deleteLater()
+            if not anim_on() or ms <= 0 or not self.isVisible():
+                self._set_window_geometry(self.pos(), final_size,
+                                          animate=False)
+                if freeze_updates:
+                    self.setUpdatesEnabled(True)
+                self.update()
+                return
+
+            self._type_from_size = QSize(old_size)
+            self._type_to_size = QSize(final_size)
+            self._type_from_pos = QPoint(self.pos())
+            self._type_to_pos = self._bounded_window_pos(
+                QPoint(self.pos()), QSize(final_size))
+            self._type_direct = True
+            self._type_from_body = old_body_rect
+            self._type_final_body = final_body
+            self._type_to_body = QRect(final_body)
+            self._type_to_content_h = final_content_h
+            self.setFixedSize(old_size)
+            self.move(self._type_from_pos)
+            self._on_type_slide(0.0)
+            self._body.show()
+            self._body.raise_()
+            if freeze_updates:
+                self.setUpdatesEnabled(True)
+                freeze_updates = False
+            self.repaint()
+
+            self._type_slide_anim.setStartValue(0.0)
+            self._type_slide_anim.setEndValue(1.0)
+            self._type_slide_anim.setDuration(ms)
+            self._type_slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._type_slide_anim.start()
+            return
+
+        new_pm = self.grab().copy(0, 0, final_size.width(),
+                                  final_size.height())
+        new_rect = QRectF(0, 0, final_size.width(), final_size.height())
         for w in [old_body, old_advanced, *old_full_boxes]:
             if w is not None:
                 w.deleteLater()
 
-        ms = adur(280, 150)
         if not anim_on() or ms <= 0 or not self.isVisible():
             self.setFixedSize(*self._final_size)
             self._keep_on_screen()
@@ -4748,11 +5038,63 @@ class SettingsPanel(QWidget):
         self.repaint()
 
     def _on_type_slide(self, v):
+        if self._type_direct:
+            t = max(0.0, min(1.0, float(v)))
+            if self._type_from_size.isValid() and self._type_to_size.isValid():
+                x = round(self._type_from_pos.x()
+                          + (self._type_to_pos.x()
+                             - self._type_from_pos.x()) * t)
+                y = round(self._type_from_pos.y()
+                          + (self._type_to_pos.y()
+                             - self._type_from_pos.y()) * t)
+                w = round(self._type_from_size.width()
+                          + (self._type_to_size.width()
+                             - self._type_from_size.width()) * t)
+                h = round(self._type_from_size.height()
+                          + (self._type_to_size.height()
+                             - self._type_from_size.height()) * t)
+                self.setFixedSize(max(1, w), max(1, h))
+                self.move(x, y)
+            if (self._body is not None and self._type_from_body.isValid()
+                    and self._type_to_body.isValid()):
+                r0 = self._type_from_body
+                r1 = self._type_to_body
+                bx = round(r0.x() + (r1.x() - r0.x()) * t)
+                by = round(r0.y() + (r1.y() - r0.y()) * t)
+                bw = round(r0.width() + (r1.width() - r0.width()) * t)
+                bh = round(r0.height() + (r1.height() - r0.height()) * t)
+                self._body.setGeometry(bx, by, max(1, bw), max(1, bh))
+                self._set_panel_viewport(self._body, max(1, bw), max(1, bh),
+                                         max(1, self._type_to_content_h))
+                self._body.set_scroll_offset(0.0)
+            self.update()
+            return
         if self._type_overlay is not None:
             self._type_overlay.set_t(float(v))
 
     def _type_slide_done(self):
         if self._type_slide_abort:
+            return
+        if self._type_direct:
+            if self._body is not None:
+                self._body.show()
+                self._body.raise_()
+                if self._type_final_body.isValid():
+                    if self._body.geometry() != self._type_final_body:
+                        self._body.setGeometry(self._type_final_body)
+                    self._set_panel_viewport(
+                        self._body, self._type_final_body.width(),
+                        self._type_final_body.height(),
+                        max(1, self._type_to_content_h))
+                    self._body.set_scroll_offset(0.0)
+            if self._final_size:
+                final_size = QSize(self._final_size[0], self._final_size[1])
+                if self.size() != final_size:
+                    self.setFixedSize(final_size)
+                if self.pos() != self._type_to_pos:
+                    self.move(self._type_to_pos)
+            self._type_direct = False
+            self.update()
             return
         if self._type_overlay is not None:
             self._type_overlay.hide()
@@ -4775,33 +5117,6 @@ class SettingsPanel(QWidget):
             self._on_advanced_anim(1.0)
         if self._final_size:
             self.setFixedSize(*self._final_size)
-            self._keep_on_screen()
-        self.repaint()
-
-    def _on_category_slide(self, v):
-        t = max(0.0, min(1.0, float(v)))
-        if (self._category_from_size.isValid()
-                and self._category_to_size.isValid()):
-            w = round(self._category_from_size.width()
-                      + (self._category_to_size.width()
-                         - self._category_from_size.width()) * t)
-            h = round(self._category_from_size.height()
-                      + (self._category_to_size.height()
-                         - self._category_from_size.height()) * t)
-            self.setFixedSize(max(1, w), max(1, h))
-        if self._category_overlay is not None:
-            self._category_overlay.set_t(t)
-
-    def _category_slide_done(self):
-        if self._category_slide_abort:
-            return
-        if self._category_overlay is not None:
-            self._category_overlay.hide()
-        if self._body is not None:
-            self._body.show()
-            self._body.raise_()
-        if self._category_final_size:
-            self.setFixedSize(*self._category_final_size)
             self._keep_on_screen()
         self.repaint()
 
@@ -4940,37 +5255,17 @@ class SettingsPanel(QWidget):
                 return
             g = w.geometry()
             shadow_h = g.height()
-            scale_shadow = False
-            if (w is self._body and hasattr(self, "sw_theme")
-                    and self.sw_theme._ea.state() == Anim.Running):
-                target_row_h = self.sw_theme.row_h() * self.sw_theme._rows()
-                content_h = getattr(self._body, "_content_h", g.height())
-                target_content_h = max(
-                    1, content_h + target_row_h - self.sw_theme.height())
-                pm = panel_margin()
-                geo = self._screen_geometry_for(
-                    self.pos(), QSize(self.width(), max(1, self.height())))
-                max_body_h = max(panel_px(160), geo.height() - pm * 2)
-                shadow_h = min(target_content_h, max_body_h)
-                scale_shadow = shadow_h != g.height()
             sh = soft_shadow(g.width(), shadow_h, panel_f(16),
                              blur=blur, alpha=160,
                              dpr=self.devicePixelRatioF())
             p.save()
             p.setOpacity(op)
-            if scale_shadow:
-                p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                p.drawPixmap(
-                    QRectF(g.x() - blur, g.y() - blur + panel_f(5),
-                           g.width() + blur * 2, g.height() + blur * 2),
-                    sh, QRectF(sh.rect()))
-            else:
-                p.drawPixmap(g.x() - blur, g.y() - blur + panel_px(5), sh)
+            p.drawPixmap(g.x() - blur, g.y() - blur + panel_px(5), sh)
             p.restore()
 
         # 縮放過渡進行中（scale 或面板類型切換）：陰影跟著內插矩形畫；
         # 截圖已含陰影者（wide_capture）不重畫。body/box 此時都 hidden
-        for ov in (self._overlay, self._type_overlay, self._category_overlay):
+        for ov in (self._overlay, self._type_overlay):
             if ov is not None and ov.isVisible():
                 if not ov.shadow_included():
                     draw_rect_shadow(ov.cur_rect())

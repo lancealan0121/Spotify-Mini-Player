@@ -37,7 +37,8 @@ from style import (ART_SIZE, CARD_H, CARD_W, GLYPH_CLOSE, GLYPH_GLOBE,
                    anim_on, add_custom_theme, apply_anim_fps, blend,
                    cover_gradient, dominant_color,
                    fmt_time, remove_custom_theme,
-                   glass_theme, icon_font, load_settings, save_settings,
+                   glass_theme, icon_font, install_font_substitutions,
+                   install_qt_message_filter, load_settings, save_settings,
                    optional_setting_color, safe_font_family, soft_shadow, source_info,
                    theme_color, theme_gradient, tr, ui_font)
 from volume import AppVolume
@@ -3547,6 +3548,7 @@ class PlayerWindow(QWidget):
 
 
 def main():
+    install_qt_message_filter()
     argv = sys.argv[1:]
     demo = "--demo" in argv
     shot = None
@@ -3560,6 +3562,7 @@ def main():
         os.environ.setdefault("QT_WIDGETS_RHI", "1")
 
     app = QApplication(sys.argv)
+    install_font_substitutions()
     app.setFont(QFont(safe_font_family(SETTINGS.get("font"))))
     app.setQuitOnLastWindowClosed(False)
 
