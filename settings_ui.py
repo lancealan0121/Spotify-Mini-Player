@@ -1,23 +1,23 @@
 """自訂設定面板與音量彈窗：全部自繪控制項，不用內建外觀。"""
 import time
 
-from PySide6.QtCore import (QEvent, QEasingCurve, QPoint, QPointF, QRectF, Qt,
-                            QTimer,
+from PySide6.QtCore import (QEvent, QEasingCurve, QPoint, QPointF, QRect,
+                            QRectF, QSize, Qt, QTimer,
                             QVariantAnimation, Signal)
-from PySide6.QtGui import (QColor, QConicalGradient, QFont, QFontMetricsF,
-                           QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPixmap)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog,
+from PySide6.QtGui import (QColor, QConicalGradient, QFont, QFontDatabase,
+                           QFontMetricsF, QIcon, QLinearGradient, QPainter,
+                           QPainterPath, QPen, QPixmap)
+from PySide6.QtWidgets import (QApplication, QDialog,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QVBoxLayout, QWidget)
 
 from style import (AUTO_THEME_MODES, CARD_PRESETS, CONTROLS_ALIGN,
                    GLYPH_CHECK, GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_UP,
-                   GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SETTINGS, GLYPH_VOLUME,
-                   LANGUAGES, SEEK_STYLES, SETTINGS, SEEK_THUMBS,
-                   SOURCE_MODES, Anim, aa, adur, all_themes, anim_on, blend,
-                   icon_font, soft_shadow, theme_color, theme_gradient,
-                   theme_label, tr, ui_font)
+                   GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
+                   GLYPH_VOLUME, LANGUAGES, SEEK_STYLES, SETTINGS,
+                   SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES, Anim, aa,
+                   adur, all_themes, anim_on, blend, icon_font, soft_shadow,
+                   theme_color, theme_gradient, theme_label, tr, ui_font)
 from widgets import IconButton
 
 PANEL_W_BASE = 376
@@ -37,11 +37,31 @@ def panel_f(v: float) -> float:
 
 
 def panel_font(px: int, weight=QFont.Normal) -> QFont:
-    return ui_font(panel_px(px), weight)
+    f = ui_font(panel_px(px), weight)
+    f.setHintingPreference(QFont.PreferNoHinting)
+    return f
 
 
 def panel_icon_font(px: int) -> QFont:
-    return icon_font(panel_px(px))
+    f = icon_font(panel_px(px))
+    f.setHintingPreference(QFont.PreferNoHinting)
+    return f
+
+
+def glyph_icon(glyph: str, px: int, color: QColor) -> QIcon:
+    scr = QApplication.primaryScreen()
+    dpr = scr.devicePixelRatio() if scr is not None else 1.0
+    side = max(1, round(px * dpr))
+    pm = QPixmap(side, side)
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    aa(p)
+    p.setFont(icon_font(px))
+    p.setPen(color)
+    p.drawText(QRectF(0, 0, px, px), Qt.AlignCenter, glyph)
+    p.end()
+    return QIcon(pm)
 
 
 def panel_w() -> int:
@@ -54,6 +74,30 @@ def panel_margin() -> int:
 
 def source_options():
     return [(k, tr(f"source_{k}")) for k, _ in SOURCE_MODES]
+
+
+def startup_show_options():
+    return [("boot", tr("startup_show_boot")),
+            ("spotify", tr("startup_show_spotify"))]
+
+
+def settings_panel_type_options():
+    return [(k, tr(f"settings_panel_{k}"))
+            for k, _ in SETTINGS_PANEL_TYPES]
+
+
+PANEL_CATEGORY_KEYS = (
+    "section_general",
+    "section_appearance",
+    "section_cover",
+    "section_controls",
+    "section_performance",
+    "section_hotkeys",
+)
+
+
+def panel_category_options():
+    return [(k, tr(k)) for k in PANEL_CATEGORY_KEYS]
 
 
 def seek_options():
@@ -228,10 +272,12 @@ class PanelSlider(QWidget):
     PAD = 9.0            # 左側留邊，避免把手在 0% 時被裁切
 
     def __init__(self, mn: float, mx: float, val: float, fmt=None,
-                 live=True, accent=None, parent=None):
+                 live=True, accent=None, parent=None,
+                 step: float | None = None):
         super().__init__(parent)
         self._mn, self._mx = mn, mx
-        self._val = min(mx, max(mn, val))
+        self._step = float(step) if step and step > 0 else None
+        self._val = self._quantize(val)
         self._disp = self._val       # 畫面顯示值（動畫滑移）
         self._fmt = fmt or (lambda v: f"{v:.0f}")
         self._live = live
@@ -257,21 +303,29 @@ class PanelSlider(QWidget):
     def _track_w(self) -> float:
         return self.width() - panel_f(52.0) - panel_f(self.PAD)  # 右側留給數值
 
+    def _quantize(self, v: float) -> float:
+        v = min(self._mx, max(self._mn, float(v)))
+        if self._step is None:
+            return v
+        steps = round((v - self._mn) / self._step)
+        q = round(self._mn + steps * self._step, 6)
+        return min(self._mx, max(self._mn, q))
+
     def _val_from_x(self, x: float) -> float:
         pad = panel_f(self.PAD)
         r = min(1.0, max(0.0, (x - pad) / max(1.0, self._track_w())))
-        return self._mn + (self._mx - self._mn) * r
+        return self._quantize(self._mn + (self._mx - self._mn) * r)
 
     # ---- 顯示值動畫 ----
 
     def _on_disp(self, v):
         self._disp = float(v)
         if self._live:
-            self.changed.emit(self._disp)
+            self.changed.emit(self._quantize(self._disp))
         self.update()
 
     def _slide_to(self, v: float, ms: int):
-        v = min(self._mx, max(self._mn, v))
+        v = self._quantize(v)
         self._val = v
         if not anim_on() or ms <= 0:
             self._va.stop()
@@ -330,7 +384,7 @@ class PanelSlider(QWidget):
         self._hover_to(False)
 
     def wheelEvent(self, e):
-        step = (self._mx - self._mn) / 40.0
+        step = self._step or (self._mx - self._mn) / 40.0
         d = step if e.angleDelta().y() > 0 else -step
         self._slide_to(self._val + d, adur(150, 90))
         if not self._live:
@@ -1718,33 +1772,451 @@ class SwatchRow(QWidget):
         w = (panel_f(self.PAD) * 2
              + self.COLS * (panel_f(self.D) + panel_f(self.GAP))
              - panel_f(self.GAP) + panel_f(27))
-        return QSize(round(w), self.minimumHeight())   # 伸縮動畫中高度逐幀變
+        return QSize(round(w), max(self.minimumHeight(), self.height()))
 
 
-class FontPicker(QComboBox):
-    """深色樣式字體下拉選單。"""
+class _FontList(QWidget):
+    selected = Signal(str)
+
+    def __init__(self, families: list[str], current: str, accent: QColor,
+                 parent=None):
+        super().__init__(parent)
+        self._all = list(families)
+        self._items = list(families)
+        self._current = str(current or "")
+        self._accent = QColor(accent)
+        self._hover = -1
+        self._scroll = 0.0
+        self._target_scroll = 0.0
+        self._sa = Anim(self)
+        self._sa.valueChanged.connect(self._on_scroll)
+        self._row_h = panel_px(28)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(self._row_h * 7)
+
+    def set_accent(self, c: QColor):
+        self._accent = QColor(c)
+        self.update()
+
+    def set_filter(self, text: str):
+        q = str(text or "").strip().lower()
+        if q:
+            self._items = [f for f in self._all if q in f.lower()]
+        else:
+            self._items = list(self._all)
+        self._sa.stop()
+        self._scroll = 0.0
+        self._target_scroll = 0.0
+        self._hover = -1
+        self.update()
+
+    def set_current(self, text: str):
+        self._current = str(text or "")
+        self.update()
+
+    def first_item(self) -> str:
+        return self._items[0] if self._items else ""
+
+    def _visible_rows(self) -> int:
+        return max(1, self.height() // max(1, self._row_h) + 2)
+
+    def _max_scroll(self) -> float:
+        return max(0.0, len(self._items) * self._row_h - self.height())
+
+    def _clamp_scroll(self, value: float) -> float:
+        return max(0.0, min(self._max_scroll(), float(value)))
+
+    def _on_scroll(self, value):
+        self._scroll = self._clamp_scroll(float(value))
+        self.update()
+
+    def _scroll_to(self, value: float):
+        target = self._clamp_scroll(value)
+        self._target_scroll = target
+        if not anim_on() or adur(190, 100) <= 0:
+            self._sa.stop()
+            self._scroll = target
+            self.update()
+            return
+        self._sa.stop()
+        self._sa.setStartValue(self._scroll)
+        self._sa.setEndValue(target)
+        self._sa.setDuration(adur(190, 100))
+        self._sa.setEasingCurve(QEasingCurve.OutCubic)
+        self._sa.start()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        clamped = self._clamp_scroll(self._scroll)
+        self._scroll = clamped
+        self._target_scroll = self._clamp_scroll(self._target_scroll)
+
+    def wheelEvent(self, e):
+        if not self._items:
+            return
+        pixel = e.pixelDelta().y()
+        if pixel:
+            delta = pixel
+        else:
+            delta = e.angleDelta().y() / 120.0 * self._row_h * 3
+        self._scroll_to(self._target_scroll - delta)
+        e.accept()
+
+    def mouseMoveEvent(self, e):
+        real = int((e.position().y() + self._scroll) // self._row_h)
+        self._hover = real if 0 <= real < len(self._items) else -1
+        self.update()
+
+    def leaveEvent(self, e):
+        self._hover = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        idx = int((e.position().y() + self._scroll) // self._row_h)
+        if 0 <= idx < len(self._items):
+            self.selected.emit(self._items[idx])
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 26), 1))
+        p.setBrush(QColor(255, 255, 255, 12))
+        p.drawRoundedRect(rect, panel_f(9), panel_f(9))
+
+        p.setFont(panel_font(12))
+        p.setClipRect(rect)
+        start = int(self._scroll // self._row_h)
+        y_shift = self._scroll - start * self._row_h
+        visible = self._visible_rows()
+        for row in range(visible):
+            idx = start + row
+            if idx >= len(self._items):
+                break
+            item = self._items[idx]
+            y = row * self._row_h - y_shift
+            rr = QRectF(panel_f(4), y + panel_f(2),
+                        self.width() - panel_f(8), self._row_h - panel_f(4))
+            selected = item == self._current
+            hover = idx == self._hover
+            if selected or hover:
+                if selected:
+                    col = QColor(self._accent)
+                    col.setAlpha(72)
+                else:
+                    col = QColor(255, 255, 255, 24)
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                p.drawRoundedRect(rr, panel_f(7), panel_f(7))
+            alpha = 238 if selected else 188
+            if hover and not selected:
+                alpha = 218
+            p.setPen(QColor(255, 255, 255, alpha))
+            p.drawText(rr.adjusted(panel_f(9), 0, -panel_f(9), 0),
+                       Qt.AlignVCenter | Qt.AlignLeft, item)
+
+        if not self._items:
+            p.setPen(QColor(255, 255, 255, 120))
+            p.drawText(rect, Qt.AlignCenter, tr("unset"))
+        elif self._max_scroll() > 1:
+            thumb_h = max(panel_f(24), rect.height()
+                          * rect.height() / (len(self._items) * self._row_h))
+            thumb_y = rect.y() + (rect.height() - thumb_h) * (
+                self._scroll / self._max_scroll())
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 42))
+            p.drawRoundedRect(QRectF(rect.right() - panel_f(5), thumb_y,
+                                     panel_f(3), thumb_h),
+                              panel_f(1.5), panel_f(1.5))
+
+
+class _FontPopup(QWidget):
+    selected = Signal(str)
+
+    def __init__(self, families: list[str], current: str, accent: QColor,
+                 parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                            | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self._accent = QColor(accent)
+        self._families = list(families)
+        self._closing = False
+        self._shown_pos = QPoint()
+        self._slide_dir = 1
+        self._anim = Anim(self)
+        self._anim.valueChanged.connect(self._on_popup_anim)
+        self._anim.finished.connect(self._popup_anim_done)
+        self.setFixedSize(panel_px(310), panel_px(334))
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(panel_px(12), panel_px(12),
+                               panel_px(12), panel_px(12))
+        lay.setSpacing(panel_px(8))
+
+        self.search = QLineEdit()
+        self.search.setFixedHeight(panel_px(30))
+        self.search.addAction(
+            glyph_icon(GLYPH_SEARCH, panel_px(15),
+                       QColor(255, 255, 255, 142)),
+            QLineEdit.LeadingPosition)
+        self.search.setStyleSheet(
+            "QLineEdit { background: rgba(255,255,255,18);"
+            " color: #ececf2; border: 1px solid rgba(255,255,255,36);"
+            f" border-radius: {panel_px(9)}px;"
+            f" padding: 0 {panel_px(10)}px;"
+            f" font: {panel_px(12)}px 'Segoe UI'; }}"
+            "QLineEdit:focus { border-color: rgba(255,255,255,86); }")
+        lay.addWidget(self.search)
+
+        self.list = _FontList(self._families, current, self._accent)
+        lay.addWidget(self.list, 1)
+        self.search.textChanged.connect(self.list.set_filter)
+        self.search.returnPressed.connect(self._accept_text)
+        self.list.selected.connect(self._select)
+
+    def set_accent(self, c: QColor):
+        self._accent = QColor(c)
+        self.list.set_accent(c)
+        self.update()
+
+    def popup_at(self, anchor: QWidget):
+        g = anchor.mapToGlobal(QPoint(0, anchor.height() + panel_px(6)))
+        scr = QApplication.screenAt(g)
+        geo = (scr.availableGeometry() if scr is not None
+               else QApplication.primaryScreen().availableGeometry())
+        x = min(max(geo.left(), g.x()), geo.right() + 1 - self.width())
+        y = g.y()
+        above = False
+        if y + self.height() > geo.bottom() + 1:
+            y = anchor.mapToGlobal(QPoint(0, -self.height()
+                                          - panel_px(6))).y()
+            above = True
+        y = min(max(geo.top(), y), geo.bottom() + 1 - self.height())
+        self._closing = False
+        self._shown_pos = QPoint(x, y)
+        self._slide_dir = -1 if above else 1
+        self._anim.stop()
+        slide = panel_px(10) * self._slide_dir
+        self.setWindowOpacity(0.0)
+        self.move(x, y + slide)
+        self.show()
+        self.raise_()
+        self.search.setFocus(Qt.PopupFocusReason)
+        ms = adur(210, 120)
+        if not anim_on() or ms <= 0:
+            self.setWindowOpacity(1.0)
+            self.move(self._shown_pos)
+            return
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setDuration(ms)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.start()
+
+    def dismiss(self):
+        if self._closing:
+            return
+        self._anim.stop()
+        self._closing = True
+        ms = adur(170, 100)
+        if not anim_on() or ms <= 0:
+            self.close()
+            return
+        self._anim.setStartValue(float(self.windowOpacity()))
+        self._anim.setEndValue(0.0)
+        self._anim.setDuration(ms)
+        self._anim.setEasingCurve(QEasingCurve.InCubic)
+        self._anim.start()
+
+    def _on_popup_anim(self, value):
+        t = max(0.0, min(1.0, float(value)))
+        self.setWindowOpacity(t)
+        slide = panel_px(10) * self._slide_dir
+        self.move(self._shown_pos.x(),
+                  round(self._shown_pos.y() + slide * (1.0 - t)))
+
+    def _popup_anim_done(self):
+        if self._closing:
+            self.close()
+
+    def _accept_text(self):
+        text = self.search.text().strip()
+        self._select(text or self.list.first_item())
+
+    def _select(self, text: str):
+        text = str(text or "").strip()
+        if not text:
+            return
+        self.selected.emit(text)
+        self.dismiss()
+
+    def changeEvent(self, e):
+        super().changeEvent(e)
+        if e.type() == QEvent.ActivationChange and not self.isActiveWindow():
+            self.dismiss()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, panel_f(13), panel_f(13))
+        p.fillPath(path, QColor(21, 21, 27, 252))
+        p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+
+class FontPicker(QWidget):
+    """自繪字體選擇器：點開後可搜尋，也可直接輸入字體名稱。"""
+
+    currentTextChanged = Signal(str)
+
+    _families_cache: list[str] | None = None
 
     def __init__(self, current: str, parent=None):
         super().__init__(parent)
-        from PySide6.QtGui import QFontDatabase
-        fams = [f for f in QFontDatabase.families() if not f.startswith("@")]
-        self.addItems(fams)
-        if current in fams:
-            self.setCurrentText(current)
+        if FontPicker._families_cache is None:
+            FontPicker._families_cache = [
+                f for f in QFontDatabase.families()
+                if not f.startswith("@")
+            ]
+            if not FontPicker._families_cache:
+                FontPicker._families_cache = ["Segoe UI"]
+        self._families = FontPicker._families_cache
+        if current and current not in self._families:
+            self._families = [current] + self._families
+        self._text = (current if current in self._families
+                      else (current or SETTINGS.get("font", "Segoe UI")))
+        self._accent = QColor("#1DB954")
+        self._hover = 0.0
+        self._press = 1.0
+        self._popup: _FontPopup | None = None
+        self._ha = Anim(self)
+        self._ha.valueChanged.connect(self._on_hover)
+        self._pa = Anim(self)
+        self._pa.valueChanged.connect(self._on_press)
         self.setFixedHeight(panel_px(30))
-        self.setMaxVisibleItems(14)
-        self.setStyleSheet(
-            'QComboBox { background: rgba(255,255,255,16); color: #e8e8ee;'
-            f' border: 1px solid rgba(255,255,255,32); border-radius: {panel_px(9)}px;'
-            f' padding: {panel_px(3)}px {panel_px(12)}px;'
-            f' font: {panel_px(12)}px "Segoe UI"; }}'
-            'QComboBox:hover { background: rgba(255,255,255,26); }'
-            f'QComboBox::drop-down {{ border: none; width: {panel_px(20)}px; }}'
-            'QComboBox::down-arrow { image: none; }'
-            'QComboBox QAbstractItemView { background: #1d1d24;'
-            ' color: #e8e8ee; border: 1px solid rgba(255,255,255,32);'
-            f' border-radius: {panel_px(9)}px; selection-background-color:'
-            f' rgba(255,255,255,34); outline: none; padding: {panel_px(4)}px; }}')
+        self.setMinimumWidth(panel_px(160))
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def currentText(self) -> str:
+        return self._text
+
+    def setCurrentText(self, text: str):
+        self._set_text(text, emit=False)
+
+    def set_accent(self, c: QColor):
+        self._accent = QColor(c)
+        if self._popup is not None:
+            self._popup.set_accent(c)
+        self.update()
+
+    def _set_text(self, text: str, emit: bool = True):
+        text = str(text or "").strip()
+        if not text:
+            return
+        if text == self._text:
+            return
+        self._text = text
+        if emit:
+            self.currentTextChanged.emit(text)
+        self.update()
+
+    def _on_hover(self, v):
+        self._hover = float(v)
+        self.update()
+
+    def _on_press(self, v):
+        self._press = float(v)
+        self.update()
+
+    def _anim(self, anim: Anim, cur: float, to: float, ms: int):
+        anim.stop()
+        if not anim_on() or ms <= 0:
+            anim.valueChanged.emit(to)
+            return
+        anim.setStartValue(cur)
+        anim.setEndValue(to)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+
+    def _open_popup(self, initial: str = ""):
+        if self._popup is not None and self._popup.isVisible():
+            if initial:
+                self._popup.raise_()
+                self._popup.search.setText(initial)
+                self._popup.search.setFocus(Qt.PopupFocusReason)
+            else:
+                self._popup.dismiss()
+            return
+        self._popup = _FontPopup(self._families, self._text, self._accent,
+                                 self.window())
+        self._popup.selected.connect(self._set_text)
+        self._popup.destroyed.connect(lambda *_: setattr(self, "_popup", None))
+        self._popup.popup_at(self)
+        if initial:
+            self._popup.search.setText(initial)
+
+    def enterEvent(self, e):
+        self._anim(self._ha, self._hover, 1.0, adur(150, 90))
+
+    def leaveEvent(self, e):
+        self._anim(self._ha, self._hover, 0.0, adur(180, 100))
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        self._anim(self._pa, self._press, 0.96, adur(70, 50))
+
+    def mouseReleaseEvent(self, e):
+        self._anim(self._pa, self._press, 1.0, adur(150, 90))
+        if self.rect().contains(e.position().toPoint()):
+            self._open_popup()
+
+    def keyPressEvent(self, e):
+        text = e.text()
+        if text and text.isprintable():
+            self._open_popup(text)
+            e.accept()
+            return
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Down,
+                       Qt.Key_Space):
+            self._open_popup()
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        c = self.rect().center()
+        p.translate(c.x(), c.y())
+        p.scale(self._press, self._press)
+        p.translate(-c.x(), -c.y())
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 36), 1))
+        p.setBrush(QColor(255, 255, 255, 16 + round(10 * self._hover)))
+        p.drawRoundedRect(r, panel_f(9), panel_f(9))
+        p.setFont(panel_font(12))
+        p.setPen(QColor(255, 255, 255, 212))
+        text_rect = r.adjusted(panel_f(10), 0, -panel_f(30), 0)
+        fm = QFontMetricsF(panel_font(12))
+        txt = fm.elidedText(self._text, Qt.ElideRight,
+                            max(1, round(text_rect.width())))
+        p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, txt)
+        p.setFont(panel_icon_font(10))
+        p.setPen(QColor(255, 255, 255, 150 + round(60 * self._hover)))
+        p.drawText(QRectF(r.right() - panel_f(26), r.y(),
+                          panel_f(22), r.height()),
+                   Qt.AlignCenter, GLYPH_CHEVRON_DOWN)
 
 
 # ------------------------------------------------------------ 設定面板 ----
@@ -1762,11 +2234,111 @@ class _PanelBody(QWidget):
         p.drawPath(path)
 
 
+class _ScrollablePanelBody(_PanelBody):
+    """圓角面板外框 + 可垂直捲動的內容層。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.content = QWidget(self)
+        self.content.setAttribute(Qt.WA_TranslucentBackground)
+        self._offset = 0.0
+        self._target_offset = 0.0
+        self._content_h = 0
+        self._sa = Anim(self)
+        self._sa.valueChanged.connect(self._on_scroll)
+        self.setMouseTracking(True)
+
+    def content_height_for_width(self, width: int) -> int:
+        self.content.setFixedWidth(max(1, int(width)))
+        lay = self.content.layout()
+        if lay is not None:
+            lay.activate()
+        return max(1, self.content.sizeHint().height() + panel_px(2))
+
+    def set_viewport(self, width: int, height: int, content_h: int):
+        self._content_h = max(1, int(content_h))
+        self.content.resize(max(1, int(width)), max(int(height), self._content_h))
+        self._offset = self._clamp(self._offset)
+        self._target_offset = self._clamp(self._target_offset)
+        self._place_content()
+
+    def _max_offset(self) -> float:
+        return max(0.0, float(self._content_h - self.height()))
+
+    def _clamp(self, value: float) -> float:
+        return max(0.0, min(self._max_offset(), float(value)))
+
+    def _place_content(self):
+        self.content.move(0, -round(self._offset))
+        self.update()
+
+    def _on_scroll(self, value):
+        self._offset = self._clamp(float(value))
+        self._place_content()
+
+    def _scroll_to(self, value: float):
+        target = self._clamp(value)
+        self._target_offset = target
+        ms = adur(210, 120)
+        if not anim_on() or ms <= 0:
+            self._sa.stop()
+            self._offset = target
+            self._place_content()
+            return
+        self._sa.stop()
+        self._sa.setStartValue(self._offset)
+        self._sa.setEndValue(target)
+        self._sa.setDuration(ms)
+        self._sa.setEasingCurve(QEasingCurve.OutCubic)
+        self._sa.start()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._offset = self._clamp(self._offset)
+        self._target_offset = self._clamp(self._target_offset)
+        self._place_content()
+
+    def wheelEvent(self, e):
+        if self._max_offset() <= 1:
+            e.ignore()
+            return
+        pixel = e.pixelDelta().y()
+        if pixel:
+            delta = pixel
+        else:
+            delta = e.angleDelta().y() / 120.0 * panel_px(58)
+        self._scroll_to(self._target_offset - delta)
+        e.accept()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._max_offset() <= 1:
+            return
+        p = QPainter(self)
+        aa(p)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        track_h = rect.height() - panel_f(24)
+        if track_h <= 0:
+            return
+        thumb_h = max(panel_f(28), track_h * self.height()
+                      / max(1.0, float(self._content_h)))
+        y = rect.y() + panel_f(12) + (track_h - thumb_h) * (
+            self._offset / self._max_offset())
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 44))
+        p.drawRoundedRect(QRectF(rect.right() - panel_f(7), y,
+                                 panel_f(3), thumb_h),
+                          panel_f(1.5), panel_f(1.5))
+
+
 class _PanelZoomOverlay(QWidget):
     """設定面板縮放過渡：沿用主視窗的截圖矩形內插效果。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
         self._old: QPixmap | None = None
         self._new: QPixmap | None = None
         self._r0 = QRectF()
@@ -1774,12 +2346,15 @@ class _PanelZoomOverlay(QWidget):
         self._t = 0.0
         self._buf: QPixmap | None = None
         self._buf2: QPixmap | None = None
+        self._shadow_included = False
         self.hide()
 
-    def setup(self, old_pm: QPixmap, r0, new_pm: QPixmap, r1):
+    def setup(self, old_pm: QPixmap, r0, new_pm: QPixmap, r1,
+              shadow_included: bool = False):
         self._old, self._new = old_pm, new_pm
         self._r0, self._r1 = QRectF(r0), QRectF(r1)
         self._t = 0.0
+        self._shadow_included = bool(shadow_included)
         dpr = self.devicePixelRatioF()
         bw = int(max(self._r0.width(), self._r1.width()) * dpr) + 2
         bh = int(max(self._r0.height(), self._r1.height()) * dpr) + 2
@@ -1813,15 +2388,36 @@ class _PanelZoomOverlay(QWidget):
         if (self._buf is None or self._buf.width() < bw
                 or self._buf.height() < bh):
             self._buf = QPixmap(int(bw) + 2, int(bh) + 2)
+            self._buf2 = QPixmap(int(bw) + 2, int(bh) + 2)
         target = QRectF(0, 0, bw, bh)
+        t = self._t
         self._buf.fill(Qt.transparent)
         p = QPainter(self._buf)
         aa(p)
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        if self._new is not None:
+        if self._new is not None and t > 0.0:
+            p.setOpacity(t)
             p.drawPixmap(target, self._new, QRectF(self._new.rect()))
+        if self._old is not None and t < 1.0:
+            if t <= 0.0:
+                p.setOpacity(1.0)
+                p.drawPixmap(target, self._old, QRectF(self._old.rect()))
+            else:
+                self._buf2.fill(Qt.transparent)
+                p2 = QPainter(self._buf2)
+                aa(p2)
+                p2.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                p2.setOpacity(1.0 - t)
+                p2.drawPixmap(target, self._old, QRectF(self._old.rect()))
+                p2.end()
+                p.setOpacity(1.0)
+                p.setCompositionMode(QPainter.CompositionMode_Plus)
+                p.drawPixmap(0, 0, self._buf2)
         p.end()
         return self._buf, bw, bh
+
+    def shadow_included(self) -> bool:
+        return self._shadow_included
 
     def composite(self) -> QPixmap:
         rect = self.cur_rect()
@@ -1930,10 +2526,73 @@ class _PanelFadeOverlay(QWidget):
         p.drawPixmap(r, pm, QRectF(0, 0, bw, bh))
 
 
+class _PanelSlideOverlay(QWidget):
+    """設定面板類型切換：舊面板滑出、新面板滑入。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self._old: QPixmap | None = None
+        self._new: QPixmap | None = None
+        self._r0 = QRectF()
+        self._r1 = QRectF()
+        self._clip_rect = QRectF()
+        self._clip_radius = panel_f(16)
+        self._t = 0.0
+        self.hide()
+
+    def setup(self, old_pm: QPixmap, old_rect,
+              new_pm: QPixmap, new_rect,
+              clip_rect=None, clip_radius: float | None = None):
+        self._old = old_pm
+        self._new = new_pm
+        self._r0 = QRectF(old_rect)
+        self._r1 = QRectF(new_rect)
+        self._clip_rect = (QRectF(clip_rect) if clip_rect is not None
+                           else self._r0.united(self._r1))
+        self._clip_radius = (panel_f(16) if clip_radius is None
+                             else max(0.0, float(clip_radius)))
+        self._t = 0.0
+        self.update()
+
+    def set_t(self, t: float):
+        self._t = max(0.0, min(1.0, float(t)))
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        span = max(self._r0.width(), self._r1.width(), panel_f(80))
+        clip_rect = QRectF(self._clip_rect)
+        if not clip_rect.isValid():
+            clip_rect = self._r0.united(self._r1)
+        if not clip_rect.isValid():
+            clip_rect = QRectF(self.rect())
+        clip = QPainterPath()
+        if self._clip_radius > 0.0:
+            clip.addRoundedRect(clip_rect, self._clip_radius,
+                                self._clip_radius)
+        else:
+            clip.addRect(clip_rect)
+        p.fillPath(clip, QColor(21, 21, 27, 252))
+        p.setClipPath(clip)
+        if self._old is not None:
+            r = QRectF(self._r0)
+            r.moveLeft(self._r0.x() - span * self._t)
+            p.drawPixmap(r, self._old, QRectF(self._old.rect()))
+        if self._new is not None:
+            r = QRectF(self._r1)
+            r.moveLeft(self._r1.x() + span * (1.0 - self._t))
+            p.drawPixmap(r, self._new, QRectF(self._new.rect()))
+
+
 class SettingsPanel(QWidget):
     """獨立的無邊框設定視窗；所有變更即時套用。"""
 
     setting_changed = Signal(str, object)
+    position_committed = Signal(QPoint)
     closed = Signal()
 
     def __init__(self, accent: QColor, parent=None):
@@ -1941,6 +2600,8 @@ class SettingsPanel(QWidget):
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
         self._drag_off = None
         self._accent = QColor(accent)
         self._grad_pair = _panel_target_pair(self._accent)
@@ -1970,28 +2631,71 @@ class SettingsPanel(QWidget):
         self._fade_anim = Anim(self)
         self._fade_anim.valueChanged.connect(self._on_language_fade)
         self._fade_anim.finished.connect(self._language_fade_done)
+        self._type_overlay: _PanelZoomOverlay | None = None
+        self._type_slide_anim = Anim(self)
+        self._type_slide_anim.valueChanged.connect(self._on_type_slide)
+        self._type_slide_anim.finished.connect(self._type_slide_done)
+        self._type_slide_abort = False
+        self._category_overlay: _PanelZoomOverlay | None = None
+        self._category_final_size = None
+        self._category_from_size = QSize()
+        self._category_to_size = QSize()
+        self._category_slide_anim = Anim(self)
+        self._category_slide_anim.valueChanged.connect(self._on_category_slide)
+        self._category_slide_anim.finished.connect(self._category_slide_done)
+        self._category_slide_abort = False
         self._lang_timer = QTimer(self)
         self._lang_timer.setSingleShot(True)
         self._lang_timer.timeout.connect(self.rebuild_for_language)
         self._body: _PanelBody | None = None
         self.advanced_box: _PanelBody | None = None
+        self._full_boxes: list[_ScrollablePanelBody] = []
+        self._full_box_sections: dict[str, _ScrollablePanelBody] = {}
+        self._current_panel_type = SETTINGS.get("settings_panel_type",
+                                                "normal")
         self._advanced_eff: QGraphicsOpacityEffect | None = None
         self._advanced_open = False
         self._advanced_hiding = False
         self._advanced_side = "right"
         self._advanced_geo = QRectF()
         self._advanced_t = 0.0
+        self._theme_row_h = 0
         self._advanced_anim = Anim(self)
         self._advanced_anim.valueChanged.connect(self._on_advanced_anim)
         self._advanced_anim.finished.connect(self._advanced_anim_done)
+        self._geo_anim = Anim(self)
+        self._geo_anim.valueChanged.connect(self._on_window_geometry)
+        self._geo_anim.finished.connect(self._window_geometry_done)
+        self._geo_from_pos = QPoint()
+        self._geo_to_pos = QPoint()
+        self._geo_from_size = QSize()
+        self._geo_to_size = QSize()
         self._build_body()
 
     def _build_body(self, expanded: bool | None = None,
                     resize_window: bool = True):
-        body = _PanelBody(self)
+        body = _ScrollablePanelBody(self)
         self._labels = {}
         self._toggle_labels = {}
-        lay = QVBoxLayout(body)
+        self._section_labels = []
+        self._search_rows = []
+        self._section_groups = []
+        panel_type = SETTINGS.get("settings_panel_type", "normal")
+        self._current_panel_type = panel_type
+        categorized = panel_type == "categories"
+        full_mode = panel_type == "full"
+        single_panel = panel_type in ("categories", "full")
+        self._full_boxes = []
+        self._full_box_sections = {}
+        if single_panel:
+            self._advanced_open = False
+            self._advanced_hiding = False
+        self._panel_category = getattr(
+            self, "_panel_category", "section_general")
+        if self._panel_category not in PANEL_CATEGORY_KEYS:
+            self._panel_category = "section_general"
+        self.sg_panel_category = None
+        lay = QVBoxLayout(body.content)
         lay.setContentsMargins(panel_px(20), panel_px(14),
                                panel_px(20), panel_px(18))
         lay.setSpacing(panel_px(10))
@@ -2011,8 +2715,72 @@ class SettingsPanel(QWidget):
         head.addWidget(btn_close)
         lay.addLayout(head)
 
+        self.search = QLineEdit()
+        self.search.setFixedHeight(panel_px(30))
+        self.search.setPlaceholderText(tr("search_settings"))
+        self.search.setStyleSheet(
+            "QLineEdit { background: rgba(255,255,255,16);"
+            " color: #ececf2; border: 1px solid rgba(255,255,255,34);"
+            f" border-radius: {panel_px(9)}px;"
+            f" padding: 0 {panel_px(10)}px;"
+            f" font: {panel_px(12)}px 'Segoe UI'; }}"
+            "QLineEdit:focus { border-color: rgba(255,255,255,76); }"
+            "QLineEdit::placeholder { color: rgba(255,255,255,95); }")
+        lay.addWidget(self.search)
+
+        if categorized:
+            self.sg_panel_category = Segmented(
+                panel_category_options(), self._panel_category,
+                accent=self._accent)
+            lay.addWidget(self.sg_panel_category)
+
+        full_layouts: dict[str, QVBoxLayout] = {}
+        if full_mode:
+            for section_key in PANEL_CATEGORY_KEYS:
+                box = _ScrollablePanelBody(self)
+                box.hide()
+                box_lay = QVBoxLayout(box.content)
+                box_lay.setContentsMargins(panel_px(20), panel_px(14),
+                                           panel_px(20), panel_px(18))
+                box_lay.setSpacing(panel_px(8))
+                full_layouts[section_key] = box_lay
+                self._full_boxes.append(box)
+                self._full_box_sections[section_key] = box
+
+        current_section: list[QWidget] | None = None
+        current_section_key = ""
+        current_layout = lay
+
+        def section(layout, label_key):
+            nonlocal current_section, current_section_key, current_layout
+            if full_mode and label_key in full_layouts:
+                layout = full_layouts[label_key]
+            current_layout = layout
+            lab = QLabel(tr(label_key))
+            self._section_labels.append((label_key, lab))
+            lab.setFont(panel_font(11, QFont.DemiBold))
+            lab.setStyleSheet("color: rgba(255,255,255,128);")
+            layout.addWidget(lab)
+            current_section = []
+            current_section_key = label_key
+            self._section_groups.append((label_key, lab, current_section))
+            return lab
+
+        def register_search(host: QWidget, label_key: str):
+            keys = {label_key.lower()}
+            if label_key != "FPS":
+                keys.add(tr(label_key).lower())
+            else:
+                keys.add("fps")
+            self._search_rows.append((host, label_key, keys))
+            if current_section is not None:
+                current_section.append(host)
+
         def row(label_key, control, stretch=True, top=False):
+            host = QWidget()
             h = QHBoxLayout()
+            host.setLayout(h)
+            h.setContentsMargins(0, 0, 0, 0)
             h.setSpacing(panel_px(10))
             lab = QLabel(tr(label_key) if label_key != "FPS" else "FPS")
             self._labels[label_key] = lab
@@ -2030,67 +2798,139 @@ class SettingsPanel(QWidget):
             else:
                 h.addWidget(control)
                 h.addStretch(1)
-            lay.addLayout(h)
+            current_layout.addWidget(host)
+            register_search(host, label_key)
             return control
 
-        self.sw_theme = row("theme", SwatchRow(SETTINGS["theme"],
-                                               expanded=expanded),
-                            stretch=False, top=True)
-        self.sg_auto_theme = row("auto_theme", Segmented(
-            auto_theme_options(), SETTINGS["auto_theme"],
-            accent=self._accent))
-        self.sg_art_mode = row("art_mode", Segmented(
-            art_mode_options(), SETTINGS["art_mode"], accent=self._accent))
-        self.sg_source = row("source", Segmented(
-            source_options(), SETTINGS["source"], accent=self._accent))
-        self.sl_opacity = row("opacity", PanelSlider(
-            35, 100, SETTINGS["bg_opacity"] * 100,
-            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-        self.sl_brightness = row("brightness", PanelSlider(
-            55, 145, SETTINGS["brightness"] * 100,
-            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-        self.sl_scale = row("player_size", PanelSlider(
-            80, 200, SETTINGS["scale"] * 100,
-            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-        self.sl_settings_scale = row("settings_size", PanelSlider(
-            80, 200, SETTINGS["settings_scale"] * 100,
-            fmt=lambda v: f"{v:.0f}%", live=False, accent=self._accent))
-        self.sl_radius = row("radius", PanelSlider(
-            6, 28, SETTINGS["radius"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-        self.sg_seek = row("seek_bar", Segmented(
-            seek_options(), SETTINGS["seek_style"], accent=self._accent))
-        self.sg_ctl = row("button_pos", Segmented(
-            align_options(), SETTINGS["controls_align"], accent=self._accent))
-        self.sg_lang = row("language", Segmented(
-            LANGUAGES, SETTINGS["language"], accent=self._accent))
-        self.fp_font = row("font", FontPicker(SETTINGS["font"]))
+        def build_general():
+            section(lay, "section_general")
+            self.sg_panel_type = row("settings_panel_type", Segmented(
+                settings_panel_type_options(), SETTINGS["settings_panel_type"],
+                accent=self._accent))
+            self.sg_source = row("source", Segmented(
+                source_options(), SETTINGS["source"], accent=self._accent))
+            self.tg_startup = row("startup_enabled", Toggle(
+                bool(SETTINGS["startup_enabled"]), accent=self._accent),
+                stretch=False)
+            self.sg_startup_show = row("startup_show", Segmented(
+                startup_show_options(), SETTINGS["startup_show"],
+                accent=self._accent))
+            self.sg_lang = row("language", Segmented(
+                LANGUAGES, SETTINGS["language"], accent=self._accent))
+            self.fp_font = row("font", FontPicker(SETTINGS["font"]))
 
-        self.btn_advanced = PanelButton("", accent=self._accent)
-        self.advanced_box = _PanelBody(self)
+        def build_appearance():
+            section(lay, "section_appearance")
+            self.sw_theme = row("theme", SwatchRow(SETTINGS["theme"],
+                                                   expanded=expanded),
+                                stretch=False, top=True)
+            self.sg_auto_theme = row("auto_theme", Segmented(
+                auto_theme_options(), SETTINGS["auto_theme"],
+                accent=self._accent))
+            self.sl_opacity = row("opacity", PanelSlider(
+                35, 100, SETTINGS["bg_opacity"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_brightness = row("brightness", PanelSlider(
+                55, 145, SETTINGS["brightness"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_scale = row("player_size", PanelSlider(
+                80, 300, SETTINGS["scale"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_settings_scale = row("settings_size", PanelSlider(
+                80, 200, SETTINGS["settings_scale"] * 100,
+                fmt=lambda v: f"{v:.0f}%", live=False, accent=self._accent))
+            self.sl_radius = row("radius", PanelSlider(
+                6, 28, SETTINGS["radius"],
+                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+            self.sg_card_preset = row("card_preset", Segmented(
+                card_preset_options(), SETTINGS["card_preset"], accent=self._accent))
+
+        def build_cover():
+            section(lay, "section_cover")
+            self.tg_show_cover = row("show_cover", Toggle(
+                bool(SETTINGS["show_cover"]), accent=self._accent),
+                stretch=False)
+            self.sg_art_mode = row("art_mode", Segmented(
+                art_mode_options(), SETTINGS["art_mode"], accent=self._accent))
+            self.sl_cover_blur = row("cover_blur", PanelSlider(
+                0, 14, SETTINGS["cover_blur"],
+                fmt=lambda v: f"{v:.1f}px", accent=self._accent, step=0.1))
+            self.sg_cover_shape = row("cover_shape", Segmented(
+                cover_shape_options(), SETTINGS["cover_shape"], accent=self._accent))
+            self.sl_cover_radius_strength = row(
+                "cover_radius_strength",
+                PanelSlider(0, 200, SETTINGS["cover_radius_strength"] * 100,
+                            fmt=lambda v: f"{v:.0f}%",
+                            accent=self._accent))
+
+        if panel_type == "normal":
+            build_appearance()
+            build_general()
+            build_cover()
+        else:
+            build_general()
+            build_appearance()
+            build_cover()
+
+        self.btn_advanced = PanelButton("", accent=self._accent, parent=self)
+        self.advanced_box = _ScrollablePanelBody(self)
         self.advanced_box.hide()
         self._advanced_eff = QGraphicsOpacityEffect(self.advanced_box)
         self._advanced_eff.setOpacity(0.0)
         self.advanced_box.setGraphicsEffect(self._advanced_eff)
-        adv = QVBoxLayout(self.advanced_box)
-        adv.setContentsMargins(panel_px(20), panel_px(14),
-                               panel_px(20), panel_px(18))
-        adv.setSpacing(panel_px(8))
+        if single_panel:
+            adv = lay
+        else:
+            adv = QVBoxLayout(self.advanced_box.content)
+            adv.setContentsMargins(panel_px(20), panel_px(14),
+                                   panel_px(20), panel_px(18))
+            adv.setSpacing(panel_px(8))
 
         def update_advanced_button():
-            icon = GLYPH_CHEVRON_UP if self._advanced_open else GLYPH_CHEVRON_DOWN
-            self.btn_advanced._text = f"{tr('advanced')}  {icon}"
-            self.btn_advanced.update()
+            self._update_advanced_button()
 
         def toggle_advanced():
             self._advanced_open = not self._advanced_open
             update_advanced_button()
             self._toggle_advanced_panel(self._advanced_open)
 
-        self.btn_advanced.clicked.connect(toggle_advanced)
+        def close_advanced():
+            if not self._advanced_open and not self._advanced_hiding:
+                return
+            self._advanced_open = False
+            update_advanced_button()
+            self._toggle_advanced_panel(False)
+
+        if not single_panel:
+            self.btn_advanced.clicked.connect(toggle_advanced)
+
+            adv_head = QHBoxLayout()
+            adv_head.setSpacing(panel_px(8))
+            self._advanced_title_label = QLabel(tr("advanced"))
+            self._advanced_title_label.setFont(panel_font(13, QFont.DemiBold))
+            self._advanced_title_label.setStyleSheet(
+                "color: rgba(255,255,255,220);")
+            adv_head.addWidget(self._advanced_title_label)
+            adv_head.addStretch(1)
+            self.btn_advanced_close = IconButton(
+                GLYPH_CLOSE, panel_px(10), panel_px(24), fx="spin")
+            self.btn_advanced_close.clicked.connect(close_advanced)
+            adv_head.addWidget(self.btn_advanced_close)
+            adv.addLayout(adv_head)
+        else:
+            self._advanced_title_label = QLabel(tr("advanced"), self)
+            self._advanced_title_label.hide()
+            self.btn_advanced_close = IconButton(
+                GLYPH_CLOSE, panel_px(10), panel_px(24), fx="spin", parent=self)
+            self.btn_advanced_close.hide()
 
         def adv_row(label_key, control, stretch=True):
+            if categorized or full_mode:
+                return row(label_key, control, stretch=stretch)
+            host = QWidget()
             h = QHBoxLayout()
+            host.setLayout(h)
+            h.setContentsMargins(0, 0, 0, 0)
             h.setSpacing(panel_px(10))
             lab = QLabel(tr(label_key) if label_key != "FPS" else "FPS")
             self._labels[label_key] = lab
@@ -2103,7 +2943,8 @@ class SettingsPanel(QWidget):
             else:
                 h.addWidget(control)
                 h.addStretch(1)
-            adv.addLayout(h)
+            adv.addWidget(host)
+            register_search(host, label_key)
             return control
 
         def adv_toggle(label_key, setting_key):
@@ -2113,20 +2954,24 @@ class SettingsPanel(QWidget):
                 lambda v, k=setting_key: self.setting_changed.emit(k, v))
             return t
 
+        section(adv, "section_appearance")
         self.sl_auto_strength = adv_row("auto_color_strength", PanelSlider(
             0, 100, SETTINGS["auto_color_strength"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-        self.sg_card_preset = adv_row("card_preset", Segmented(
-            card_preset_options(), SETTINGS["card_preset"], accent=self._accent))
+
+        section(adv, "section_cover")
         self.sl_tonearm_speed = adv_row("tonearm_speed", PanelSlider(
             40, 250, SETTINGS["tonearm_speed"] * 100,
             fmt=lambda v: f"{v / 100.0:.1f}x", accent=self._accent))
         self.sl_vinyl_spin_speed = adv_row("vinyl_spin_speed", PanelSlider(
             40, 250, SETTINGS["vinyl_spin_speed"] * 100,
             fmt=lambda v: f"{v / 100.0:.1f}x", accent=self._accent))
-        self.tg_show_cover = adv_toggle("show_cover", "show_cover")
-        self.sg_cover_shape = adv_row("cover_shape", Segmented(
-            cover_shape_options(), SETTINGS["cover_shape"], accent=self._accent))
+        self.sl_art_cover_size = adv_row("art_cover_size", PanelSlider(
+            60, 140, SETTINGS["art_cover_size"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_art_vinyl_size = adv_row("art_vinyl_size", PanelSlider(
+            70, 135, SETTINGS["art_vinyl_size"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.tg_cover_border = adv_toggle("cover_border", "cover_border")
         self.sl_cover_border_width = adv_row("cover_border_width", PanelSlider(
             1, 8, SETTINGS["cover_border_width"],
@@ -2134,11 +2979,51 @@ class SettingsPanel(QWidget):
         self.sl_cover_border_opacity = adv_row("cover_border_opacity", PanelSlider(
             0, 100, SETTINGS["cover_border_opacity"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+
+        section(adv, "section_controls")
+        self.sg_seek = adv_row("seek_bar", Segmented(
+            seek_options(), SETTINGS["seek_style"], accent=self._accent))
+        self.sl_seek_wave_amp = adv_row("seek_wave_amp", PanelSlider(
+            0, 200, SETTINGS["seek_wave_amp"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_seek_wave_speed = adv_row("seek_wave_speed", PanelSlider(
+            25, 250, SETTINGS["seek_wave_speed"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_seek_glow_strength = adv_row("seek_glow_strength", PanelSlider(
+            0, 200, SETTINGS["seek_glow_strength"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_seek_length = adv_row("seek_length", PanelSlider(
+            20, 130, SETTINGS["seek_length"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_seek_thumb_size = adv_row("seek_thumb_size", PanelSlider(
+            20, 150, SETTINGS["seek_thumb_size"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.sg_thumb = adv_row("seek_thumb", Segmented(
             seek_thumb_options(), SETTINGS["seek_thumb"], accent=self._accent))
+        self.sg_ctl = adv_row("button_pos", Segmented(
+            align_options(), SETTINGS["controls_align"], accent=self._accent))
+        self.tg_controls_hover = adv_toggle("controls_hover",
+                                            "controls_hover")
+        self.tg_topbar_hover = adv_toggle("topbar_hover", "topbar_hover")
+        self.tg_marquee = adv_toggle("marquee_enabled", "marquee_enabled")
+        self.tg_btn_shuffle = adv_toggle("show_btn_shuffle",
+                                         "show_btn_shuffle")
+        self.tg_btn_prev = adv_toggle("show_btn_prev", "show_btn_prev")
+        self.tg_btn_next = adv_toggle("show_btn_next", "show_btn_next")
+        self.tg_btn_repeat = adv_toggle("show_btn_repeat", "show_btn_repeat")
+
+        section(adv, "section_performance")
         self.sl_fps = adv_row("FPS", PanelSlider(
             24, 240, SETTINGS["fps"],
             fmt=lambda v: f"{v:.0f}", accent=self._accent))
+        self.tg_show_fps = adv_toggle("show_fps", "show_fps")
+        self.tg_anim_enabled = adv_toggle("anim_enabled", "anim_enabled")
+        self.tg_aa = adv_toggle("antialias", "antialias")
+        self.tg_src = adv_toggle("show_source", "show_source")
+        self.tg_shadow = adv_toggle("shadow", "shadow")
+        self.tg_gpu = adv_toggle("gpu", "gpu")
+
+        section(adv, "section_hotkeys")
         self.kb_toggle = adv_row("hotkey_toggle", KeyBindButton(
             SETTINGS.get("hotkey", ""), accent=self._accent))
         self.kb_play = adv_row("hotkey_play", KeyBindButton(
@@ -2152,57 +3037,22 @@ class SettingsPanel(QWidget):
         self.kb_vol_down = adv_row("hotkey_vol_down", KeyBindButton(
             SETTINGS.get("hotkey_vol_down", ""), accent=self._accent))
 
-        self.tg_controls_hover = adv_toggle("controls_hover",
-                                            "controls_hover")
-        self.tg_topbar_hover = adv_toggle("topbar_hover", "topbar_hover")
-        self.tg_show_fps = adv_toggle("show_fps", "show_fps")
-        self.tg_anim_enabled = adv_toggle("anim_enabled", "anim_enabled")
-        self.tg_btn_shuffle = adv_toggle("show_btn_shuffle",
-                                         "show_btn_shuffle")
-        self.tg_btn_prev = adv_toggle("show_btn_prev", "show_btn_prev")
-        self.tg_btn_next = adv_toggle("show_btn_next", "show_btn_next")
-        self.tg_btn_repeat = adv_toggle("show_btn_repeat", "show_btn_repeat")
-
         update_advanced_button()
-        self.advanced_box.setVisible(self._advanced_open)
+        self.advanced_box.setVisible(False if single_panel else self._advanced_open)
         if self._advanced_eff is not None:
-            self._advanced_eff.setOpacity(1.0 if self._advanced_open else 0.0)
+            self._advanced_eff.setOpacity(
+                0.0 if single_panel else (1.0 if self._advanced_open else 0.0))
 
-        def toggle_row():
-            h = QHBoxLayout()
-            h.setSpacing(panel_px(8))
-            lay.addLayout(h)
-            return h
-
-        toggles1 = toggle_row()
-        toggles2 = toggle_row()
-
-        def tog(layout, label_text, key, tip=""):
-            cell = QWidget()
-            cell.setFixedWidth(panel_px(160))
-            h = QHBoxLayout(cell)
-            h.setContentsMargins(0, 0, 0, 0)
-            h.setSpacing(panel_px(8))
-            lab = QLabel(label_text)
-            lab.setFont(panel_font(12))
-            lab.setStyleSheet("color: rgba(255,255,255,185);")
-            lab.setFixedWidth(panel_px(104))
-            lab.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            self._toggle_labels[key] = lab
-            t = Toggle(bool(SETTINGS[key]), accent=self._accent)
-            t.changed.connect(lambda v, k=key: self.setting_changed.emit(k, v))
-            h.addWidget(lab)
-            h.addWidget(t)
-            layout.addWidget(cell)
-            return t
-
-        self.tg_aa = tog(toggles1, tr("antialias"), "antialias")
-        self.tg_src = tog(toggles1, tr("show_source"), "show_source")
-        toggles1.addStretch(1)
-        self.tg_shadow = tog(toggles2, tr("shadow"), "shadow")
-        self.tg_gpu = tog(toggles2, tr("gpu"), "gpu", tip=tr("gpu_tip"))
-        toggles2.addStretch(1)
-        lay.addWidget(self.btn_advanced)
+        foot = QHBoxLayout()
+        foot.setSpacing(panel_px(8))
+        self.btn_reset = PanelButton(tr("reset_settings"), accent=self._accent)
+        if single_panel:
+            self.btn_advanced.hide()
+            foot.addStretch(1)
+        else:
+            foot.addWidget(self.btn_advanced, 1)
+        foot.addWidget(self.btn_reset)
+        lay.addLayout(foot)
 
         self.sw_theme.changed.connect(
             lambda v: self.setting_changed.emit("theme", v))
@@ -2216,6 +3066,14 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("art_mode", v))
         self.sg_source.changed.connect(
             lambda v: self.setting_changed.emit("source", v))
+        self.sg_panel_type.changed.connect(
+            lambda v: self.setting_changed.emit("settings_panel_type", v))
+        if self.sg_panel_category is not None:
+            self.sg_panel_category.changed.connect(self._set_panel_category)
+        self.tg_startup.changed.connect(
+            lambda v: self.setting_changed.emit("startup_enabled", v))
+        self.sg_startup_show.changed.connect(
+            lambda v: self.setting_changed.emit("startup_show", v))
         self.sl_opacity.changed.connect(
             lambda v: self.setting_changed.emit("bg_opacity", v / 100.0))
         self.sl_brightness.changed.connect(
@@ -2234,8 +3092,19 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("tonearm_speed", v / 100.0))
         self.sl_vinyl_spin_speed.changed.connect(
             lambda v: self.setting_changed.emit("vinyl_spin_speed", v / 100.0))
+        self.sl_art_cover_size.changed.connect(
+            lambda v: self.setting_changed.emit("art_cover_size", v / 100.0))
+        self.sl_art_vinyl_size.changed.connect(
+            lambda v: self.setting_changed.emit("art_vinyl_size", v / 100.0))
+        self.tg_show_cover.changed.connect(
+            lambda v: self.setting_changed.emit("show_cover", v))
+        self.sl_cover_blur.changed.connect(
+            lambda v: self.setting_changed.emit("cover_blur", v))
         self.sg_cover_shape.changed.connect(
             lambda v: self.setting_changed.emit("cover_shape", v))
+        self.sl_cover_radius_strength.changed.connect(
+            lambda v: self.setting_changed.emit("cover_radius_strength",
+                                                v / 100.0))
         self.sl_cover_border_width.changed.connect(
             lambda v: self.setting_changed.emit("cover_border_width", v))
         self.sl_cover_border_opacity.changed.connect(
@@ -2256,69 +3125,455 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("hotkey_vol_down", v))
         self.sg_seek.changed.connect(
             lambda v: self.setting_changed.emit("seek_style", v))
+        self.sl_seek_wave_amp.changed.connect(
+            lambda v: self.setting_changed.emit("seek_wave_amp", v / 100.0))
+        self.sl_seek_wave_speed.changed.connect(
+            lambda v: self.setting_changed.emit("seek_wave_speed", v / 100.0))
+        self.sl_seek_glow_strength.changed.connect(
+            lambda v: self.setting_changed.emit("seek_glow_strength", v / 100.0))
+        self.sl_seek_length.changed.connect(
+            lambda v: self.setting_changed.emit("seek_length", v / 100.0))
+        self.sl_seek_thumb_size.changed.connect(
+            lambda v: self.setting_changed.emit("seek_thumb_size", v / 100.0))
         self.sg_thumb.changed.connect(
             lambda v: self.setting_changed.emit("seek_thumb", v))
         self.sg_ctl.changed.connect(
             lambda v: self.setting_changed.emit("controls_align", v))
-        self.sg_lang.changing.connect(self._prepare_language_fade)
         self.sg_lang.changed.connect(
             lambda v: self.setting_changed.emit("language", v))
         self.fp_font.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("font", v))
+        self.btn_reset.clicked.connect(
+            lambda: self.setting_changed.emit("settings_reset", True))
+        self.search.textChanged.connect(self._apply_search)
 
         self._body = body
-        # 色票列展開/收合 → 面板高度跟著伸縮
-        self.sw_theme.size_changed.connect(self._relayout)
+        self._theme_row_h = self.sw_theme.height()
+        # 色票列展開/收合 → 面板高度跟著伸縮。直接跟手（animate=False）：
+        # 否則每幀 _relayout 都重啟 geo 動畫、視窗高度卡住不長，body 卻同步
+        # 長高，footer（重設按鈕）會被擠出視窗外被裁
+        self.sw_theme.size_changed.connect(self._on_theme_size_changed)
+        if categorized or full_mode:
+            self._apply_search(self.search.text(), relayout=False)
         return self._apply_body_geometry(resize_window=resize_window)
 
-    def _apply_body_geometry(self, resize_window: bool = True):
+    def _panel_layout(self, panel: QWidget):
+        content = getattr(panel, "content", panel)
+        return content.layout()
+
+    def _panel_content_height(self, panel: QWidget, width: int) -> int:
+        if isinstance(panel, _ScrollablePanelBody):
+            return panel.content_height_for_width(width)
+        panel.setFixedWidth(width)
+        lay = panel.layout()
+        if lay is not None:
+            lay.activate()
+        return max(1, panel.sizeHint().height())
+
+    def _set_panel_viewport(self, panel: QWidget, width: int, height: int,
+                            content_h: int):
+        if isinstance(panel, _ScrollablePanelBody):
+            panel.set_viewport(width, height, content_h)
+
+    def _apply_body_geometry(self, resize_window: bool = True,
+                             animate: bool = True):
         if self._body is None:
             return self.size()
         old_main_global = None
         if self.isVisible() and self._body.isVisible():
             old_main_global = self.mapToGlobal(self._body.geometry().topLeft())
-        lay = self._body.layout()
+        lay = self._panel_layout(self._body)
         if lay is not None:
             lay.activate()
-        self._body.adjustSize()
         pm = panel_margin()
-        w = panel_w()
-        h = self._body.sizeHint().height()
+        base_w = panel_w()
+        geo0 = self._screen_geometry_for(
+            self.pos(), QSize(base_w + pm * 2, max(1, self.height())))
+        w = min(base_w, max(260, geo0.width() - pm * 2))
+        h = self._panel_content_height(self._body, w)
         gap = panel_px(10)
-        adv_visible = (self.advanced_box is not None
+        panel_type = SETTINGS.get("settings_panel_type", "normal")
+        full_mode = panel_type == "full"
+        if full_mode:
+            geo = self._screen_geometry_for(
+                self.pos(), QSize(w + pm * 2, max(1, self.height())))
+            panel_items: list[tuple[_ScrollablePanelBody, int]] = [
+                (self._body, h)
+            ]
+            query_active = bool(getattr(self, "search", None)
+                                and self.search.text().strip())
+            for key in PANEL_CATEGORY_KEYS:
+                box = self._full_box_sections.get(key)
+                if box is None:
+                    continue
+                visible = box.isVisible() if query_active else True
+                box.setVisible(visible)
+                if not visible:
+                    continue
+                panel_items.append((box, self._panel_content_height(box, w)))
+
+            max_cols = max(1, (geo.width() - pm * 2 + gap) // (w + gap))
+            cols = max(1, min(len(panel_items), max_cols))
+            rows = max(1, (len(panel_items) + cols - 1) // cols)
+            max_panel_h = max(
+                panel_px(150),
+                (geo.height() - pm * 2 - gap * (rows - 1)) // rows)
+            view_heights = [
+                min(content_h, max_panel_h) for _, content_h in panel_items
+            ]
+            row_heights = []
+            for row_i in range(rows):
+                start = row_i * cols
+                row_heights.append(max(view_heights[start:start + cols]))
+
+            y = pm
+            for row_i, row_h in enumerate(row_heights):
+                x = pm
+                for col_i in range(cols):
+                    idx = row_i * cols + col_i
+                    if idx >= len(panel_items):
+                        break
+                    panel, content_h = panel_items[idx]
+                    view_h = view_heights[idx]
+                    panel.setGeometry(x, y, w, view_h)
+                    self._set_panel_viewport(panel, w, view_h, content_h)
+                    panel.show()
+                    x += w + gap
+                y += row_h + gap
+
+            final_w = cols * w + (cols - 1) * gap + pm * 2
+            final_h = sum(row_heights) + (rows - 1) * gap + pm * 2
+            final = QSize(final_w, final_h)
+            if resize_window:
+                self._set_window_geometry(self.pos(), final, animate=animate)
+            return final
+
+        single_panel = panel_type in ("categories", "full")
+        adv_visible = (not single_panel and self.advanced_box is not None
                        and (self._advanced_open or self._advanced_hiding))
         adv_w = w
         adv_h = 0
         if self.advanced_box is not None:
-            adv_lay = self.advanced_box.layout()
+            adv_lay = self._panel_layout(self.advanced_box)
             if adv_lay is not None:
                 adv_lay.activate()
-            self.advanced_box.adjustSize()
-            adv_h = self.advanced_box.sizeHint().height()
+            adv_h = self._panel_content_height(self.advanced_box, adv_w)
         if adv_visible:
             self._advanced_side = self._choose_advanced_side(adv_w, gap)
         main_x = pm
         adv_x = pm + w + gap
+        adv_y = pm
         if adv_visible and self._advanced_side == "left":
             adv_x = pm
             main_x = pm + adv_w + gap
-        self._body.setGeometry(main_x, pm, w, h)
+        elif adv_visible and self._advanced_side == "bottom":
+            adv_x = pm
+            main_x = pm
+        side_by_side = adv_visible and self._advanced_side != "bottom"
+        final_w = w + pm * 2 + (adv_w + gap if side_by_side else 0)
+        raw_h = ((h + gap + adv_h + pm * 2)
+                 if adv_visible and self._advanced_side == "bottom"
+                 else max(h, adv_h if adv_visible else 0) + pm * 2)
+        geo = self._screen_geometry_for(self.pos(), QSize(final_w, raw_h))
+        if adv_visible and self._advanced_side == "bottom":
+            max_stack_h = max(panel_px(260), geo.height() - pm * 2 - gap)
+            if h + adv_h <= max_stack_h:
+                body_h = h
+                adv_view_h = adv_h
+            else:
+                body_h = min(h, max(panel_px(150), round(max_stack_h * 0.42)))
+                adv_view_h = min(adv_h, max(1, max_stack_h - body_h))
+                if adv_view_h >= adv_h:
+                    body_h = min(h, max(1, max_stack_h - adv_view_h))
+                elif body_h >= h:
+                    adv_view_h = min(adv_h, max(1, max_stack_h - body_h))
+            adv_y = pm + body_h + gap
+        else:
+            max_inner_h = max(panel_px(160), geo.height() - pm * 2)
+            body_h = min(h, max_inner_h)
+            adv_view_h = min(adv_h, max_inner_h) if adv_visible else adv_h
+        self._body.setGeometry(main_x, pm, w, body_h)
+        self._set_panel_viewport(self._body, w, body_h, h)
         if self.advanced_box is not None:
-            self._advanced_geo = QRectF(adv_x, pm, adv_w, adv_h)
-            self.advanced_box.setGeometry(adv_x, pm, adv_w, adv_h)
+            self._advanced_geo = QRectF(adv_x, adv_y, adv_w, adv_view_h)
+            self.advanced_box.setGeometry(adv_x, adv_y, adv_w, adv_view_h)
+            self._set_panel_viewport(
+                self.advanced_box, adv_w, adv_view_h, adv_h)
         final = self.size().expandedTo(self.minimumSizeHint())
-        final.setWidth(w + pm * 2 + (adv_w + gap if adv_visible else 0))
-        final.setHeight(max(h, adv_h if adv_visible else 0) + pm * 2)
+        final.setWidth(final_w)
+        final_h = ((body_h + gap + adv_view_h + pm * 2)
+                   if adv_visible and self._advanced_side == "bottom"
+                   else max(body_h, adv_view_h if adv_visible else 0) + pm * 2)
+        final.setHeight(final_h)
         if resize_window:
-            self.setFixedSize(final)
+            target_pos = QPoint(self.pos())
             if old_main_global is not None:
-                self.move(old_main_global - QPoint(main_x, pm))
-                self._keep_on_screen()
+                target_pos = old_main_global - QPoint(main_x, pm)
+            self._set_window_geometry(target_pos, final, animate=animate)
         return final
 
-    def _relayout(self):
-        self._apply_body_geometry()
+    def _relayout(self, animate: bool = True):
+        self._apply_body_geometry(animate=animate)
         self.update()
+
+    def _on_theme_size_changed(self):
+        if self._body is None or not hasattr(self, "sw_theme"):
+            return
+        new_row_h = self.sw_theme.height()
+        old_row_h = self._theme_row_h or new_row_h
+        delta = new_row_h - old_row_h
+        self._theme_row_h = new_row_h
+        if abs(delta) < 1:
+            self.sw_theme.update()
+            return
+
+        panel_type = SETTINGS.get("settings_panel_type", "normal")
+        adv_visible = (panel_type == "normal"
+                       and self.advanced_box is not None
+                       and (self._advanced_open or self._advanced_hiding))
+        if panel_type == "full" or adv_visible:
+            self._relayout(animate=False)
+            return
+
+        lay = self._panel_layout(self._body)
+        if lay is not None:
+            lay.activate()
+        pm = panel_margin()
+        geo = self._screen_geometry_for(
+            self.pos(), QSize(self.width(), max(1, self.height() + delta)))
+        max_body_h = max(panel_px(160), geo.height() - pm * 2)
+        body_geo = self._body.geometry()
+        old_content_h = getattr(self._body, "_content_h", self._body.height())
+        content_h = max(1, old_content_h + delta)
+        body_h = min(content_h, max_body_h)
+        if self.sw_theme._ea.state() == Anim.Running:
+            target_row_h = self.sw_theme.row_h() * self.sw_theme._rows()
+            final_content_h = max(1, old_content_h + target_row_h - old_row_h)
+            final_body_h = min(final_content_h, max_body_h)
+            # 展開時先把半透明頂層視窗撐到最終高度，收合時維持目前高度
+            # 到最後一幀再縮回；避免每幀 resize 造成文字抖動與卡頓。
+            if final_body_h > body_h:
+                body_h = final_body_h
+            elif final_body_h < body_h:
+                body_h = max(body_geo.height(), final_body_h)
+        self._body.setGeometry(body_geo.x(), body_geo.y(),
+                               body_geo.width(), body_h)
+        self._set_panel_viewport(self._body, body_geo.width(),
+                                 body_h, content_h)
+        self._set_window_geometry(
+            self.pos(), QSize(self.width(), body_h + pm * 2),
+            animate=False)
+        self.update()
+
+    def _screen_geometry_for(self, pos: QPoint, size: QSize):
+        center = QPoint(pos.x() + size.width() // 2,
+                        pos.y() + size.height() // 2)
+        scr = QApplication.screenAt(center)
+        if scr is not None:
+            return scr.availableGeometry()
+        screens = QApplication.screens()
+        if not screens:
+            return QApplication.primaryScreen().availableGeometry()
+
+        def dist2(screen):
+            c = screen.availableGeometry().center()
+            dx = center.x() - c.x()
+            dy = center.y() - c.y()
+            return dx * dx + dy * dy
+
+        return min(screens, key=dist2).availableGeometry()
+
+    def _bounded_window_pos(self, pos: QPoint, size: QSize) -> QPoint:
+        geo = self._screen_geometry_for(pos, size)
+        if size.width() >= geo.width():
+            x = geo.left()
+        else:
+            x = min(max(pos.x(), geo.left()), geo.right() + 1 - size.width())
+        if size.height() >= geo.height():
+            y = geo.top()
+        else:
+            y = min(max(pos.y(), geo.top()), geo.bottom() + 1 - size.height())
+        return QPoint(x, y)
+
+    def _set_window_geometry(self, pos: QPoint, size: QSize,
+                             animate: bool = True):
+        target_pos = self._bounded_window_pos(pos, size)
+        target_size = QSize(size)
+        if (not animate or not self.isVisible() or not anim_on()
+                or adur(230, 130) <= 0):
+            self._geo_anim.stop()
+            if self.size() != target_size:
+                self.setFixedSize(target_size)
+            if self.pos() != target_pos:
+                self.move(target_pos)
+            return
+        if self.pos() == target_pos and self.size() == target_size:
+            return
+        cur_pos = QPoint(self.pos())
+        cur_size = QSize(self.size())
+        if self._geo_anim.state() == Anim.Running:
+            self._geo_anim.stop()
+            self.setFixedSize(cur_size)
+            self.move(cur_pos)
+        else:
+            self._geo_anim.stop()
+        self._geo_from_pos = cur_pos
+        self._geo_to_pos = QPoint(target_pos)
+        self._geo_from_size = cur_size
+        self._geo_to_size = QSize(target_size)
+        self._geo_anim.setStartValue(0.0)
+        self._geo_anim.setEndValue(1.0)
+        self._geo_anim.setDuration(adur(230, 130))
+        self._geo_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._geo_anim.start()
+
+    def _on_window_geometry(self, value):
+        t = max(0.0, min(1.0, float(value)))
+        x = round(self._geo_from_pos.x()
+                  + (self._geo_to_pos.x() - self._geo_from_pos.x()) * t)
+        y = round(self._geo_from_pos.y()
+                  + (self._geo_to_pos.y() - self._geo_from_pos.y()) * t)
+        w = round(self._geo_from_size.width()
+                  + (self._geo_to_size.width()
+                     - self._geo_from_size.width()) * t)
+        h = round(self._geo_from_size.height()
+                  + (self._geo_to_size.height()
+                     - self._geo_from_size.height()) * t)
+        self.setFixedSize(max(1, w), max(1, h))
+        self.move(x, y)
+        self.update()
+
+    def _window_geometry_done(self):
+        self.setFixedSize(self._geo_to_size)
+        self.move(self._geo_to_pos)
+        self.update()
+        self.position_committed.emit(QPoint(self.pos()))
+
+    def _stop_window_geometry_at_current(self):
+        if self._geo_anim.state() != Anim.Running:
+            return
+        pos = QPoint(self.pos())
+        size = QSize(self.size())
+        self._geo_anim.stop()
+        self.setFixedSize(size)
+        self.move(pos)
+
+    def _update_advanced_button(self):
+        if not hasattr(self, "btn_advanced"):
+            return
+        icon = GLYPH_CHEVRON_UP if self._advanced_open else GLYPH_CHEVRON_DOWN
+        self.btn_advanced._text = f"{tr('advanced')}  {icon}"
+        self.btn_advanced.update()
+
+    def _category_content_rect(self) -> QRect:
+        if self._body is None:
+            return QRect()
+        top = None
+        for _, lab, _ in self._section_groups:
+            if lab.isVisible():
+                top = lab.mapTo(self._body, QPoint(0, 0)).y()
+                break
+        if top is None:
+            top = 0
+        top = max(0, min(self._body.height() - 1, int(top)))
+        return QRect(0, top, self._body.width(),
+                     max(1, self._body.height() - top))
+
+    def _body_rect_to_panel(self, rect: QRect) -> QRectF:
+        if self._body is None:
+            return QRectF(rect)
+        top_left = self._body.geometry().topLeft() + rect.topLeft()
+        return QRectF(top_left.x(), top_left.y(),
+                      rect.width(), rect.height())
+
+    def _set_panel_category(self, key: str):
+        if key not in PANEL_CATEGORY_KEYS:
+            return
+        if key == self._panel_category:
+            return
+        if (SETTINGS.get("settings_panel_type") != "categories"
+                or self._body is None or not self.isVisible()
+                or self.search.text().strip()
+                or not anim_on() or adur(230, 130) <= 0):
+            self._panel_category = key
+            self._apply_search(self.search.text())
+            return
+        if self._category_slide_anim.state() == Anim.Running:
+            self._category_slide_abort = True
+            self._category_slide_anim.stop()
+            self._category_slide_abort = False
+            if self._category_overlay is not None:
+                self._category_overlay.hide()
+            if self._body is not None:
+                self._body.show()
+                self._body.raise_()
+        old_size = QSize(self.size())
+        old_pm = self._body.grab()
+        old_rect = QRectF(self._body.geometry())
+        self._panel_category = key
+        self._apply_search(self.search.text(), relayout=False)
+        final_size = self._apply_body_geometry(resize_window=False)
+        self._category_final_size = (final_size.width(), final_size.height())
+        self._category_from_size = QSize(old_size)
+        self._category_to_size = QSize(final_size)
+        self.setFixedSize(max(final_size.width(), old_size.width()),
+                          max(final_size.height(), old_size.height()))
+        new_pm = self._body.grab()
+        new_rect = QRectF(self._body.geometry())
+        self._body.hide()
+        if not isinstance(self._category_overlay, _PanelZoomOverlay):
+            self._category_overlay = _PanelZoomOverlay(self)
+        self._category_overlay.setGeometry(self.rect())
+        self._category_overlay.setup(old_pm, old_rect, new_pm, new_rect)
+        self.setFixedSize(old_size)
+        self._category_overlay.show()
+        self._category_overlay.raise_()
+        self.repaint()
+
+        self._category_slide_anim.setStartValue(0.0)
+        self._category_slide_anim.setEndValue(1.0)
+        self._category_slide_anim.setDuration(adur(230, 130))
+        self._category_slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._category_slide_anim.start()
+
+    def _apply_search(self, text: str = "", relayout: bool = True):
+        query = str(text or "").strip().lower()
+        categorized = SETTINGS.get("settings_panel_type", "normal") == "categories"
+        full_mode = SETTINGS.get("settings_panel_type", "normal") == "full"
+        any_advanced = False
+        for host, label_key, keys in self._search_rows:
+            terms = set(keys)
+            if label_key == "FPS":
+                terms.add("fps")
+            else:
+                terms.add(tr(label_key).lower())
+            match = not query or any(query in term for term in terms)
+            host.setVisible(match)
+            if (match and query and self.advanced_box is not None
+                    and self.advanced_box.isAncestorOf(host)):
+                any_advanced = True
+
+        for section_key, lab, children in self._section_groups:
+            category_match = (not categorized or query
+                              or section_key == self._panel_category)
+            if categorized and not query:
+                for w in children:
+                    w.setVisible(category_match)
+            lab.setVisible(category_match
+                           and (not query
+                                or any(w.isVisible() for w in children)))
+            if full_mode:
+                box = self._full_box_sections.get(section_key)
+                if box is not None:
+                    box.setVisible(lab.isVisible())
+
+        if (not categorized and query and any_advanced
+                and not self._advanced_open):
+            self._advanced_open = True
+            self._update_advanced_button()
+            self._toggle_advanced_panel(True)
+        elif relayout:
+            self._relayout()
 
     def _choose_advanced_side(self, adv_w: int, gap: int) -> str:
         if self._body is None:
@@ -2326,6 +3581,9 @@ class SettingsPanel(QWidget):
         scr = QApplication.screenAt(self.frameGeometry().center())
         geo = (scr or QApplication.primaryScreen()).availableGeometry()
         main_geo = self._body.geometry()
+        full_w = main_geo.width() + adv_w + gap + panel_margin() * 2
+        if full_w > geo.width():
+            return "bottom"
         main_left = self.x() + main_geo.x()
         main_right = main_left + main_geo.width()
         right_space = geo.right() + 1 - main_right
@@ -2338,19 +3596,7 @@ class SettingsPanel(QWidget):
         return "right" if right_space >= left_space else "left"
 
     def _keep_on_screen(self):
-        scr = QApplication.screenAt(self.frameGeometry().center())
-        geo = (scr or QApplication.primaryScreen()).availableGeometry()
-        if self.width() >= geo.width():
-            x = geo.left()
-        else:
-            x = min(max(self.x(), geo.left()),
-                    geo.right() + 1 - self.width())
-        if self.height() >= geo.height():
-            y = geo.top()
-        else:
-            y = min(max(self.y(), geo.top()),
-                    geo.bottom() + 1 - self.height())
-        self.move(x, y)
+        self._set_window_geometry(self.pos(), self.size(), animate=True)
 
     def _toggle_advanced_panel(self, open_: bool):
         self._advanced_anim.stop()
@@ -2390,8 +3636,13 @@ class SettingsPanel(QWidget):
             self._advanced_eff.setOpacity(self._advanced_t)
         g = QRectF(self._advanced_geo)
         slide = panel_px(14) * (1.0 - self._advanced_t)
-        dx = -slide if self._advanced_side == "right" else slide
-        self.advanced_box.setGeometry(round(g.x() + dx), round(g.y()),
+        if self._advanced_side == "bottom":
+            dx = 0
+            dy = slide
+        else:
+            dx = -slide if self._advanced_side == "right" else slide
+            dy = 0
+        self.advanced_box.setGeometry(round(g.x() + dx), round(g.y() + dy),
                                       round(g.width()), round(g.height()))
         self.update()
 
@@ -2411,12 +3662,95 @@ class SettingsPanel(QWidget):
         elif self._advanced_open:
             self._on_advanced_anim(1.0)
 
+    def rebuild_for_panel_type(self):
+        if self._body is None:
+            self._build_body()
+            return
+        if self._type_slide_anim.state() == Anim.Running:
+            self._type_slide_abort = True
+            self._type_slide_anim.stop()
+            self._type_slide_abort = False
+            if self._type_overlay is not None:
+                self._type_overlay.hide()
+        old_panel_type = self._current_panel_type
+        new_panel_type = SETTINGS.get("settings_panel_type", "normal")
+        wide_capture = old_panel_type == "full" or new_panel_type == "full"
+        expanded = self.sw_theme.is_expanded()
+        old_size = QSize(self.size())
+        old_body = self._body
+        old_advanced = self.advanced_box
+        old_full_boxes = list(getattr(self, "_full_boxes", []))
+        if wide_capture:
+            old_pm = self.grab()
+            old_rect = QRectF(0, 0, old_size.width(), old_size.height())
+        else:
+            old_pm = old_body.grab()
+            old_rect = QRectF(old_body.geometry())
+        for w in [old_body, old_advanced, *old_full_boxes]:
+            if w is not None:
+                w.hide()
+
+        final_size = self._build_body(expanded=expanded, resize_window=False)
+        if self._body is None:
+            return
+        self.setFixedSize(max(final_size.width(), old_size.width()),
+                          max(final_size.height(), old_size.height()))
+        self._body.show()
+        for box in getattr(self, "_full_boxes", []):
+            if not box.isHidden():
+                box.show()
+        if self.advanced_box is not None and self._advanced_open:
+            self.advanced_box.show()
+            self._on_advanced_anim(1.0)
+        if wide_capture:
+            new_pm = self.grab().copy(0, 0, final_size.width(),
+                                      final_size.height())
+            new_rect = QRectF(0, 0, final_size.width(), final_size.height())
+        else:
+            new_pm = self._body.grab()
+            new_rect = QRectF(self._body.geometry())
+        self._final_size = (final_size.width(), final_size.height())
+        for w in [old_body, old_advanced, *old_full_boxes]:
+            if w is not None:
+                w.deleteLater()
+
+        ms = adur(280, 150)
+        if not anim_on() or ms <= 0 or not self.isVisible():
+            self.setFixedSize(*self._final_size)
+            self._keep_on_screen()
+            self.update()
+            return
+
+        # 面板類型切換尺寸差異極大（412×997↔2342×760↔412×471），舊的滑動
+        # 疊圖（填滿新舊聯集矩形的不透明深色 + 超大 span 橫掃）會爆出大片深色
+        # 空白；改用縮放交叉淡化（矩形 r0→r1 內插、透明合成），全程無空白
+        if not isinstance(self._type_overlay, _PanelZoomOverlay):
+            self._type_overlay = _PanelZoomOverlay(self)
+        self._type_overlay.setGeometry(self.rect())
+        self._type_overlay.setup(old_pm, old_rect, new_pm, new_rect,
+                                 shadow_included=wide_capture)
+        self._type_overlay.show()
+        self._type_overlay.raise_()
+        self._body.hide()
+        for box in getattr(self, "_full_boxes", []):
+            box.hide()
+        if self.advanced_box is not None:
+            self.advanced_box.hide()
+        self.repaint()
+
+        self._type_slide_anim.setStartValue(0.0)
+        self._type_slide_anim.setEndValue(1.0)
+        self._type_slide_anim.setDuration(ms)
+        self._type_slide_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._type_slide_anim.start()
+
     def rebuild_for_scale(self):
         if self._body is None:
             self._build_body()
             return
         expanded = self.sw_theme.is_expanded()
-        wide_capture = self._advanced_open or self._advanced_hiding
+        wide_capture = (self._advanced_open or self._advanced_hiding
+                        or self._current_panel_type == "full")
         if self._zoom_anim.state() == Anim.Running and self._overlay is not None:
             self._zoom_restart = True
             self._zoom_anim.stop()
@@ -2430,28 +3764,39 @@ class SettingsPanel(QWidget):
         old_size = self.size()
         old_body = self._body
         old_advanced = self.advanced_box
-        old_body.hide()
-        if old_advanced is not None:
-            old_advanced.hide()
+        old_full_boxes = list(getattr(self, "_full_boxes", []))
+        for w in [old_body, old_advanced, *old_full_boxes]:
+            if w is not None:
+                w.hide()
         final_size = self._build_body(expanded=expanded, resize_window=False)
         if self._body is None:
             return
         if wide_capture:
-            self.setFixedSize(final_size)
+            self.setFixedSize(max(final_size.width(), old_size.width()),
+                              max(final_size.height(), old_size.height()))
         self._body.show()
+        if self._current_panel_type == "full":
+            for box in getattr(self, "_full_boxes", []):
+                box.show()
         if self.advanced_box is not None and self._advanced_open:
             self.advanced_box.show()
             self._on_advanced_anim(1.0)
-        new_pm = self.grab() if wide_capture else self._body.grab()
-        r1 = self.rect() if wide_capture else self._body.geometry()
+        if wide_capture:
+            new_pm = self.grab().copy(0, 0, final_size.width(),
+                                      final_size.height())
+            r1 = QRectF(0, 0, final_size.width(), final_size.height())
+        else:
+            new_pm = self._body.grab()
+            r1 = self._body.geometry()
         self._final_size = (final_size.width(), final_size.height())
-        old_body.deleteLater()
-        if old_advanced is not None:
-            old_advanced.deleteLater()
+        for w in [old_body, old_advanced, *old_full_boxes]:
+            if w is not None:
+                w.deleteLater()
 
         ms = adur(260, 140)
         if not anim_on() or ms <= 0 or not self.isVisible():
             self.setFixedSize(*self._final_size)
+            self._keep_on_screen()
             self.update()
             return
 
@@ -2460,10 +3805,13 @@ class SettingsPanel(QWidget):
         if self._overlay is None:
             self._overlay = _PanelZoomOverlay(self)
         self._overlay.setGeometry(self.rect())
-        self._overlay.setup(old_pm, r0, new_pm, r1)
+        self._overlay.setup(old_pm, r0, new_pm, r1,
+                            shadow_included=wide_capture)
         self._overlay.show()
         self._overlay.raise_()
         self._body.hide()
+        for box in getattr(self, "_full_boxes", []):
+            box.hide()
         if self.advanced_box is not None:
             self.advanced_box.hide()
         self.repaint()
@@ -2510,13 +3858,24 @@ class SettingsPanel(QWidget):
 
     def _apply_language_texts(self):
         self._title_label.setText(tr("settings"))
+        self._advanced_title_label.setText(tr("advanced"))
+        self.search.setPlaceholderText(tr("search_settings"))
         for key, lab in self._labels.items():
             lab.setText(tr(key) if key != "FPS" else "FPS")
+        for key, lab in self._section_labels:
+            lab.setText(tr(key))
         for key, lab in self._toggle_labels.items():
             lab.setText(tr(key))
         self.sg_auto_theme.set_options(auto_theme_options(),
                                        SETTINGS["auto_theme"])
         self.sg_source.set_options(source_options(), SETTINGS["source"])
+        self.sg_panel_type.set_options(settings_panel_type_options(),
+                                       SETTINGS["settings_panel_type"])
+        if self.sg_panel_category is not None:
+            self.sg_panel_category.set_options(
+                panel_category_options(), self._panel_category)
+        self.sg_startup_show.set_options(startup_show_options(),
+                                         SETTINGS["startup_show"])
         self.sg_seek.set_options(seek_options(), SETTINGS["seek_style"])
         self.sg_thumb.set_options(seek_thumb_options(),
                                   SETTINGS["seek_thumb"])
@@ -2534,10 +3893,11 @@ class SettingsPanel(QWidget):
         self.kb_next.update()
         self.kb_vol_up.update()
         self.kb_vol_down.update()
-        icon = GLYPH_CHEVRON_UP if self._advanced_open else GLYPH_CHEVRON_DOWN
-        self.btn_advanced._text = f"{tr('advanced')}  {icon}"
-        self.btn_advanced.update()
+        self.btn_reset._text = tr("reset_settings")
+        self.btn_reset.update()
+        self._update_advanced_button()
         self.sw_theme.update()
+        self._apply_search(self.search.text())
 
     def rebuild_for_language(self):
         if self._body is None:
@@ -2547,51 +3907,22 @@ class SettingsPanel(QWidget):
             self._fade_abort = True
             self._fade_anim.stop()
             self._fade_abort = False
-        prepared = self._lang_old_pm is not None
-        if self._fade_overlay is not None and not prepared:
-            self._fade_overlay.hide()
-        old_pm = self._lang_old_pm if prepared else self._body.grab()
-        old_rect = (QRectF(self._lang_old_rect).toRect()
-                    if prepared else self._body.geometry())
-        ms = adur(220, 120)
-        do_anim = anim_on() and ms > 0 and self.isVisible()
-        if do_anim and not prepared:
-            if self._fade_overlay is None:
-                self._fade_overlay = _PanelFadeOverlay(self)
-            self._fade_overlay.setGeometry(self.rect())
-            self._fade_overlay.setup(old_pm, old_rect, old_pm, old_rect)
-            self._fade_overlay.show()
-            self._fade_overlay.raise_()
-            self.repaint()
-        elif do_anim and self._fade_overlay is not None:
-            self._fade_overlay.setGeometry(self.rect())
-            self._fade_overlay.raise_()
-        self._apply_language_texts()
-        self._body.layout().activate()
-        self._body.repaint()
-        new_pm = self._body.grab()
-        new_rect = self._body.geometry()
         self._lang_old_pm = None
         self._lang_old_rect = QRectF()
-
-        if not do_anim:
-            self._body.show()
-            self._body.raise_()
-            self.update()
-            return
-
-        self._fade_final_size = None
-        self._fade_overlay.setup(old_pm, old_rect, new_pm, new_rect)
-        self._fade_overlay.show()
-        self._fade_overlay.raise_()
-        self._body.hide()
+        if self._fade_overlay is not None:
+            self._fade_overlay.hide()
+        self._apply_language_texts()
+        lay = self._panel_layout(self._body)
+        if lay is not None:
+            lay.activate()
+        self._body.show()
+        self._body.raise_()
+        if self.advanced_box is not None and self._advanced_open:
+            self.advanced_box.show()
+            self._on_advanced_anim(1.0)
+        self._apply_body_geometry()
+        self.update()
         self.repaint()
-
-        self._fade_anim.setStartValue(0.0)
-        self._fade_anim.setEndValue(1.0)
-        self._fade_anim.setDuration(ms)
-        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._fade_anim.start()
 
     def _on_language_fade(self, v):
         if self._fade_overlay is not None:
@@ -2609,6 +3940,63 @@ class SettingsPanel(QWidget):
             self._body.raise_()
         self.repaint()
 
+    def _on_type_slide(self, v):
+        if self._type_overlay is not None:
+            self._type_overlay.set_t(float(v))
+
+    def _type_slide_done(self):
+        if self._type_slide_abort:
+            return
+        if self._type_overlay is not None:
+            self._type_overlay.hide()
+        if self._body is not None:
+            self._body.show()
+            self._body.raise_()
+        if SETTINGS.get("settings_panel_type") == "full":
+            # 此刻 box 仍處於動畫期間的 hide() 狀態，lab.isVisible() 會因
+            # 祖先隱藏一律回 False；改用 isVisibleTo(box) 只看 lab 自身（搜尋
+            # 過濾）的可見性，否則會把所有子面板誤判成不可見而全部藏掉
+            for key, box in self._full_box_sections.items():
+                vis = any(lab.isVisibleTo(box)
+                          for k, lab, _ in self._section_groups if k == key)
+                box.setVisible(vis)
+                if vis:
+                    box.raise_()
+        if self.advanced_box is not None and self._advanced_open:
+            self.advanced_box.show()
+            self._on_advanced_anim(1.0)
+        if self._final_size:
+            self.setFixedSize(*self._final_size)
+            self._keep_on_screen()
+        self.repaint()
+
+    def _on_category_slide(self, v):
+        t = max(0.0, min(1.0, float(v)))
+        if (self._category_from_size.isValid()
+                and self._category_to_size.isValid()):
+            w = round(self._category_from_size.width()
+                      + (self._category_to_size.width()
+                         - self._category_from_size.width()) * t)
+            h = round(self._category_from_size.height()
+                      + (self._category_to_size.height()
+                         - self._category_from_size.height()) * t)
+            self.setFixedSize(max(1, w), max(1, h))
+        if self._category_overlay is not None:
+            self._category_overlay.set_t(t)
+
+    def _category_slide_done(self):
+        if self._category_slide_abort:
+            return
+        if self._category_overlay is not None:
+            self._category_overlay.hide()
+        if self._body is not None:
+            self._body.show()
+            self._body.raise_()
+        if self._category_final_size:
+            self.setFixedSize(*self._category_final_size)
+            self._keep_on_screen()
+        self.repaint()
+
     def _on_zoom(self, v):
         if self._overlay is not None:
             self._overlay.set_t(float(v))
@@ -2620,32 +4008,51 @@ class SettingsPanel(QWidget):
             self._overlay.hide()
         if self._body is not None:
             self._body.show()
+        if SETTINGS.get("settings_panel_type") == "full":
+            # 同 _type_slide_done：box 仍 hidden，須用 isVisibleTo 判斷
+            for key, box in self._full_box_sections.items():
+                vis = any(lab.isVisibleTo(box)
+                          for k, lab, _ in self._section_groups if k == key)
+                box.setVisible(vis)
+                if vis:
+                    box.raise_()
         if self.advanced_box is not None and self._advanced_open:
             self.advanced_box.show()
             self._on_advanced_anim(1.0)
         if self._final_size:
             self.setFixedSize(*self._final_size)
+            self._keep_on_screen()
         self.repaint()
 
     def _controls(self):
-        return (self.sl_opacity, self.sl_brightness, self.sl_scale,
-                self.sl_settings_scale, self.sl_radius, self.sl_fps,
-                self.sl_auto_strength, self.sl_cover_border_width,
-                self.sl_cover_border_opacity,
-                self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
-                self.kb_toggle, self.kb_play,
-                self.kb_prev, self.kb_next, self.kb_vol_up,
-                self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
-                self.sg_thumb,
-                self.sg_source, self.sg_ctl, self.sg_card_preset,
-                self.sg_art_mode, self.sg_cover_shape,
-                self.sg_lang, self.btn_advanced, self.tg_aa, self.tg_src,
-                self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
-                self.tg_topbar_hover, self.tg_show_fps,
-                self.tg_anim_enabled, self.tg_show_cover,
-                self.tg_cover_border,
-                self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
-                self.tg_btn_repeat)
+        controls = (self.sl_opacity, self.sl_brightness, self.sl_scale,
+                    self.sl_settings_scale, self.sl_radius, self.sl_fps,
+                    self.sl_auto_strength, self.sl_cover_border_width,
+                    self.sl_cover_border_opacity, self.sl_cover_blur,
+                    self.sl_cover_radius_strength,
+                    self.sl_seek_wave_amp, self.sl_seek_wave_speed,
+                    self.sl_seek_glow_strength, self.sl_seek_length,
+                    self.sl_seek_thumb_size,
+                    self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
+                    self.sl_art_cover_size, self.sl_art_vinyl_size,
+                    self.kb_toggle, self.kb_play,
+                    self.kb_prev, self.kb_next, self.kb_vol_up,
+                    self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
+                    self.sg_thumb, self.sg_panel_type,
+                    self.sg_panel_category,
+                    self.sg_source, self.sg_startup_show,
+                    self.sg_ctl, self.sg_card_preset,
+                    self.sg_art_mode, self.sg_cover_shape,
+                    self.sg_lang, self.btn_advanced, self.btn_reset,
+                    self.btn_advanced_close, self.fp_font,
+                    self.tg_startup, self.tg_aa, self.tg_src,
+                    self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
+                    self.tg_topbar_hover, self.tg_show_fps,
+                    self.tg_anim_enabled, self.tg_show_cover,
+                    self.tg_cover_border, self.tg_marquee,
+                    self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
+                    self.tg_btn_repeat)
+        return tuple(w for w in controls if w is not None)
 
     def _repaint_controls(self):
         for w in self._controls():
@@ -2680,12 +4087,33 @@ class SettingsPanel(QWidget):
         self._shadow_anim.start()
 
     def paintEvent(self, _):
+        p = QPainter(self)
+        p.setCompositionMode(QPainter.CompositionMode_Source)
+        p.fillRect(self.rect(), Qt.transparent)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.end()
         # 陰影用預先模糊好的貼圖（QGraphicsDropShadowEffect 會讓滑桿/
         # 開關每幀動畫都重新模糊整個面板，非常卡）
         if self._body is None or self._shadow_op <= 0.001:
             return
         p = QPainter(self)
         blur = panel_px(15)
+
+        def draw_rect_shadow(r: QRectF, alpha_factor: float = 1.0):
+            op = self._shadow_op * max(0.0, min(1.0, float(alpha_factor)))
+            if op <= 0.001 or r.width() <= 1 or r.height() <= 1:
+                return
+            sh = soft_shadow(round(r.width()), round(r.height()),
+                             panel_f(16), blur=blur, alpha=160,
+                             dpr=self.devicePixelRatioF())
+            p.save()
+            p.setOpacity(op)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(QRectF(r.x() - blur, r.y() - blur + panel_f(5),
+                                r.width() + blur * 2,
+                                r.height() + blur * 2),
+                         sh, QRectF(sh.rect()))
+            p.restore()
 
         def draw_panel_shadow(w: QWidget, alpha_factor: float = 1.0):
             op = self._shadow_op * max(0.0, min(1.0, float(alpha_factor)))
@@ -2700,23 +4128,17 @@ class SettingsPanel(QWidget):
             p.drawPixmap(g.x() - blur, g.y() - blur + panel_px(5), sh)
             p.restore()
 
-        if self._overlay is not None and self._overlay.isVisible():
-            g = self._body.geometry()
-            sh = soft_shadow(g.width(), g.height(), panel_f(16),
-                             blur=blur, alpha=160,
-                             dpr=self.devicePixelRatioF())
-            r = self._overlay.cur_rect()
-            fx = r.width() / max(1.0, float(g.width()))
-            fy = r.height() / max(1.0, float(g.height()))
-            target = QRectF(r.x() - blur * fx,
-                            r.y() - blur * fy + panel_f(5),
-                            r.width() + blur * 2 * fx,
-                            r.height() + blur * 2 * fy)
-            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            p.setOpacity(self._shadow_op)
-            p.drawPixmap(target, sh, QRectF(sh.rect()))
-        else:
-            draw_panel_shadow(self._body)
+        # 縮放過渡進行中（scale 或面板類型切換）：陰影跟著內插矩形畫；
+        # 截圖已含陰影者（wide_capture）不重畫。body/box 此時都 hidden
+        for ov in (self._overlay, self._type_overlay, self._category_overlay):
+            if ov is not None and ov.isVisible():
+                if not ov.shadow_included():
+                    draw_rect_shadow(ov.cur_rect())
+                return
+        draw_panel_shadow(self._body)
+        for box in getattr(self, "_full_boxes", []):
+            if box.isVisible():
+                draw_panel_shadow(box)
         if (self.advanced_box is not None
                 and (self.advanced_box.isVisible()
                      or self._advanced_hiding)):
@@ -2756,7 +4178,7 @@ class SettingsPanel(QWidget):
             w.set_accent(c)
 
     def open_at(self, pos: QPoint):
-        self.move(pos)
+        self._set_window_geometry(pos, self.size(), animate=False)
         fade_in(self)
 
     def animated_close(self):
@@ -2769,6 +4191,7 @@ class SettingsPanel(QWidget):
     # 拖曳面板
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
+            self._stop_window_geometry_at_current()
             self._drag_off = (e.globalPosition().toPoint()
                               - self.frameGeometry().topLeft())
 
@@ -2778,6 +4201,8 @@ class SettingsPanel(QWidget):
 
     def mouseReleaseEvent(self, e):
         self._drag_off = None
+        self._keep_on_screen()
+        self.position_committed.emit(QPoint(self.pos()))
 
 
 # ------------------------------------------------------------ 音量彈窗 ----

@@ -7,6 +7,8 @@
 開發用參數：
     --demo          使用假資料顯示版面（不連 Spotify）
     --panel         啟動時順便打開設定面板
+    --startup       由 Windows 開機啟動項呼叫
+    --startup-hide  開機先常駐，偵測到 Spotify 後再顯示
     --shot <path>   啟動 1.5 秒後截圖存檔並退出（面板開啟時加存 *_panel）
 """
 import ctypes
@@ -31,8 +33,9 @@ from style import (ART_SIZE, CARD_H, CARD_W, GLYPH_CLOSE, GLYPH_GLOBE,
                    GLYPH_NEXT, GLYPH_NOTE, GLYPH_PIN, GLYPH_PREV,
                    GLYPH_REPEAT_ALL, GLYPH_REPEAT_ONE, GLYPH_SETTINGS,
                    GLYPH_SHUFFLE, GLYPH_VOLUME, MARGIN, S, SETTINGS,
-                   SPOTIFY_GREEN, Anim, Sf, TEXT_DIM, aa, adur, anim_on,
-                   add_custom_theme, apply_anim_fps, blend, dominant_color,
+                   SPOTIFY_GREEN, Anim, DEFAULTS, Sf, TEXT_DIM, aa, adur,
+                   anim_on, add_custom_theme, apply_anim_fps, blend,
+                   cover_gradient, dominant_color,
                    fmt_time, remove_custom_theme,
                    glass_theme, icon_font, load_settings, save_settings,
                    soft_shadow, source_info, theme_color, theme_gradient,
@@ -347,6 +350,9 @@ class Card(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
         preset = SETTINGS.get("card_preset", "standard")
         base_w, base_h, base_art = self._PRESET_METRICS.get(
             preset, self._PRESET_METRICS["standard"])
@@ -360,6 +366,7 @@ class Card(QWidget):
         self._W, self._H = S(base_w), S(base_h)
         self.setFixedSize(self._W, self._H)
         self._dom: QColor | None = None      # 封面萃取的主色
+        self._cover_grad: tuple[QColor, QColor] | None = None
         self._accent = theme_color() or QColor(SPOTIFY_GREEN)
         self._art_pm: QPixmap | None = None
         self._art_img: QImage | None = None
@@ -431,6 +438,33 @@ class Card(QWidget):
     def target_accent(self) -> QColor:
         return theme_color() or self._dom or QColor(SPOTIFY_GREEN)
 
+    def _cover_visual_size(self) -> int:
+        scale = max(0.6, min(1.4, float(SETTINGS.get("art_cover_size", 1.0))))
+        return max(1, round(self._art_size * scale))
+
+    def _art_info_span(self) -> int:
+        if hasattr(self, "art"):
+            return self.art.layout_span()
+        cover = self._cover_visual_size()
+        vinyl_scale = max(0.7, min(
+            1.35, float(SETTINGS.get("art_vinyl_size", 1.0))))
+        layout = max(cover, round(self._art_size * vinyl_scale))
+        return layout
+
+    def _seek_bar_geometry(self, seek_y: int) -> tuple[int, int, int, int]:
+        base_w = self._W - S(104)
+        length = max(0.2, min(1.3, float(SETTINGS.get("seek_length", 1.0))))
+        max_w = self._W - S(16)
+        w = max(S(46), min(max_w, round(base_w * length)))
+        x = round((self._W - w) / 2)
+        return x, seek_y, w, S(18)
+
+    def apply_seek_length(self):
+        if hasattr(self, "seek"):
+            seek_y = S(self._base_h - (25 if self._compact else 30))
+            self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
+            self.seek.update()
+
     def _build(self):
         W = self._W
 
@@ -451,7 +485,7 @@ class Card(QWidget):
         self.art.set_mode(SETTINGS.get("art_mode", "cover"), animate=False)
 
         if self._cover_enabled:
-            info_x = art_x + self._art_size + S(10 if self._compact else 14)
+            info_x = art_x + self._art_info_span() + S(10 if self._compact else 14)
         else:
             info_x = S(14 if self._compact else 18)
         right_pad = S(126 if self._control_bar else 16)
@@ -597,7 +631,7 @@ class Card(QWidget):
         self.t_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.t_total.setGeometry(W - S(52), seek_y + S(2), S(40), S(14))
         self.seek = SeekBar(self)
-        self.seek.setGeometry(S(52), seek_y, W - S(104), S(18))
+        self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
         if self._control_bar:
             self.t_now.hide()
             self.t_total.hide()
@@ -677,7 +711,7 @@ class Card(QWidget):
                          float(art_y - self.art.pad))
         art_off = QPointF(float(-self.art.width() + S(8)), art_on.y())
         if cover_enabled:
-            info_x = art_x + self._art_size + S(10 if self._compact else 14)
+            info_x = art_x + self._art_info_span() + S(10 if self._compact else 14)
         else:
             info_x = S(14 if self._compact else 18)
         right_pad = S(126 if self._control_bar else 16)
@@ -1254,18 +1288,16 @@ class Card(QWidget):
                             max(72, round(v * 0.78)))
         return c0, c1
 
-    @staticmethod
-    def _control_gradient(accent: QColor):
+    def _control_gradient(self, accent: QColor):
         pair = theme_gradient()
         if pair:
             return pair
         if (SETTINGS.get("theme") == "auto"
                 and SETTINGS.get("auto_theme") == "gradient"):
-            return Card._auto_gradient(accent)
+            return self._cover_grad or Card._auto_gradient(accent)
         return None
 
-    @staticmethod
-    def _bg_target(accent: QColor) -> tuple[QColor, QColor]:
+    def _bg_target(self, accent: QColor) -> tuple[QColor, QColor]:
         """背景漸層兩端的目標色（已壓暗、尚未乘透明度）。"""
         strength = min(1.0, max(0.0, float(
             SETTINGS.get("auto_color_strength", 1.0))))
@@ -1277,7 +1309,7 @@ class Card(QWidget):
             return blend(neutral1, c0, strength), blend(neutral2, c1, strength)
         if (SETTINGS.get("theme") == "auto"
                 and SETTINGS.get("auto_theme") == "gradient"):
-            c0, c1 = Card._auto_gradient(accent)
+            c0, c1 = self._cover_grad or Card._auto_gradient(accent)
             c0 = blend(c0, neutral1, 0.42)
             c1 = blend(c1, neutral2, 0.50)
             return blend(neutral1, c0, strength), blend(neutral2, c1, strength)
@@ -1353,17 +1385,21 @@ class Card(QWidget):
         if shape == "square":
             return 0
         if shape == "circle":
-            return self._art_size // 2
-        return S(8 if self._compact else 10)
+            return self._cover_visual_size() // 2
+        strength = max(0.0, min(
+            2.0, float(SETTINGS.get("cover_radius_strength", 1.0))))
+        return round(S(8 if self._compact else 10)
+                     * self._cover_visual_size() / max(1, self._art_size)
+                     * strength)
 
     def apply_cover_shape(self, animate: bool = True):
         radius = self._cover_radius()
         self.art.set_radius(radius)
         if self._art_img is not None:
             dpr = self.devicePixelRatioF()
-            self._art_pm = rounded_pixmap(self._art_img, self._art_size,
+            self._art_pm = rounded_pixmap(self._art_img, self._cover_visual_size(),
                                           radius, dpr)
-            self.art.set_pixmap(self._art_pm, animate=animate)
+            self.art.set_pixmap(self._art_pm, animate=False)
         else:
             self.art.update()
 
@@ -1373,6 +1409,11 @@ class Card(QWidget):
         self.title.apply_fps()
         self.artist.apply_fps()
         self.apply_fps_overlay()
+
+    def apply_marquee_setting(self):
+        enabled = bool(SETTINGS.get("marquee_enabled", True))
+        self.title.set_marquee_enabled(enabled)
+        self.artist.set_marquee_enabled(enabled)
 
     def apply_fps_overlay(self):
         show = bool(SETTINGS.get("show_fps", False))
@@ -1417,12 +1458,14 @@ class Card(QWidget):
             self._art_img = None
             self._art_pm = None
             self._dom = None
+            self._cover_grad = None
         else:
             self._art_img = QImage(img)
             dpr = self.devicePixelRatioF()
             self._art_pm = rounded_pixmap(
-                img, self._art_size, self._cover_radius(), dpr)
+                img, self._cover_visual_size(), self._cover_radius(), dpr)
             self._dom = dominant_color(img)
+            self._cover_grad = cover_gradient(img)
         self.refresh_accent(animate=animate)
         self.art.set_pixmap(self._art_pm, animate=animate)
         self.update()
@@ -1433,15 +1476,28 @@ class Card(QWidget):
         if self._bg is not None:
             return self._bg
         dpr = self.devicePixelRatioF()
-        pm = QPixmap(int(self._W * dpr), int(self._H * dpr))
-        pm.setDevicePixelRatio(dpr)
+        # 超取樣：圓角抗鋸齒在 2x 解析度取樣後再縮顯，邊緣半透明過渡帶更窄更銳利
+        ss = 2 if SETTINGS["antialias"] else 1
+        scale = dpr * ss
+        pm = QPixmap(max(1, int(self._W * scale)),
+                     max(1, int(self._H * scale)))
+        pm.setDevicePixelRatio(scale)
         pm.fill(Qt.transparent)
         p = QPainter(pm)
         aa(p)
-        rect = QRectF(0, 0, self._W, self._H).adjusted(0.5, 0.5, -0.5, -0.5)
         radius = Sf(SETTINGS["radius"])
+        # 填充路徑外擴 ext：圓角弧線/四邊的「卡片內側」coverage 全滿，抗鋸齒
+        # 半透明過渡推到最外緣（被 pixmap 邊界裁），消除邊緣透出底色的透明感
+        ext = 0.6
         path = QPainterPath()
-        path.addRoundedRect(rect, radius, radius)
+        path.addRoundedRect(QRectF(-ext, -ext, self._W + ext * 2,
+                                   self._H + ext * 2),
+                            radius + ext, radius + ext)
+        # 邊框內縮 0.5px 畫在像素中心，1px 描邊不被裁
+        brect = QRectF(0, 0, self._W, self._H).adjusted(0.5, 0.5, -0.5, -0.5)
+        brad = max(0.0, radius - 0.5)
+        border_path = QPainterPath()
+        border_path.addRoundedRect(brect, brad, brad)
         op = SETTINGS["bg_opacity"]
 
         glass = min(1.0, max(0.0, self._glass))
@@ -1483,7 +1539,7 @@ class Card(QWidget):
                          + int(38 + 52 * op) * glass)
         p.setPen(QPen(self._bright(QColor(255, 255, 255, border_a)), 1))
         p.setBrush(Qt.NoBrush)
-        p.drawPath(path)
+        p.drawPath(border_path)
         p.end()
         self._bg = pm
         return pm
@@ -1560,6 +1616,9 @@ class _ZoomOverlay(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
         self._old: QPixmap | None = None
         self._new: QPixmap | None = None
         self._r0 = QRectF()
@@ -1724,6 +1783,37 @@ def launch_spotify():
         pass
 
 
+def _startup_command() -> str:
+    if getattr(sys, "frozen", False):
+        args = [sys.executable]
+    else:
+        args = [sys.executable, os.path.abspath(sys.argv[0])]
+    args.append("--startup")
+    if SETTINGS.get("startup_show") == "spotify":
+        args.append("--startup-hide")
+    return subprocess.list2cmdline(args)
+
+
+def sync_startup_entry():
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import winreg
+        path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0,
+                            winreg.KEY_SET_VALUE) as key:
+            if SETTINGS.get("startup_enabled", False):
+                winreg.SetValueEx(key, "SpotifyMini", 0, winreg.REG_SZ,
+                                  _startup_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, "SpotifyMini")
+                except FileNotFoundError:
+                    pass
+    except OSError:
+        pass
+
+
 def _find_hwnd(exe_names: list[str]):
     """找出指定進程的主視窗 HWND（有標題的頂層視窗）。"""
     if not exe_names:
@@ -1771,9 +1861,10 @@ def focus_app(app_id: str):
 
 
 class PlayerWindow(QWidget):
-    def __init__(self, demo=False):
+    def __init__(self, demo=False, startup_wait=False):
         super().__init__()
         self.demo = demo
+        self._startup_wait_show = bool(startup_wait)
         self.state = None
 
         # 顯示位置（內插 + 防回溯）
@@ -1838,6 +1929,8 @@ class PlayerWindow(QWidget):
 
         self.setWindowTitle("Spotify Mini")
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
         flags = Qt.FramelessWindowHint | Qt.Tool
         if SETTINGS.get("pinned", True):
             flags |= Qt.WindowStaysOnTopHint
@@ -1867,6 +1960,12 @@ class PlayerWindow(QWidget):
             lambda: self.tray.setIcon(make_tray_icon(self.card.accent())))
         self._build_card()
         self._place()
+        app = QApplication.instance()
+        if app is not None:
+            app.screenAdded.connect(
+                lambda *_: QTimer.singleShot(0, self._keep_on_screen))
+            app.screenRemoved.connect(
+                lambda *_: QTimer.singleShot(0, self._keep_on_screen))
         self._tray()
         self._register_hotkeys()
 
@@ -1893,13 +1992,14 @@ class PlayerWindow(QWidget):
         QTimer.singleShot(800, self._prewarm_volume_popup)
 
     # ---- 卡片建立 / 重建（縮放、字體變更時） ----
-    def _build_card(self):
+    def _build_card(self, resize_window: bool = True):
         old = self.card
         visual = old.visual_state() if old is not None else None
         self.card = Card(self)
         self.card.move(MARGIN, MARGIN)
-        self.setFixedSize(self.card.width() + MARGIN * 2,
-                          self.card.height() + MARGIN * 2)
+        if resize_window:
+            self.setFixedSize(self.card.width() + MARGIN * 2,
+                              self.card.height() + MARGIN * 2)
         self._wire()
         if old is not None:
             old.hide()
@@ -1935,15 +2035,16 @@ class PlayerWindow(QWidget):
         else:
             old_pm = self.card.grab()
             r0 = self.card.geometry()
+        old_size = QSizeF(self.size())
 
-        self._build_card()
+        self._build_card(resize_window=False)
         new_pm = self.card.grab()
         r1 = self.card.geometry()
         self._final_size = (self.card.width() + MARGIN * 2,
                             self.card.height() + MARGIN * 2)
         # 動畫期間視窗撐到兩者較大者，結束才縮回，避免裁切與殘影
-        self.setFixedSize(max(self._final_size[0], r0.right() + MARGIN),
-                          max(self._final_size[1], r0.bottom() + MARGIN))
+        self.setFixedSize(max(self._final_size[0], round(old_size.width())),
+                          max(self._final_size[1], round(old_size.height())))
 
         if self._overlay is None:
             self._overlay = _ZoomOverlay(self)
@@ -1975,6 +2076,7 @@ class PlayerWindow(QWidget):
             self.card.show()
         if self._final_size:
             self.setFixedSize(*self._final_size)
+            self._keep_on_screen()
         self.repaint()      # 透明視窗縮小後強制重繪，清掉殘影
 
     def _on_shadow_op(self, value):
@@ -2006,8 +2108,6 @@ class PlayerWindow(QWidget):
                          Sf(SETTINGS["radius"]), blur=blur, alpha=150,
                          dpr=self.devicePixelRatioF())
         if self._overlay is not None and self._overlay.isVisible():
-            # 縮放動畫中陰影跟著過渡矩形走（同一張貼圖縮放繪製，不重新
-            # 模糊）；畫在最終位置會從動畫中的圓角四周露出黑邊
             r = self._overlay.cur_rect()
             fx = r.width() / max(1.0, float(self.card.width()))
             fy = r.height() / max(1.0, float(self.card.height()))
@@ -2022,12 +2122,16 @@ class PlayerWindow(QWidget):
 
     # ---- 設定 ----
     def _save_cfg(self):
+        self._keep_on_screen()
         SETTINGS["x"], SETTINGS["y"] = self.x(), self.y()
         SETTINGS["pinned"] = self.card.btn_pin.isChecked()
         save_settings()
 
     def apply_setting(self, key: str, value):
         old_value = SETTINGS.get(key)
+        if key == "settings_reset":
+            self._reset_settings()
+            return
         if key == "custom_theme_add":
             add_custom_theme(value)
             self._save_timer.start()
@@ -2040,11 +2144,14 @@ class PlayerWindow(QWidget):
             return
         SETTINGS[key] = value
         self._save_timer.start()         # 防抖寫檔（拖曳滑桿時每幀都會進來）
-        if key in ("scale", "font"):
+        if key in ("scale", "font", "art_cover_size", "art_vinyl_size"):
             self._request_rebuild()
         elif key == "settings_scale":
             if self._panel is not None:
                 self._panel.rebuild_for_scale()
+        elif key == "settings_panel_type":
+            if self._panel is not None:
+                self._panel.rebuild_for_panel_type()
         elif key in self._hotkey_ids:
             self._register_hotkey(str(value), key)
         elif key == "theme":
@@ -2067,7 +2174,12 @@ class PlayerWindow(QWidget):
                 self._panel.set_shadow_visible(bool(value), animate=True)
         elif key == "seek_style":
             self.card.seek.style_changed()
-        elif key == "seek_thumb":
+        elif key in ("seek_wave_amp", "seek_wave_speed",
+                     "seek_glow_strength"):
+            self.card.seek.style_changed()
+        elif key == "seek_length":
+            self.card.apply_seek_length()
+        elif key in ("seek_thumb", "seek_thumb_size"):
             self.card.seek.style_changed()
         elif key == "auto_color_strength":
             self.card.refresh_accent()
@@ -2083,6 +2195,8 @@ class PlayerWindow(QWidget):
             self.card.apply_button_visibility(relayout=True, animate=True)
         elif key == "show_fps":
             self.card.apply_fps_overlay()
+        elif key == "marquee_enabled":
+            self.card.apply_marquee_setting()
         elif key == "anim_enabled":
             apply_anim_fps()
             self.card.update()
@@ -2092,8 +2206,10 @@ class PlayerWindow(QWidget):
             self.card.set_cover_enabled(bool(value), animate=True)
         elif key == "art_mode":
             self.card.art.set_mode(str(value), animate=True)
-        elif key == "cover_shape":
+        elif key in ("cover_shape", "cover_radius_strength"):
             self.card.apply_cover_shape(animate=True)
+        elif key == "cover_blur":
+            self.card.art.set_blur(float(value))
         elif key in ("tonearm_speed", "vinyl_spin_speed"):
             self.card.art.apply_motion_settings()
         elif key in ("cover_border", "cover_border_width",
@@ -2120,7 +2236,36 @@ class PlayerWindow(QWidget):
             self.card.refresh_empty_text()
             if hasattr(self, "bridge"):
                 self.bridge.poke()
+        elif key in ("startup_enabled", "startup_show"):
+            sync_startup_entry()
         # gpu：重啟後生效（啟動時設定 QT_WIDGETS_RHI）
+
+    def _reset_settings(self):
+        custom_themes = list(SETTINGS.get("custom_themes", []))
+        x, y = self.x(), self.y()
+        sx, sy = SETTINGS.get("settings_x"), SETTINGS.get("settings_y")
+        SETTINGS.clear()
+        SETTINGS.update(DEFAULTS)
+        SETTINGS["custom_themes"] = custom_themes
+        SETTINGS["x"], SETTINGS["y"] = x, y
+        if sx is not None and sy is not None:
+            SETTINGS["settings_x"], SETTINGS["settings_y"] = sx, sy
+        self._save_timer.stop()
+        save_settings()
+        sync_startup_entry()
+        self._unregister_hotkey()
+        self._register_hotkeys()
+        apply_anim_fps()
+        _apply_timer_resolution()
+        self._set_shadow_visible(bool(SETTINGS.get("shadow", True)),
+                                 animate=False)
+        self._request_rebuild()
+        if self._panel is not None:
+            self._panel.rebuild_for_scale()
+            if self.card is not None:
+                self._panel.set_accent(self.card.accent(), force=True)
+        if hasattr(self, "bridge"):
+            self.bridge.poke()
 
     def _place(self):
         if "x" in SETTINGS and "y" in SETTINGS:
@@ -2129,6 +2274,40 @@ class PlayerWindow(QWidget):
             scr = QApplication.primaryScreen().availableGeometry()
             self.move(scr.right() - self.width() - 16,
                       scr.bottom() - self.height() - 16)
+        self._keep_on_screen()
+
+    def _screen_geometry_for_window(self):
+        rect = self.frameGeometry()
+        center = rect.center()
+        scr = QApplication.screenAt(center)
+        if scr is not None:
+            return scr.availableGeometry()
+        screens = QApplication.screens()
+        if not screens:
+            return QApplication.primaryScreen().availableGeometry()
+
+        def dist2(screen):
+            c = screen.availableGeometry().center()
+            dx = center.x() - c.x()
+            dy = center.y() - c.y()
+            return dx * dx + dy * dy
+
+        return min(screens, key=dist2).availableGeometry()
+
+    def _keep_on_screen(self):
+        geo = self._screen_geometry_for_window()
+        if self.width() >= geo.width():
+            x = geo.left()
+        else:
+            x = min(max(self.x(), geo.left()),
+                    geo.right() + 1 - self.width())
+        if self.height() >= geo.height():
+            y = geo.top()
+        else:
+            y = min(max(self.y(), geo.top()),
+                    geo.bottom() + 1 - self.height())
+        if x != self.x() or y != self.y():
+            self.move(x, y)
 
     # ---- 接線 ----
     def _wire(self):
@@ -2418,12 +2597,27 @@ class PlayerWindow(QWidget):
             self._panel.deleteLater()
         self._panel = SettingsPanel(self.card.target_accent())
         self._panel.setting_changed.connect(self.apply_setting)
-        scr = QApplication.primaryScreen().availableGeometry()
-        x = self.x() - self._panel.width() + MARGIN
-        if x < scr.left():
-            x = self.x() + self.width() - MARGIN
-        y = min(self.y(), scr.bottom() - self._panel.height() + MARGIN)
-        self._panel.open_at(QPoint(max(scr.left(), x), max(scr.top(), y)))
+        self._panel.position_committed.connect(
+            lambda _=None: self._save_panel_pos())
+        self._panel.closed.connect(self._save_panel_pos)
+        if "settings_x" in SETTINGS and "settings_y" in SETTINGS:
+            pos = QPoint(int(SETTINGS["settings_x"]),
+                         int(SETTINGS["settings_y"]))
+        else:
+            scr = QApplication.primaryScreen().availableGeometry()
+            x = self.x() - self._panel.width() + MARGIN
+            if x < scr.left():
+                x = self.x() + self.width() - MARGIN
+            y = min(self.y(), scr.bottom() - self._panel.height() + MARGIN)
+            pos = QPoint(max(scr.left(), x), max(scr.top(), y))
+        self._panel.open_at(pos)
+
+    def _save_panel_pos(self):
+        if self._panel is None:
+            return
+        SETTINGS["settings_x"] = self._panel.x()
+        SETTINGS["settings_y"] = self._panel.y()
+        self._save_timer.start()
 
     # ---- 音量 ----
     def _clear_volume_popup(self, pop=None):
@@ -2679,6 +2873,9 @@ class PlayerWindow(QWidget):
                 c.set_empty(True, animate=True)
             return
         self._app_id = st.app_id or self._app_id
+        if self._startup_wait_show and not self.isVisible():
+            self._startup_wait_show = False
+            QTimer.singleShot(0, self.show_animated)
         if first:
             self._launch_watch.stop()
             c.empty_btn.set_busy(False)
@@ -2823,6 +3020,7 @@ def main():
         shot = argv[argv.index("--shot") + 1]
 
     load_settings()
+    sync_startup_entry()
     if SETTINGS.get("gpu", True):
         # Qt 6.4+：widget 視窗改用 RHI（D3D11）GPU 合成
         os.environ.setdefault("QT_WIDGETS_RHI", "1")
@@ -2845,13 +3043,18 @@ def main():
             sys.exit(0)
 
     _apply_timer_resolution()
-    win = PlayerWindow(demo=demo)
+    startup_wait = (not demo and not shot and "--panel" not in argv
+                    and ("--startup-hide" in argv
+                         or ("--startup" in argv
+                             and SETTINGS.get("startup_show") == "spotify")))
+    win = PlayerWindow(demo=demo, startup_wait=startup_wait)
     holder["win"] = win
     win._single_server = server    # 保持參照，監聽跟著視窗活著
     app.aboutToQuit.connect(win._save_cfg)
     app.aboutToQuit.connect(win._unregister_hotkey)
     app.aboutToQuit.connect(_release_timer_resolution)
-    fade_in(win, slide=14)
+    if not startup_wait:
+        fade_in(win, slide=14)
 
     if "--panel" in argv:
         QTimer.singleShot(300, win._toggle_panel)

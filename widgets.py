@@ -5,8 +5,9 @@ import time
 from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF,
                            QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPixmap, QRadialGradient, QRegion)
-from PySide6.QtWidgets import QAbstractButton, QWidget
+                           QPixmap, QRadialGradient)
+from PySide6.QtWidgets import (QAbstractButton, QGraphicsBlurEffect,
+                               QGraphicsScene, QWidget)
 
 from style import (GLYPH_NOTE, GLYPH_VOLUME_0, GLYPH_VOLUME_1,
                    GLYPH_VOLUME_2, GLYPH_VOLUME_3, SETTINGS, SPOTIFY_GREEN,
@@ -29,7 +30,10 @@ class MarqueeLabel(QWidget):
         self._px = px
         self._weight = weight
         self._font = ui_font(px, weight)
+        # 不對齊像素網格：放大/捲動時純幾何縮放，消除字形 hinting 造成的抖動
+        self._font.setHintingPreference(QFont.PreferNoHinting)
         self._color = QColor(color)
+        self._marquee_enabled = bool(SETTINGS.get("marquee_enabled", True))
         self._text = ""
         self._text_w = 0.0
         self._offset = 0.0
@@ -60,9 +64,21 @@ class MarqueeLabel(QWidget):
             return
         self._px = px
         self._font = ui_font(px, self._weight)
+        self._font.setHintingPreference(QFont.PreferNoHinting)
         fm = QFontMetricsF(self._font)
         self._text_w = fm.horizontalAdvance(self._text)
         self._old_w = fm.horizontalAdvance(self._old_text)
+        self._sync_scroll_timer()
+        self.update()
+
+    def set_marquee_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        if enabled == self._marquee_enabled:
+            return
+        self._marquee_enabled = enabled
+        self._offset = 0.0
+        self._hold = self.HOLD
+        self._last = time.monotonic()
         self._sync_scroll_timer()
         self.update()
 
@@ -87,7 +103,8 @@ class MarqueeLabel(QWidget):
         self.update()
 
     def _sync_scroll_timer(self):
-        need = self._text_w * self._visual_scale > self.width()
+        need = (self._marquee_enabled
+                and self._text_w * self._visual_scale > self.width())
         if need:
             self._timer.start()
         else:
@@ -144,6 +161,25 @@ class MarqueeLabel(QWidget):
             self._hold = self.HOLD
         self.update()
 
+    def _elided(self, text: str, width: float) -> str:
+        width = max(0.0, float(width))
+        if not text or width <= 0.0:
+            return ""
+        fm = QFontMetricsF(self._font)
+        if fm.horizontalAdvance(text) <= width:
+            return text
+        suffix = "..."
+        if fm.horizontalAdvance(suffix) > width:
+            return ""
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if fm.horizontalAdvance(text[:mid] + suffix) <= width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo] + suffix
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.TextAntialiasing)
@@ -162,17 +198,31 @@ class MarqueeLabel(QWidget):
             t = self._tr
             rise = h * 0.55
             p.setOpacity(1.0 - t)
-            p.drawText(QRectF(-self._old_off, y - rise * t,
-                              self._old_w + 4, h),
-                       Qt.AlignVCenter | Qt.AlignLeft, self._old_text)
+            if self._marquee_enabled:
+                old_rect = QRectF(-self._old_off, y - rise * t,
+                                  self._old_w + 4, h)
+                old_text = self._old_text
+            else:
+                old_rect = QRectF(0, y - rise * t, avail_w, h)
+                old_text = self._elided(self._old_text, avail_w)
+            p.drawText(old_rect, Qt.AlignVCenter | Qt.AlignLeft, old_text)
             p.setOpacity(min(1.0, t * 1.15))
-            p.drawText(QRectF(0, y + rise * (1.0 - t),
-                              self._text_w + 4, h),
-                       Qt.AlignVCenter | Qt.AlignLeft, self._text)
+            if self._marquee_enabled:
+                new_rect = QRectF(0, y + rise * (1.0 - t),
+                                  self._text_w + 4, h)
+                new_text = self._text
+            else:
+                new_rect = QRectF(0, y + rise * (1.0 - t), avail_w, h)
+                new_text = self._elided(self._text, avail_w)
+            p.drawText(new_rect, Qt.AlignVCenter | Qt.AlignLeft, new_text)
             if abs(scale - 1.0) > 0.002:
                 p.restore()
             return
-        if self._text_w <= avail_w:
+        if not self._marquee_enabled:
+            p.drawText(QRectF(0, y, avail_w, h),
+                       Qt.AlignVCenter | Qt.AlignLeft,
+                       self._elided(self._text, avail_w))
+        elif self._text_w <= avail_w:
             p.drawText(QRectF(0, y, avail_w, h),
                        Qt.AlignVCenter | Qt.AlignLeft, self._text)
         else:
@@ -191,13 +241,22 @@ class ArtView(QWidget):
 
     def __init__(self, size: int, radius: int, parent=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
         self._size = size
+        self._cover_scale = max(
+            0.6, min(1.4, float(SETTINGS.get("art_cover_size", 1.0))))
+        self._vinyl_scale = max(
+            0.7, min(1.35, float(SETTINGS.get("art_vinyl_size", 1.0))))
+        self._layout_size = max(self.cover_size(), self.vinyl_size())
         self._radius = radius
-        self.pad = max(8, round(size * 0.08))
+        self.pad = max(8, round(self._layout_size * 0.18))
         self._pm: QPixmap | None = None
         self._old: QPixmap | None = None
+        self._pm_blur: QPixmap | None = None
+        self._old_blur: QPixmap | None = None
+        self._cover_blur = float(SETTINGS.get("cover_blur", 0.0))
         self._t = 1.0                # 過渡進度（1 = 無過渡）
         self._anim = Anim(self)
         self._anim.valueChanged.connect(self._on_t)
@@ -235,7 +294,17 @@ class ArtView(QWidget):
         self._spin_timer.setInterval(fps_ms())
         self._spin_timer.timeout.connect(self._spin_tick)
         self.setMouseTracking(True)
-        self.setFixedSize(size + self.pad * 2, size + self.pad * 2)
+        self.setFixedSize(self._layout_size + self.pad * 2,
+                          self._layout_size + self.pad * 2)
+
+    def cover_size(self) -> int:
+        return max(1, round(self._size * self._cover_scale))
+
+    def vinyl_size(self) -> int:
+        return max(1, round(self._size * self._vinyl_scale))
+
+    def layout_span(self) -> int:
+        return self._layout_size
 
     def _on_t(self, v):
         self._t = float(v)
@@ -244,6 +313,7 @@ class ArtView(QWidget):
     def _done(self):
         self._t = 1.0
         self._old = None
+        self._old_blur = None
         self.update()
 
     def _on_hover(self, v):
@@ -262,7 +332,7 @@ class ArtView(QWidget):
         self.update()
 
     def set_radius(self, radius: int):
-        radius = max(0, min(self._size // 2, int(radius)))
+        radius = max(0, min(self.cover_size() // 2, int(radius)))
         if radius == self._radius:
             return
         self._radius = radius
@@ -290,6 +360,49 @@ class ArtView(QWidget):
         self._ba.setDuration(ms)
         self._ba.setEasingCurve(QEasingCurve.OutCubic)
         self._ba.start()
+
+    def _make_blurred_pixmap(self, pm: QPixmap | None) -> QPixmap | None:
+        radius = max(0.0, min(14.0, float(self._cover_blur)))
+        if pm is None or pm.isNull() or radius <= 0.01:
+            return pm
+        dpr = max(1.0, pm.devicePixelRatioF())
+        w = max(1.0, pm.width() / dpr)
+        h = max(1.0, pm.height() / dpr)
+        rect = QRectF(0, 0, w, h)
+        out = QPixmap(max(1, round(w * dpr)), max(1, round(h * dpr)))
+        out.setDevicePixelRatio(dpr)
+        out.fill(Qt.transparent)
+
+        scene = QGraphicsScene()
+        scene.setSceneRect(rect)
+        item = scene.addPixmap(pm)
+        item.setPos(0, 0)
+        eff = QGraphicsBlurEffect()
+        eff.setBlurRadius(radius)
+        item.setGraphicsEffect(eff)
+
+        p = QPainter(out)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        scene.render(p, rect, rect)
+        p.end()
+        return out
+
+    def _paint_pixmap(self, pm: QPixmap | None,
+                      blurred: QPixmap | None) -> QPixmap | None:
+        if pm is None:
+            return None
+        if self._cover_blur <= 0.01:
+            return pm
+        return blurred if blurred is not None else pm
+
+    def set_blur(self, radius: float):
+        radius = round(max(0.0, min(14.0, float(radius))), 1)
+        if abs(radius - self._cover_blur) < 0.01:
+            return
+        self._cover_blur = radius
+        self._pm_blur = self._make_blurred_pixmap(self._pm)
+        self._old_blur = self._make_blurred_pixmap(self._old)
+        self.update()
 
     def _on_mode(self, v):
         self._vinyl = float(v)
@@ -422,6 +535,7 @@ class ArtView(QWidget):
         ms = adur(420, 220)
         if animate and ms > 0 and self.isVisible():
             self._old = self._pm
+            self._old_blur = self._pm_blur
             self._anim.setStartValue(0.0)
             self._anim.setEndValue(1.0)
             self._anim.setDuration(ms)
@@ -429,16 +543,22 @@ class ArtView(QWidget):
             self._anim.start()
         else:
             self._old = None
+            self._old_blur = None
             self._t = 1.0
         self._pm = pm
+        self._pm_blur = self._make_blurred_pixmap(pm)
         self.update()
 
-    def _visual_rect(self) -> QRectF:
-        return QRectF(self.pad, self.pad, self._size, self._size)
+    def _visual_rect(self, kind: str = "cover") -> QRectF:
+        size = self.vinyl_size() if kind == "vinyl" else self.cover_size()
+        x = self.pad + (self._layout_size - size) / 2
+        y = self.pad + (self._layout_size - size) / 2
+        return QRectF(x, y, size, size)
 
     def _shape_path(self, rect: QRectF) -> QPainterPath:
         path = QPainterPath()
-        if self._radius >= min(rect.width(), rect.height()) / 2 - 0.5:
+        if (SETTINGS.get("cover_shape") == "circle"
+                or self._radius >= min(rect.width(), rect.height()) / 2 - 0.5):
             path.addEllipse(rect)
         elif self._radius > 0:
             path.addRoundedRect(rect, self._radius, self._radius)
@@ -446,27 +566,10 @@ class ArtView(QWidget):
             path.addRect(rect)
         return path
 
-    def _paint_parent_background(self, p: QPainter):
-        parent = self.parentWidget()
-        if parent is None:
-            return
-        if hasattr(parent, "_bg_pixmap"):
-            pm = parent._bg_pixmap()
-            p.drawPixmap(QRectF(self.rect()), pm,
-                         QRectF(self.x(), self.y(),
-                                self.width(), self.height()))
-            return
-        parent.render(
-            p,
-            QPoint(-self.x(), -self.y()),
-            QRegion(self.geometry()),
-            QWidget.RenderFlag.DrawWindowBackground,
-        )
-
     def _apply_hover_transform(self, p: QPainter):
         if self._hover <= 0.001:
             return
-        r = self._visual_rect()
+        r = self._visual_rect("cover")
         c = r.center()
         p.translate(c)
         p.rotate(-1.8 * self._hover)
@@ -478,7 +581,7 @@ class ArtView(QWidget):
                      scale: float = 1.0):
         if alpha <= 0.01:
             return
-        r = self._visual_rect()
+        r = self._visual_rect("cover")
         p.save()
         p.setOpacity(alpha)
         if scale != 1.0:
@@ -494,7 +597,8 @@ class ArtView(QWidget):
         if alpha <= 0.01 or self._border_t <= 0.001:
             return
         w = max(1.0, self._border_w)
-        r = self._visual_rect().adjusted(-w / 2, -w / 2, w / 2, w / 2)
+        r = self._visual_rect("cover").adjusted(
+            -w / 2, -w / 2, w / 2, w / 2)
         op = alpha * self._border_t * self._border_op
         col = QColor(self._accent).lighter(128)
         col.setAlpha(round(205 * op))
@@ -544,7 +648,7 @@ class ArtView(QWidget):
     def _draw_vinyl(self, p: QPainter, alpha: float):
         if alpha <= 0.01:
             return
-        r = self._visual_rect()
+        r = self._visual_rect("vinyl")
         c = r.center()
         rad = min(r.width(), r.height()) / 2
         p.save()
@@ -658,11 +762,16 @@ class ArtView(QWidget):
         label = QRectF(c.x() - rad * 0.54, c.y() - rad * 0.54,
                        rad * 1.08, rad * 1.08)
         if self._t < 1.0:
-            self._draw_label_pixmap(p, label, alpha * (1.0 - self._t),
-                                    self._old)
-            self._draw_label_pixmap(p, label, alpha * self._t, self._pm)
+            self._draw_label_pixmap(
+                p, label, alpha * (1.0 - self._t),
+                self._paint_pixmap(self._old, self._old_blur))
+            self._draw_label_pixmap(
+                p, label, alpha * self._t,
+                self._paint_pixmap(self._pm, self._pm_blur))
         else:
-            self._draw_label_pixmap(p, label, alpha, self._pm)
+            self._draw_label_pixmap(
+                p, label, alpha,
+                self._paint_pixmap(self._pm, self._pm_blur))
         p.setClipping(False)
         p.setPen(QPen(QColor(0, 0, 0, 185), max(2.0, rad * 0.035)))
         p.setBrush(Qt.NoBrush)
@@ -674,7 +783,7 @@ class ArtView(QWidget):
     def _draw_tonearm(self, p: QPainter, alpha: float):
         if alpha <= 0.01:
             return
-        r = self._visual_rect()
+        r = self._visual_rect("vinyl")
         c = r.center()
         rad = min(r.width(), r.height()) / 2
         p.save()
@@ -812,11 +921,11 @@ class ArtView(QWidget):
     def _draw_placeholder(self, p: QPainter, alpha: float):
         if alpha <= 0.01:
             return
-        r = self._visual_rect()
+        r = self._visual_rect("cover")
         p.setOpacity(alpha)
         path = self._shape_path(r)
         p.fillPath(path, QColor(255, 255, 255, 16))
-        p.setFont(icon_font(round(self._size * 0.27)))
+        p.setFont(icon_font(round(self.cover_size() * 0.27)))
         p.setPen(QColor(255, 255, 255, 70))
         p.drawText(r, Qt.AlignCenter, GLYPH_NOTE)
         p.setOpacity(1.0)
@@ -824,23 +933,24 @@ class ArtView(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
-        self._paint_parent_background(p)
         t = self._t
         p.save()
         self._apply_hover_transform(p)
         cover_alpha = max(0.0, min(1.0, 1.0 - self._vinyl))
         vinyl_alpha = max(0.0, min(1.0, self._vinyl))
-        if self._pm is None:
+        pm = self._paint_pixmap(self._pm, self._pm_blur)
+        old = self._paint_pixmap(self._old, self._old_blur)
+        if pm is None:
             self._draw_placeholder(p, t * cover_alpha)
         else:
             if t < 1.0:              # 新圖 0.94 → 1.0 微縮放淡入
-                self._draw_pixmap(p, self._pm, t * cover_alpha,
+                self._draw_pixmap(p, pm, t * cover_alpha,
                                   0.94 + 0.06 * t)
             else:
-                self._draw_pixmap(p, self._pm, t * cover_alpha)
+                self._draw_pixmap(p, pm, t * cover_alpha)
         if t < 1.0:
-            if self._old is not None:
-                self._draw_pixmap(p, self._old, (1.0 - t) * cover_alpha)
+            if old is not None:
+                self._draw_pixmap(p, old, (1.0 - t) * cover_alpha)
             else:
                 self._draw_placeholder(p, (1.0 - t) * cover_alpha)
         self._draw_border(p, cover_alpha)
@@ -1443,7 +1553,9 @@ class SeekBar(QWidget):
         self._ta.valueChanged.connect(self._on_thumb)
 
         # 波浪/流光相位（時間基準，速度與 fps 無關）
+        self._style = SETTINGS.get("seek_style", "wave")
         self._phase = 0.0
+        self._glow_phase = 0.0
         self._amp = 0.0              # 目前波浪振幅（平滑過渡）
         self._glow = 0.0             # 流光透明度（播放/暫停淡入淡出）
         self._fx_last = time.monotonic()
@@ -1472,10 +1584,7 @@ class SeekBar(QWidget):
         self._sync_fx()
 
     def style_changed(self):
-        if SETTINGS["seek_style"] != "wave":
-            self._amp = 0.0
-        if SETTINGS["seek_style"] != "glow":
-            self._glow = 0.0
+        self._style = SETTINGS.get("seek_style", "wave")
         self._sync_fx()
         self._sync_thumb()
         self.update()
@@ -1547,6 +1656,7 @@ class SeekBar(QWidget):
     def visual_state(self) -> dict:
         return {
             "phase": self._phase,
+            "glow_phase": self._glow_phase,
             "amp": self._amp,
             "glow": self._glow,
             "thumb": self._thumb,
@@ -1557,6 +1667,7 @@ class SeekBar(QWidget):
         if not state:
             return
         self._phase = float(state.get("phase", self._phase))
+        self._glow_phase = float(state.get("glow_phase", self._glow_phase))
         self._amp = float(state.get("amp", self._amp))
         self._glow = float(state.get("glow", self._glow))
         self._thumb = float(state.get("thumb", self._thumb))
@@ -1568,13 +1679,15 @@ class SeekBar(QWidget):
     # ---- 特效計時器 ----
 
     def _needs_fx(self) -> bool:
-        style = SETTINGS["seek_style"]
+        style = self._style
         if not self.isVisible():
             return False
+        if self._amp > 0.001 or self._glow > 0.01:
+            return True
         if style == "wave":
-            return (self._playing and anim_on()) or self._amp > 0.001
+            return self._playing and anim_on()
         if style == "glow":
-            return ((self._playing and anim_on()) or self._glow > 0.01)
+            return self._playing and anim_on()
         return False
 
     def _sync_fx(self):
@@ -1590,21 +1703,24 @@ class SeekBar(QWidget):
         now = time.monotonic()
         dt = min(0.1, now - self._fx_last)
         self._fx_last = now
-        style = SETTINGS["seek_style"]
-        if style == "wave":
-            target = 1.0 if (self._playing and anim_on()) else 0.0
-            rate = 2.6 if target > self._amp else 4.2
-            self._amp += (target - self._amp) * min(1.0, dt * rate)
-            if abs(self._amp - target) < 0.01:
-                self._amp = target
-            self._phase += self.WAVE_SPEED * dt
-        elif style == "glow":
-            target = 1.0 if (self._playing and anim_on()) else 0.0
-            rate = 4.0 if target > self._glow else 5.0
-            self._glow += (target - self._glow) * min(1.0, dt * rate)
-            if abs(self._glow - target) < 0.01:
-                self._glow = target
-            self._phase += self.GLOW_SPEED * dt
+        style = self._style
+        wave_target = 1.0 if (style == "wave"
+                              and self._playing and anim_on()) else 0.0
+        if style == "wave" or self._amp > 0.001:
+            rate = 2.6 if wave_target > self._amp else 2.4
+            self._amp += (wave_target - self._amp) * min(1.0, dt * rate)
+            if abs(self._amp - wave_target) < 0.01:
+                self._amp = wave_target
+            speed = float(SETTINGS.get("seek_wave_speed", 1.0))
+            self._phase += self.WAVE_SPEED * speed * dt
+        glow_target = 1.0 if (style == "glow"
+                              and self._playing and anim_on()) else 0.0
+        if style == "glow" or self._glow > 0.01:
+            rate = 4.0 if glow_target > self._glow else 5.0
+            self._glow += (glow_target - self._glow) * min(1.0, dt * rate)
+            if abs(self._glow - glow_target) < 0.01:
+                self._glow = glow_target
+            self._glow_phase += self.GLOW_SPEED * dt
         if not self._needs_fx():
             self._fx.stop()
         self.update()
@@ -1662,6 +1778,21 @@ class SeekBar(QWidget):
     def _sync_thumb(self):
         self._animate_thumb(self._thumb_should_show())
 
+    def _thumb_size_factor(self) -> float:
+        return max(0.2, min(
+            1.5, float(SETTINGS.get("seek_thumb_size", 1.0))))
+
+    def _thumb_radius(self, visible: float | None = None) -> float:
+        h = max(1.0, float(self.height()))
+        factor = self._thumb_size_factor()
+        base = max(2.0, h * (4.6 / 18.0)) * factor
+        drag = h * (1.2 / 18.0) * factor if self._drag else 0.0
+        return (base + drag) * (self._thumb if visible is None else visible)
+
+    def _pad(self) -> float:
+        h = max(1.0, float(self.height()))
+        return max(self.PAD, h * (self.PAD / 18.0))
+
     def _animate_thumb(self, show: bool):
         target = 1.0 if show else 0.0
         if (self._ta.state() != Anim.Running
@@ -1693,10 +1824,11 @@ class SeekBar(QWidget):
     # ---- 滑鼠 ----
 
     def _sec_from_x(self, x: float) -> float:
-        tw = self.width() - self.PAD * 2
+        pad = self._pad()
+        tw = self.width() - pad * 2
         if tw <= 0:
             return 0.0
-        r = (x - self.PAD) / tw
+        r = (x - pad) / tw
         return min(1.0, max(0.0, r)) * self._dur
 
     def enterEvent(self, e):
@@ -1755,11 +1887,11 @@ class SeekBar(QWidget):
         p = QPainter(self)
         aa(p)
         w, h = self.width(), float(self.height())
-        pad = self.PAD
+        pad = self._pad()
         tw = w - pad * 2                 # 軌道實際寬度
         cy = h / 2
         bar_h = max(3.0, h * 0.22)
-        style = SETTINGS["seek_style"]
+        style = self._style
 
         ratio = self._ratio()
         fill_w = pad + tw * ratio        # 填滿端點（絕對 x）
@@ -1769,10 +1901,11 @@ class SeekBar(QWidget):
         gray = QColor(255, 255, 255, 36)
 
         wave_y = cy
-        wavy = style == "wave" and self._amp > 0.001
+        wavy = self._amp > 0.001
         if wavy:
             # 整條（灰底 + 填滿）都跟著波動
-            amp = h * self.WAVE_AMP * self._amp
+            wave_amp = float(SETTINGS.get("seek_wave_amp", 1.0))
+            amp = h * self.WAVE_AMP * wave_amp * self._amp
             k = 2 * math.pi / max(26.0, h * 1.9)   # 波長
 
             def wy(x: float) -> float:
@@ -1814,6 +1947,24 @@ class SeekBar(QWidget):
                 pen.setCapStyle(Qt.RoundCap)
                 pen.setJoinStyle(Qt.RoundJoin)
                 draw_segment(pad, max(pad + bar_h, fill_w), pen)
+            if ratio > 0 and self._glow > 0.01:
+                fw = max(bar_h, tw * ratio)
+                strength = max(0.0, min(
+                    2.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
+                alpha = max(0, min(180, round(
+                    76 * self._glow * strength)))
+                if alpha > 0:
+                    t = self._glow_phase % 1.4 - 0.2
+                    band = max(24.0, fw * 0.22)
+                    bx = pad + t / 1.0 * (fw + band * 2) - band
+                    left = max(pad, bx - band * 0.42)
+                    right = min(fill_w, bx + band * 0.42)
+                    if right > left:
+                        pen = QPen(QColor(255, 255, 255, alpha),
+                                   bar_h * 1.18)
+                        pen.setCapStyle(Qt.RoundCap)
+                        pen.setJoinStyle(Qt.RoundJoin)
+                        draw_segment(left, right, pen)
         else:
             # 底軌
             p.setPen(Qt.NoPen)
@@ -1828,15 +1979,18 @@ class SeekBar(QWidget):
                     QRectF(pad, cy - bar_h / 2, fw, bar_h),
                     bar_h / 2, bar_h / 2)
                 # 流光：在填滿區掃過一道亮帶
-                if style == "glow" and self._glow > 0.01 and fw > 8:
-                    t = self._phase % 1.4 - 0.2      # 留一點頭尾停頓
+                if self._glow > 0.01 and fw > 8:
+                    t = self._glow_phase % 1.4 - 0.2  # 留一點頭尾停頓
                     band = max(24.0, fw * 0.22)
                     bx = pad + t / 1.0 * (fw + band * 2) - band
                     g2 = QLinearGradient(bx - band, 0, bx + band, 0)
                     white = QColor(255, 255, 255, 0)
+                    strength = max(0.0, min(
+                        2.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
+                    alpha = max(0, min(255, round(
+                        110 * self._glow * strength)))
                     g2.setColorAt(0.0, white)
-                    g2.setColorAt(
-                        0.5, QColor(255, 255, 255, round(110 * self._glow)))
+                    g2.setColorAt(0.5, QColor(255, 255, 255, alpha))
                     g2.setColorAt(1.0, white)
                     clip = QPainterPath()
                     clip.addRoundedRect(
@@ -1848,10 +2002,8 @@ class SeekBar(QWidget):
 
         # hover / 拖曳圓鈕（彈出動畫）
         if self._thumb > 0.01 and self._dur > 0:
-            r = (4.6 + (1.2 if self._drag else 0.0)) * self._thumb
+            r = self._thumb_radius()
             cx = fill_w
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(0, 0, 0, int(60 * self._thumb)))
-            p.drawEllipse(QPointF(cx, wave_y + 0.8), r, r)
             p.setBrush(QColor(255, 255, 255, int(255 * min(1.0, self._thumb))))
             p.drawEllipse(QPointF(cx, wave_y), r, r)

@@ -41,6 +41,7 @@ GLYPH_MUTE = "\uE74F"
 GLYPH_SETTINGS = "\uE713"
 GLYPH_CHECK = "\uE73E"
 GLYPH_GLOBE = "\uE774"
+GLYPH_SEARCH = "\uE721"
 GLYPH_CHEVRON_DOWN = "\uE70D"
 GLYPH_CHEVRON_UP = "\uE70E"
 
@@ -52,22 +53,33 @@ DEFAULTS = {
     "bg_opacity": 1.0,      # 0.35 ~ 1.0
     "brightness": 1.0,      # 0.55 ~ 1.45，mini player 背景亮度
     "auto_color_strength": 1.0,  # 0.0 ~ 1.0，自動主色背景強度
-    "scale": 1.0,           # 0.8 ~ 2.0
+    "scale": 1.0,           # 0.8 ~ 3.0
     "settings_scale": 1.0,  # 0.8 ~ 2.0
+    "settings_panel_type": "normal",  # normal / categories
     "radius": 18,           # 6 ~ 28
     "anim": "full",
     "anim_enabled": True,
     "seek_style": "wave",   # plain / wave / glow
     "seek_thumb": "hover",  # hover / always，進度條白色圓鈕顯示方式
+    "seek_wave_amp": 1.0,
+    "seek_wave_speed": 1.0,
+    "seek_glow_strength": 1.0,
+    "seek_length": 1.0,
+    "seek_thumb_size": 1.0,
     "controls_hover": False, # 控制列只在 hover 時顯示
+    "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
     "auto_theme": "solid",  # solid / gradient，封面自動主題背景模式
     "art_mode": "cover",    # cover / vinyl，封面區顯示模式
+    "art_cover_size": 1.0,
+    "art_vinyl_size": 1.0,
     "tonearm_speed": 1.0,
     "vinyl_spin_speed": 1.0,
     "topbar_hover": False,
     "card_preset": "standard",
     "show_cover": True,
+    "cover_blur": 0.0,
     "cover_shape": "rounded",  # rounded / square / circle
+    "cover_radius_strength": 1.0,
     "cover_border": False,
     "cover_border_width": 2.0,
     "cover_border_opacity": 0.85,
@@ -81,6 +93,8 @@ DEFAULTS = {
     "antialias": True,      # 反鋸齒
     "show_source": True,    # 左上角來源標誌（Spotify 圖示 + 文字）
     "source": "spotify",    # spotify / browser / any 媒體來源
+    "startup_enabled": False,
+    "startup_show": "boot",  # boot / spotify
     "gpu": True,            # GPU 合成（QT_WIDGETS_RHI，重啟後生效）
     "shadow": True,         # 背景陰影
     "controls_align": "center",   # 控制列位置 left / center / right
@@ -125,39 +139,66 @@ CONTROLS_ALIGN = [("left", "靠左"), ("center", "置中"), ("right", "靠右")]
 CARD_PRESETS = [("mini", "超迷你"), ("standard", "標準"),
                 ("wide", "寬版"), ("controls", "控制列")]
 LANGUAGES = [("zh", "中文"), ("ja", "日本語"), ("en", "English")]
+SETTINGS_PANEL_TYPES = [("normal", "一般"), ("categories", "分類")]
 
 _I18N = {
     "zh": {
         "settings": "設定",
         "close": "關閉",
+        "search_settings": "搜尋設定",
+        "reset_settings": "重設設定",
+        "section_general": "一般",
+        "section_appearance": "外觀",
+        "section_cover": "封面",
+        "section_controls": "控制",
+        "section_performance": "效能",
+        "section_hotkeys": "快捷鍵",
         "theme": "主題",
         "auto_theme": "自動主題",
         "source": "媒體來源",
+        "startup_enabled": "開機啟動",
+        "startup_show": "啟動顯示",
+        "startup_show_boot": "開機顯示",
+        "startup_show_spotify": "Spotify 時",
         "opacity": "透明度",
         "brightness": "亮度",
         "player_size": "視窗大小",
         "settings_size": "設定大小",
+        "settings_panel_type": "設定面板類型",
+        "settings_panel_normal": "一般",
+        "settings_panel_categories": "分類",
+        "settings_category": "分類",
         "radius": "圓角",
         "fps": "FPS",
         "hotkey": "快捷鍵",
         "seek_bar": "進度條",
         "seek_thumb": "進度圓鈕",
+        "seek_wave_amp": "波浪幅度",
+        "seek_wave_speed": "波浪速度",
+        "seek_glow_strength": "流光強度",
+        "seek_length": "進度條長度",
+        "seek_thumb_size": "圓鈕大小",
         "advanced": "進階設定",
         "auto_color_strength": "主色強度",
         "art_mode": "封面模式",
         "art_cover": "封面",
         "art_vinyl": "黑膠",
+        "art_cover_size": "封面圖大小",
+        "art_vinyl_size": "黑膠大小",
         "tonearm_speed": "唱針速度",
         "vinyl_spin_speed": "黑膠轉速",
         "controls_hover": "控制列隱藏",
         "topbar_hover": "設定列隱藏",
+        "marquee_enabled": "跑馬燈",
         "card_preset": "卡片尺寸",
         "card_mini": "超迷你",
         "card_standard": "標準",
         "card_wide": "寬版",
         "card_controls": "控制列",
         "show_cover": "顯示封面",
+        "cover_blur": "封面模糊",
         "cover_shape": "封面形狀",
+        "cover_radius_strength": "封面圓角強度",
         "cover_shape_rounded": "圓角",
         "cover_shape_square": "正方形",
         "cover_shape_circle": "圓形",
@@ -268,34 +309,60 @@ _I18N = {
     "ja": {
         "settings": "設定",
         "close": "閉じる",
+        "search_settings": "設定を検索",
+        "reset_settings": "設定をリセット",
+        "section_general": "一般",
+        "section_appearance": "外観",
+        "section_cover": "カバー",
+        "section_controls": "操作",
+        "section_performance": "パフォーマンス",
+        "section_hotkeys": "ショートカット",
         "theme": "テーマ",
         "auto_theme": "自動テーマ",
         "source": "メディア",
+        "startup_enabled": "起動時に開始",
+        "startup_show": "起動時表示",
+        "startup_show_boot": "すぐ表示",
+        "startup_show_spotify": "Spotify 時",
         "opacity": "透明度",
         "brightness": "明るさ",
         "player_size": "プレイヤー",
         "settings_size": "設定サイズ",
+        "settings_panel_type": "設定パネル",
+        "settings_panel_normal": "通常",
+        "settings_panel_categories": "カテゴリ",
+        "settings_category": "カテゴリ",
         "radius": "角丸",
         "fps": "FPS",
         "hotkey": "ショートカット",
         "seek_bar": "進行バー",
         "seek_thumb": "ノブ表示",
+        "seek_wave_amp": "波の振幅",
+        "seek_wave_speed": "波の速度",
+        "seek_glow_strength": "グロー強度",
+        "seek_length": "バーの長さ",
+        "seek_thumb_size": "ノブサイズ",
         "advanced": "詳細設定",
         "auto_color_strength": "主色の強さ",
         "art_mode": "カバー表示",
         "art_cover": "カバー",
         "art_vinyl": "レコード",
+        "art_cover_size": "カバーサイズ",
+        "art_vinyl_size": "レコードサイズ",
         "tonearm_speed": "針の速度",
         "vinyl_spin_speed": "回転速度",
         "controls_hover": "操作列を隠す",
         "topbar_hover": "設定列を隠す",
+        "marquee_enabled": "テキストスクロール",
         "card_preset": "カードサイズ",
         "card_mini": "ミニ",
         "card_standard": "標準",
         "card_wide": "ワイド",
         "card_controls": "操作列",
         "show_cover": "カバー表示",
+        "cover_blur": "カバーぼかし",
         "cover_shape": "カバー形状",
+        "cover_radius_strength": "角丸の強さ",
         "cover_shape_rounded": "角丸",
         "cover_shape_square": "正方形",
         "cover_shape_circle": "円形",
@@ -405,34 +472,60 @@ _I18N = {
     "en": {
         "settings": "Settings",
         "close": "Close",
+        "search_settings": "Search settings",
+        "reset_settings": "Reset Settings",
+        "section_general": "General",
+        "section_appearance": "Appearance",
+        "section_cover": "Cover",
+        "section_controls": "Controls",
+        "section_performance": "Performance",
+        "section_hotkeys": "Hotkeys",
         "theme": "Theme",
         "auto_theme": "Auto Theme",
         "source": "Source",
+        "startup_enabled": "Start on Login",
+        "startup_show": "Startup View",
+        "startup_show_boot": "Show at Boot",
+        "startup_show_spotify": "On Spotify",
         "opacity": "Opacity",
         "brightness": "Brightness",
         "player_size": "Player Size",
         "settings_size": "Panel Size",
+        "settings_panel_type": "Panel Type",
+        "settings_panel_normal": "Normal",
+        "settings_panel_categories": "Categories",
+        "settings_category": "Category",
         "radius": "Radius",
         "fps": "FPS",
         "hotkey": "Hotkey",
         "seek_bar": "Seek Bar",
         "seek_thumb": "Seek Knob",
+        "seek_wave_amp": "Wave Height",
+        "seek_wave_speed": "Wave Speed",
+        "seek_glow_strength": "Glow Strength",
+        "seek_length": "Seek Length",
+        "seek_thumb_size": "Knob Size",
         "advanced": "Advanced",
         "auto_color_strength": "Color Strength",
         "art_mode": "Cover Mode",
         "art_cover": "Cover",
         "art_vinyl": "Vinyl",
+        "art_cover_size": "Cover Size",
+        "art_vinyl_size": "Vinyl Size",
         "tonearm_speed": "Tonearm Speed",
         "vinyl_spin_speed": "Vinyl Speed",
         "controls_hover": "Hide Controls",
         "topbar_hover": "Hide Settings Row",
+        "marquee_enabled": "Marquee Text",
         "card_preset": "Card Size",
         "card_mini": "Tiny",
         "card_standard": "Standard",
         "card_wide": "Wide",
         "card_controls": "Controls",
         "show_cover": "Show Cover",
+        "cover_blur": "Cover Blur",
         "cover_shape": "Cover Shape",
+        "cover_radius_strength": "Corner Strength",
         "cover_shape_rounded": "Rounded",
         "cover_shape_square": "Square",
         "cover_shape_circle": "Circle",
@@ -704,27 +797,45 @@ def load_settings():
     # 防呆夾限
     SETTINGS["bg_opacity"] = min(1.0, max(0.35, float(SETTINGS["bg_opacity"])))
     SETTINGS["brightness"] = min(1.45, max(0.55, float(SETTINGS["brightness"])))
-    SETTINGS["scale"] = min(2.0, max(0.8, float(SETTINGS["scale"])))
+    SETTINGS["scale"] = min(3.0, max(0.8, float(SETTINGS["scale"])))
     SETTINGS["settings_scale"] = min(
         2.0, max(0.8, float(SETTINGS["settings_scale"])))
+    if SETTINGS.get("settings_panel_type") not in [
+            k for k, _ in SETTINGS_PANEL_TYPES]:
+        SETTINGS["settings_panel_type"] = "normal"
+    SETTINGS.pop("settings_full_positions", None)
     SETTINGS["radius"] = min(28, max(6, int(SETTINGS["radius"])))
     SETTINGS["fps"] = min(240, max(24, int(SETTINGS["fps"])))
     SETTINGS["antialias"] = bool(SETTINGS["antialias"])
     SETTINGS["show_source"] = bool(SETTINGS["show_source"])
+    SETTINGS["startup_enabled"] = bool(
+        SETTINGS.get("startup_enabled", False))
+    if SETTINGS.get("startup_show") not in ("boot", "spotify"):
+        SETTINGS["startup_show"] = "boot"
     SETTINGS["gpu"] = bool(SETTINGS["gpu"])
     SETTINGS["shadow"] = bool(SETTINGS["shadow"])
     SETTINGS["anim_enabled"] = bool(SETTINGS.get("anim_enabled", True))
     SETTINGS["controls_hover"] = bool(SETTINGS.get("controls_hover", False))
     SETTINGS["topbar_hover"] = bool(SETTINGS.get("topbar_hover", False))
+    SETTINGS["marquee_enabled"] = bool(
+        SETTINGS.get("marquee_enabled", True))
     if SETTINGS.get("art_mode") not in ("cover", "vinyl"):
         SETTINGS["art_mode"] = "cover"
+    SETTINGS["art_cover_size"] = min(
+        1.4, max(0.6, float(SETTINGS.get("art_cover_size", 1.0))))
+    SETTINGS["art_vinyl_size"] = min(
+        1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0))))
     SETTINGS["tonearm_speed"] = min(
         2.5, max(0.4, float(SETTINGS.get("tonearm_speed", 1.0))))
     SETTINGS["vinyl_spin_speed"] = min(
         2.5, max(0.4, float(SETTINGS.get("vinyl_spin_speed", 1.0))))
     SETTINGS["show_cover"] = bool(SETTINGS.get("show_cover", True))
+    SETTINGS["cover_blur"] = round(min(
+        14.0, max(0.0, float(SETTINGS.get("cover_blur", 0.0)))), 1)
     if SETTINGS.get("cover_shape") not in ("rounded", "square", "circle"):
         SETTINGS["cover_shape"] = "rounded"
+    SETTINGS["cover_radius_strength"] = min(
+        2.0, max(0.0, float(SETTINGS.get("cover_radius_strength", 1.0))))
     SETTINGS["cover_border"] = bool(SETTINGS.get("cover_border", False))
     SETTINGS["cover_border_width"] = min(
         8.0, max(1.0, float(SETTINGS.get("cover_border_width", 2.0))))
@@ -743,12 +854,28 @@ def load_settings():
     for key in ("hotkey_play", "hotkey_prev", "hotkey_next",
                 "hotkey_vol_up", "hotkey_vol_down"):
         SETTINGS[key] = str(SETTINGS.get(key, "")).strip()
+    for key in ("settings_x", "settings_y"):
+        if key in SETTINGS:
+            try:
+                SETTINGS[key] = int(SETTINGS[key])
+            except (TypeError, ValueError):
+                SETTINGS.pop(key, None)
     if SETTINGS.get("language") not in [k for k, _ in LANGUAGES]:
         SETTINGS["language"] = "zh"
     if SETTINGS["seek_style"] not in [k for k, _ in SEEK_STYLES]:
         SETTINGS["seek_style"] = "wave"
     if SETTINGS.get("seek_thumb") not in [k for k, _ in SEEK_THUMBS]:
         SETTINGS["seek_thumb"] = "hover"
+    SETTINGS["seek_wave_amp"] = min(
+        2.0, max(0.0, float(SETTINGS.get("seek_wave_amp", 1.0))))
+    SETTINGS["seek_wave_speed"] = min(
+        2.5, max(0.25, float(SETTINGS.get("seek_wave_speed", 1.0))))
+    SETTINGS["seek_glow_strength"] = min(
+        2.0, max(0.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
+    SETTINGS["seek_length"] = min(
+        1.3, max(0.2, float(SETTINGS.get("seek_length", 1.0))))
+    SETTINGS["seek_thumb_size"] = min(
+        1.5, max(0.2, float(SETTINGS.get("seek_thumb_size", 1.0))))
     if SETTINGS.get("auto_theme") not in [k for k, _ in AUTO_THEME_MODES]:
         SETTINGS["auto_theme"] = "solid"
     if SETTINGS["source"] not in [k for k, _ in SOURCE_MODES]:
@@ -1182,6 +1309,27 @@ def fmt_time(sec: float) -> str:
 
 
 _DOM_CACHE: OrderedDict[int, QColor] = OrderedDict()
+_GRAD_CACHE: OrderedDict[int, tuple[QColor, QColor]] = OrderedDict()
+
+
+def _fit_cover_color(c: QColor) -> QColor:
+    h, s, v, _ = QColor(c).getHsv()
+    if h < 0:
+        return QColor.fromHsv(220, 42, 176)
+    s = max(s, 108) if s > 35 else s
+    v = min(max(v, 145), 224)
+    return QColor.fromHsv(h, s, v)
+
+
+def _fallback_cover_pair(c: QColor) -> tuple[QColor, QColor]:
+    base = _fit_cover_color(c)
+    h, s, v, _ = base.getHsv()
+    if h < 0:
+        h = 220
+    other = QColor.fromHsv((h + 34) % 360,
+                           min(255, round(s * 0.92)),
+                           max(82, round(v * 0.76)))
+    return base, other
 
 
 def dominant_color(img: QImage) -> QColor:
@@ -1230,3 +1378,69 @@ def dominant_color(img: QImage) -> QColor:
     while len(_DOM_CACHE) > 16:
         _DOM_CACHE.popitem(last=False)
     return result
+
+
+def cover_gradient(img: QImage) -> tuple[QColor, QColor]:
+    """從封面抓兩個代表色，用於自動雙色漸層背景。"""
+    ck = img.cacheKey()
+    cached = _GRAD_CACHE.get(ck)
+    if cached is not None:
+        _GRAD_CACHE.move_to_end(ck)
+        return QColor(cached[0]), QColor(cached[1])
+
+    small = img.scaled(32, 32, Qt.IgnoreAspectRatio,
+                       Qt.SmoothTransformation).convertToFormat(
+                           QImage.Format_RGB32)
+    buckets: dict[tuple[int, int, int], list[float]] = {}
+    for y in range(small.height()):
+        for x in range(small.width()):
+            c = small.pixelColor(x, y)
+            v = c.value()
+            if v < 24:
+                continue
+            s = c.saturation()
+            if s < 18 and v < 160:
+                continue
+            key = (c.red() >> 4, c.green() >> 4, c.blue() >> 4)
+            score = (0.25 + (s / 255) ** 1.25) * (0.35 + v / 255)
+            acc = buckets.setdefault(key, [0.0, 0.0, 0.0, 0.0, 0.0])
+            acc[0] += c.red()
+            acc[1] += c.green()
+            acc[2] += c.blue()
+            acc[3] += 1.0
+            acc[4] += score
+
+    if not buckets:
+        result = _fallback_cover_pair(QColor(SPOTIFY_GREEN))
+    else:
+        candidates = []
+        for acc in buckets.values():
+            n = max(1.0, acc[3])
+            color = _fit_cover_color(QColor(round(acc[0] / n),
+                                            round(acc[1] / n),
+                                            round(acc[2] / n)))
+            candidates.append((color, acc[4]))
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        c0, score0 = candidates[0]
+        best = None
+        best_score = -1.0
+        for c, score in candidates[1:18]:
+            dr = (c.red() - c0.red()) / 255.0
+            dg = (c.green() - c0.green()) / 255.0
+            db = (c.blue() - c0.blue()) / 255.0
+            dist = math.sqrt(dr * dr + dg * dg + db * db)
+            h0, _, _, _ = c0.getHsv()
+            h1, _, _, _ = c.getHsv()
+            hue = 0.0
+            if h0 >= 0 and h1 >= 0:
+                hue = min(abs(h0 - h1), 360 - abs(h0 - h1)) / 180.0
+            pick_score = score * (0.55 + dist + hue * 0.65)
+            if dist > 0.18 and pick_score > best_score:
+                best = c
+                best_score = pick_score
+        result = (c0, best) if best is not None else _fallback_cover_pair(c0)
+
+    _GRAD_CACHE[ck] = (QColor(result[0]), QColor(result[1]))
+    while len(_GRAD_CACHE) > 16:
+        _GRAD_CACHE.popitem(last=False)
+    return QColor(result[0]), QColor(result[1])
