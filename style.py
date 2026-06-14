@@ -66,12 +66,20 @@ DEFAULTS = {
     "seek_glow_strength": 1.0,
     "seek_length": 1.0,
     "seek_thumb_size": 1.0,
+    "progress_time_mode": "current",
     "controls_hover": False, # 控制列只在 hover 時顯示
     "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
+    "title_size": 1.0,
+    "artist_size": 1.0,
+    "title_x_offset": 0.0,
+    "title_y_offset": 0.0,
+    "artist_x_offset": 0.0,
+    "artist_y_offset": 0.0,
     "auto_theme": "solid",  # solid / gradient，封面自動主題背景模式
     "art_mode": "cover",    # cover / vinyl，封面區顯示模式
     "art_cover_size": 1.0,
     "art_vinyl_size": 1.0,
+    "show_tonearm": True,
     "tonearm_speed": 1.0,
     "vinyl_spin_speed": 1.0,
     "topbar_hover": False,
@@ -88,6 +96,8 @@ DEFAULTS = {
     "show_btn_prev": True,
     "show_btn_next": True,
     "show_btn_repeat": True,
+    "control_button_size": 1.0,
+    "control_button_spacing": 1.0,
     "font": "Segoe UI",
     "fps": 60,              # 24 ~ 240，特效計時器更新率
     "antialias": True,      # 反鋸齒
@@ -133,6 +143,7 @@ THEMES = [
 
 SEEK_STYLES = [("plain", "簡約"), ("wave", "波浪"), ("glow", "流光")]
 SEEK_THUMBS = [("hover", "滑過顯示"), ("always", "常駐顯示")]
+PROGRESS_TIME_MODES = [("current", "目前"), ("remaining", "-剩餘")]
 AUTO_THEME_MODES = [("solid", "單色"), ("gradient", "漸層")]
 SOURCE_MODES = [("spotify", "Spotify"), ("browser", "瀏覽器"), ("any", "全部")]
 CONTROLS_ALIGN = [("left", "靠左"), ("center", "置中"), ("right", "靠右")]
@@ -149,8 +160,10 @@ _I18N = {
         "reset_settings": "重設設定",
         "section_general": "一般",
         "section_appearance": "外觀",
+        "section_text": "文字",
         "section_cover": "封面",
         "section_controls": "控制",
+        "section_buttons": "按鈕",
         "section_performance": "效能",
         "section_hotkeys": "快捷鍵",
         "theme": "主題",
@@ -178,6 +191,7 @@ _I18N = {
         "seek_glow_strength": "流光強度",
         "seek_length": "進度條長度",
         "seek_thumb_size": "圓鈕大小",
+        "progress_time": "進度時間",
         "advanced": "進階設定",
         "auto_color_strength": "主色強度",
         "art_mode": "封面模式",
@@ -185,11 +199,18 @@ _I18N = {
         "art_vinyl": "黑膠",
         "art_cover_size": "封面圖大小",
         "art_vinyl_size": "黑膠大小",
+        "show_tonearm": "顯示唱針",
         "tonearm_speed": "唱針速度",
         "vinyl_spin_speed": "黑膠轉速",
         "controls_hover": "控制列隱藏",
         "topbar_hover": "設定列隱藏",
         "marquee_enabled": "跑馬燈",
+        "title_size": "歌名大小",
+        "artist_size": "作者大小",
+        "title_x_offset": "歌名 X",
+        "title_y_offset": "歌名 Y",
+        "artist_x_offset": "作者 X",
+        "artist_y_offset": "作者 Y",
         "card_preset": "卡片尺寸",
         "card_mini": "超迷你",
         "card_standard": "標準",
@@ -212,6 +233,8 @@ _I18N = {
         "show_btn_prev": "顯示上一首",
         "show_btn_next": "顯示下一首",
         "show_btn_repeat": "顯示循環",
+        "control_button_size": "控制鈕大小",
+        "control_button_spacing": "控制鈕間距",
         "hotkey_toggle": "顯示隱藏",
         "hotkey_play": "播放暫停",
         "hotkey_prev": "上一首",
@@ -234,6 +257,8 @@ _I18N = {
         "seek_glow": "流光",
         "seek_thumb_hover": "滑過",
         "seek_thumb_always": "常駐",
+        "progress_time_current": "目前",
+        "progress_time_remaining": "-剩餘",
         "align_left": "靠左",
         "align_center": "置中",
         "align_right": "靠右",
@@ -313,8 +338,10 @@ _I18N = {
         "reset_settings": "設定をリセット",
         "section_general": "一般",
         "section_appearance": "外観",
+        "section_text": "テキスト",
         "section_cover": "カバー",
         "section_controls": "操作",
+        "section_buttons": "ボタン",
         "section_performance": "パフォーマンス",
         "section_hotkeys": "ショートカット",
         "theme": "テーマ",
@@ -342,6 +369,7 @@ _I18N = {
         "seek_glow_strength": "グロー強度",
         "seek_length": "バーの長さ",
         "seek_thumb_size": "ノブサイズ",
+        "progress_time": "進行時間",
         "advanced": "詳細設定",
         "auto_color_strength": "主色の強さ",
         "art_mode": "カバー表示",
@@ -349,11 +377,18 @@ _I18N = {
         "art_vinyl": "レコード",
         "art_cover_size": "カバーサイズ",
         "art_vinyl_size": "レコードサイズ",
+        "show_tonearm": "針を表示",
         "tonearm_speed": "針の速度",
         "vinyl_spin_speed": "回転速度",
         "controls_hover": "操作列を隠す",
         "topbar_hover": "設定列を隠す",
         "marquee_enabled": "テキストスクロール",
+        "title_size": "曲名サイズ",
+        "artist_size": "アーティストサイズ",
+        "title_x_offset": "曲名 X",
+        "title_y_offset": "曲名 Y",
+        "artist_x_offset": "アーティスト X",
+        "artist_y_offset": "アーティスト Y",
         "card_preset": "カードサイズ",
         "card_mini": "ミニ",
         "card_standard": "標準",
@@ -375,6 +410,8 @@ _I18N = {
         "show_btn_prev": "前へ表示",
         "show_btn_next": "次へ表示",
         "show_btn_repeat": "リピート表示",
+        "control_button_size": "操作ボタンサイズ",
+        "control_button_spacing": "操作ボタン間隔",
         "hotkey_toggle": "表示 / 非表示",
         "hotkey_play": "再生 / 一時停止",
         "hotkey_prev": "前へ",
@@ -397,6 +434,8 @@ _I18N = {
         "seek_glow": "グロー",
         "seek_thumb_hover": "ホバー",
         "seek_thumb_always": "常時",
+        "progress_time_current": "現在",
+        "progress_time_remaining": "-残り",
         "align_left": "左",
         "align_center": "中央",
         "align_right": "右",
@@ -476,8 +515,10 @@ _I18N = {
         "reset_settings": "Reset Settings",
         "section_general": "General",
         "section_appearance": "Appearance",
+        "section_text": "Text",
         "section_cover": "Cover",
         "section_controls": "Controls",
+        "section_buttons": "Buttons",
         "section_performance": "Performance",
         "section_hotkeys": "Hotkeys",
         "theme": "Theme",
@@ -505,6 +546,7 @@ _I18N = {
         "seek_glow_strength": "Glow Strength",
         "seek_length": "Seek Length",
         "seek_thumb_size": "Knob Size",
+        "progress_time": "Seek Time",
         "advanced": "Advanced",
         "auto_color_strength": "Color Strength",
         "art_mode": "Cover Mode",
@@ -512,11 +554,18 @@ _I18N = {
         "art_vinyl": "Vinyl",
         "art_cover_size": "Cover Size",
         "art_vinyl_size": "Vinyl Size",
+        "show_tonearm": "Show Tonearm",
         "tonearm_speed": "Tonearm Speed",
         "vinyl_spin_speed": "Vinyl Speed",
         "controls_hover": "Hide Controls",
         "topbar_hover": "Hide Settings Row",
         "marquee_enabled": "Marquee Text",
+        "title_size": "Title Size",
+        "artist_size": "Artist Size",
+        "title_x_offset": "Title X",
+        "title_y_offset": "Title Y",
+        "artist_x_offset": "Artist X",
+        "artist_y_offset": "Artist Y",
         "card_preset": "Card Size",
         "card_mini": "Tiny",
         "card_standard": "Standard",
@@ -538,6 +587,8 @@ _I18N = {
         "show_btn_prev": "Show Previous",
         "show_btn_next": "Show Next",
         "show_btn_repeat": "Show Repeat",
+        "control_button_size": "Button Size",
+        "control_button_spacing": "Button Spacing",
         "hotkey_toggle": "Show / Hide",
         "hotkey_play": "Play / Pause",
         "hotkey_prev": "Previous",
@@ -560,6 +611,8 @@ _I18N = {
         "seek_glow": "Glow",
         "seek_thumb_hover": "Hover",
         "seek_thumb_always": "Always",
+        "progress_time_current": "Current",
+        "progress_time_remaining": "- Remaining",
         "align_left": "Left",
         "align_center": "Center",
         "align_right": "Right",
@@ -819,12 +872,21 @@ def load_settings():
     SETTINGS["topbar_hover"] = bool(SETTINGS.get("topbar_hover", False))
     SETTINGS["marquee_enabled"] = bool(
         SETTINGS.get("marquee_enabled", True))
+    SETTINGS["title_size"] = min(
+        1.8, max(0.6, float(SETTINGS.get("title_size", 1.0))))
+    SETTINGS["artist_size"] = min(
+        1.8, max(0.6, float(SETTINGS.get("artist_size", 1.0))))
+    for key in ("title_x_offset", "title_y_offset",
+                "artist_x_offset", "artist_y_offset"):
+        SETTINGS[key] = min(80.0, max(
+            -80.0, float(SETTINGS.get(key, 0.0))))
     if SETTINGS.get("art_mode") not in ("cover", "vinyl"):
         SETTINGS["art_mode"] = "cover"
     SETTINGS["art_cover_size"] = min(
         1.4, max(0.6, float(SETTINGS.get("art_cover_size", 1.0))))
     SETTINGS["art_vinyl_size"] = min(
         1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0))))
+    SETTINGS["show_tonearm"] = bool(SETTINGS.get("show_tonearm", True))
     SETTINGS["tonearm_speed"] = min(
         2.5, max(0.4, float(SETTINGS.get("tonearm_speed", 1.0))))
     SETTINGS["vinyl_spin_speed"] = min(
@@ -845,6 +907,10 @@ def load_settings():
     for key in ("show_btn_shuffle", "show_btn_prev",
                 "show_btn_next", "show_btn_repeat"):
         SETTINGS[key] = bool(SETTINGS.get(key, True))
+    SETTINGS["control_button_size"] = min(
+        1.6, max(0.7, float(SETTINGS.get("control_button_size", 1.0))))
+    SETTINGS["control_button_spacing"] = min(
+        2.2, max(0.4, float(SETTINGS.get("control_button_spacing", 1.0))))
     SETTINGS["auto_color_strength"] = min(
         1.0, max(0.0, float(SETTINGS.get("auto_color_strength", 1.0))))
     if SETTINGS.get("card_preset") not in [k for k, _ in CARD_PRESETS]:
@@ -866,6 +932,9 @@ def load_settings():
         SETTINGS["seek_style"] = "wave"
     if SETTINGS.get("seek_thumb") not in [k for k, _ in SEEK_THUMBS]:
         SETTINGS["seek_thumb"] = "hover"
+    if SETTINGS.get("progress_time_mode") not in [
+            k for k, _ in PROGRESS_TIME_MODES]:
+        SETTINGS["progress_time_mode"] = "current"
     SETTINGS["seek_wave_amp"] = min(
         2.0, max(0.0, float(SETTINGS.get("seek_wave_amp", 1.0))))
     SETTINGS["seek_wave_speed"] = min(

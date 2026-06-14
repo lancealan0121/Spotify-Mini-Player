@@ -43,6 +43,7 @@ class MarqueeLabel(QWidget):
         self._visual_scale = 1.0
         self._visual_y = 0.0
         self._visual_h = 0.0
+        self._text_layer_cache = {}
         self._old_text = ""          # 換曲過渡：舊文字
         self._old_w = 0.0
         self._old_off = 0.0
@@ -57,6 +58,7 @@ class MarqueeLabel(QWidget):
 
     def set_color(self, color: QColor):
         self._color = QColor(color)
+        self._clear_text_layers()
         self.update()
 
     def set_font_px(self, px: int):
@@ -65,6 +67,7 @@ class MarqueeLabel(QWidget):
         self._px = px
         self._font = ui_font(px, self._weight)
         self._font.setHintingPreference(QFont.PreferNoHinting)
+        self._clear_text_layers()
         fm = QFontMetricsF(self._font)
         self._text_w = fm.horizontalAdvance(self._text)
         self._old_w = fm.horizontalAdvance(self._old_text)
@@ -145,8 +148,67 @@ class MarqueeLabel(QWidget):
         self._hold = self.HOLD
         self._last = time.monotonic()
         self._text_w = QFontMetricsF(self._font).horizontalAdvance(text)
+        self._clear_text_layers()
         self._sync_scroll_timer()
         self.update()
+
+    def _clear_text_layers(self):
+        self._text_layer_cache.clear()
+
+    def _text_layer(self, text: str):
+        if not text:
+            return None
+        # 文字動畫期間只縮放這張圖層；DPR 1.0 時也用 2x 渲染，
+        # 避免 15px 字放大到 18px 左右時明顯發糊。
+        dpr = max(2.0, self.devicePixelRatioF())
+        key = (text, self._color.rgba(), self._font.family(),
+               self._font.pixelSize(), self._font.weight(),
+               round(dpr * 100))
+        cached = self._text_layer_cache.get(key)
+        if cached is not None:
+            return cached
+
+        fm = QFontMetricsF(self._font)
+        text_w = max(1.0, fm.horizontalAdvance(text))
+        line_h = max(1.0, fm.height())
+        pad = 3.0
+        logical_w = math.ceil(text_w + pad * 2 + 2)
+        logical_h = math.ceil(line_h + pad * 2)
+        pm = QPixmap(max(1, round(logical_w * dpr)),
+                     max(1, round(logical_h * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+
+        qp = QPainter(pm)
+        qp.setRenderHint(QPainter.TextAntialiasing, True)
+        qp.setFont(self._font)
+        qp.setPen(self._color)
+        qp.drawText(QPointF(pad, pad + fm.ascent()), text)
+        qp.end()
+
+        layer = (pm, float(logical_w), float(logical_h), float(line_h), pad)
+        self._text_layer_cache[key] = layer
+        if len(self._text_layer_cache) > 12:
+            self._text_layer_cache.pop(next(iter(self._text_layer_cache)))
+        return layer
+
+    def _draw_text_layer(self, p: QPainter, text: str, x: float, y: float,
+                         h: float, scale: float, opacity: float = 1.0):
+        layer = self._text_layer(text)
+        if layer is None:
+            return
+        pm, logical_w, logical_h, line_h, pad = layer
+        cy = y + h / 2.0
+        top = y + (h - line_h) / 2.0 - pad
+        target = QRectF((float(x) - pad) * scale,
+                        cy + (top - cy) * scale,
+                        logical_w * scale,
+                        logical_h * scale)
+        p.save()
+        p.setOpacity(max(0.0, min(1.0, float(opacity))))
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawPixmap(target, pm, QRectF(pm.rect()))
+        p.restore()
 
     def _tick(self):
         now = time.monotonic()
@@ -183,57 +245,41 @@ class MarqueeLabel(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.TextAntialiasing)
-        p.setFont(self._font)
-        p.setPen(self._color)
         y = self._visual_y
         h = self._visual_h or float(self.height())
         scale = self._visual_scale
-        if abs(scale - 1.0) > 0.002:
-            p.save()
-            p.translate(0.0, y + h / 2.0)
-            p.scale(scale, scale)
-            p.translate(0.0, -(y + h / 2.0))
         avail_w = self.width() / max(0.01, scale)
         if self._tr < 1.0:           # 換曲過渡：舊字上滑淡出、新字下滑入
             t = self._tr
             rise = h * 0.55
-            p.setOpacity(1.0 - t)
             if self._marquee_enabled:
-                old_rect = QRectF(-self._old_off, y - rise * t,
-                                  self._old_w + 4, h)
+                old_x = -self._old_off
                 old_text = self._old_text
             else:
-                old_rect = QRectF(0, y - rise * t, avail_w, h)
+                old_x = 0.0
                 old_text = self._elided(self._old_text, avail_w)
-            p.drawText(old_rect, Qt.AlignVCenter | Qt.AlignLeft, old_text)
-            p.setOpacity(min(1.0, t * 1.15))
+            self._draw_text_layer(p, old_text, old_x, y - rise * t, h,
+                                  scale, 1.0 - t)
             if self._marquee_enabled:
-                new_rect = QRectF(0, y + rise * (1.0 - t),
-                                  self._text_w + 4, h)
+                new_x = 0.0
                 new_text = self._text
             else:
-                new_rect = QRectF(0, y + rise * (1.0 - t), avail_w, h)
+                new_x = 0.0
                 new_text = self._elided(self._text, avail_w)
-            p.drawText(new_rect, Qt.AlignVCenter | Qt.AlignLeft, new_text)
-            if abs(scale - 1.0) > 0.002:
-                p.restore()
+            self._draw_text_layer(p, new_text, new_x,
+                                  y + rise * (1.0 - t), h, scale,
+                                  min(1.0, t * 1.15))
             return
         if not self._marquee_enabled:
-            p.drawText(QRectF(0, y, avail_w, h),
-                       Qt.AlignVCenter | Qt.AlignLeft,
-                       self._elided(self._text, avail_w))
+            self._draw_text_layer(p, self._elided(self._text, avail_w),
+                                  0.0, y, h, scale)
         elif self._text_w <= avail_w:
-            p.drawText(QRectF(0, y, avail_w, h),
-                       Qt.AlignVCenter | Qt.AlignLeft, self._text)
+            self._draw_text_layer(p, self._text, 0.0, y, h, scale)
         else:
-            p.drawText(QRectF(-self._offset, y,
-                              self._text_w + 4, h),
-                       Qt.AlignVCenter | Qt.AlignLeft, self._text)
-            p.drawText(QRectF(-self._offset + self._text_w + self._gap, y,
-                              self._text_w + 4, h),
-                       Qt.AlignVCenter | Qt.AlignLeft, self._text)
-        if abs(scale - 1.0) > 0.002:
-            p.restore()
+            self._draw_text_layer(p, self._text, -self._offset, y, h, scale)
+            self._draw_text_layer(p, self._text,
+                                  -self._offset + self._text_w + self._gap,
+                                  y, h, scale)
 
 
 class ArtView(QWidget):
@@ -261,6 +307,8 @@ class ArtView(QWidget):
         self._anim = Anim(self)
         self._anim.valueChanged.connect(self._on_t)
         self._anim.finished.connect(self._done)
+        self._ra = Anim(self)
+        self._ra.valueChanged.connect(self._on_radius)
         self._hover = 0.0
         self._ha = Anim(self)
         self._ha.valueChanged.connect(self._on_hover)
@@ -320,6 +368,10 @@ class ArtView(QWidget):
         self._hover = float(v)
         self.update()
 
+    def _on_radius(self, v):
+        self._radius = max(0.0, float(v))
+        self.update()
+
     def _on_border(self, v):
         t = max(0.0, min(1.0, float(v)))
         self._border_t = self._border_t0 + (self._border_t1 - self._border_t0) * t
@@ -331,12 +383,38 @@ class ArtView(QWidget):
         self._accent = QColor(c)
         self.update()
 
-    def set_radius(self, radius: int):
-        radius = max(0, min(self.cover_size() // 2, int(radius)))
-        if radius == self._radius:
+    def set_scales(self, cover_scale: float, vinyl_scale: float):
+        cover_scale = max(0.6, min(1.4, float(cover_scale)))
+        vinyl_scale = max(0.7, min(1.35, float(vinyl_scale)))
+        if (abs(cover_scale - self._cover_scale) < 0.0001
+                and abs(vinyl_scale - self._vinyl_scale) < 0.0001):
             return
-        self._radius = radius
+        self._cover_scale = cover_scale
+        self._vinyl_scale = vinyl_scale
+        self._layout_size = max(self.cover_size(), self.vinyl_size())
+        self.pad = max(8, round(self._layout_size * 0.18))
+        self.setFixedSize(self._layout_size + self.pad * 2,
+                          self._layout_size + self.pad * 2)
+        self._sync_spin()
         self.update()
+
+    def set_radius(self, radius: int, animate: bool = False):
+        radius = max(0, min(self.cover_size() // 2, int(radius)))
+        if abs(radius - self._radius) < 0.5:
+            self._radius = radius
+            self.update()
+            return
+        self._ra.stop()
+        ms = adur(260, 140)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._radius = radius
+            self.update()
+            return
+        self._ra.setStartValue(float(self._radius))
+        self._ra.setEndValue(float(radius))
+        self._ra.setDuration(ms)
+        self._ra.setEasingCurve(QEasingCurve.OutCubic)
+        self._ra.start()
 
     def set_border(self, enabled: bool, width: float,
                    opacity: float = 0.85,
@@ -557,8 +635,7 @@ class ArtView(QWidget):
 
     def _shape_path(self, rect: QRectF) -> QPainterPath:
         path = QPainterPath()
-        if (SETTINGS.get("cover_shape") == "circle"
-                or self._radius >= min(rect.width(), rect.height()) / 2 - 0.5):
+        if self._radius >= min(rect.width(), rect.height()) / 2 - 0.5:
             path.addEllipse(rect)
         elif self._radius > 0:
             path.addRoundedRect(rect, self._radius, self._radius)
@@ -956,7 +1033,8 @@ class ArtView(QWidget):
         self._draw_border(p, cover_alpha)
         self._draw_vinyl(p, vinyl_alpha)
         p.restore()
-        self._draw_tonearm(p, vinyl_alpha)
+        if SETTINGS.get("show_tonearm", True):
+            self._draw_tonearm(p, vinyl_alpha)
 
 
 class _AnimButton(QAbstractButton):
@@ -1117,6 +1195,16 @@ class IconButton(_AnimButton):
     def set_glyph(self, glyph: str):
         if glyph != self._glyph:
             self._glyph = glyph
+            self.update()
+
+    def set_metrics(self, glyph_px: int, diameter: int):
+        glyph_px = max(1, int(glyph_px))
+        diameter = max(1, int(diameter))
+        changed = self._px != glyph_px or self.width() != diameter
+        self._px = glyph_px
+        if self.width() != diameter or self.height() != diameter:
+            self.setFixedSize(diameter, diameter)
+        if changed:
             self.update()
 
     def set_accent(self, c: QColor):
@@ -1326,10 +1414,16 @@ class PlayButton(_AnimButton):
         self._icon_t = 0.0
         self._icon_anim = Anim(self)
         self._icon_anim.valueChanged.connect(self._on_icon)
+        self._d = 0
+        self.set_diameter(size)
+
+    def set_diameter(self, size: int):
+        size = max(1, int(size))
         self._d = size                       # 圓的直徑
         # hover 放大 + 回彈 overshoot 的留邊，避免圓被 widget 邊界裁切
         pad = max(3, round(size * 0.10))
         self.setFixedSize(size + pad * 2, size + pad * 2)
+        self.update()
 
     def _on_icon(self, v):
         self._icon_t = max(0.0, min(1.0, float(v)))

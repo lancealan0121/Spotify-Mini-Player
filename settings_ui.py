@@ -9,12 +9,13 @@ from PySide6.QtGui import (QColor, QConicalGradient, QFont, QFontDatabase,
                            QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QDialog,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                               QLineEdit, QVBoxLayout, QWidget)
+                               QLineEdit, QSizePolicy, QVBoxLayout, QWidget)
 
 from style import (AUTO_THEME_MODES, CARD_PRESETS, CONTROLS_ALIGN,
                    GLYPH_CHECK, GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_UP,
                    GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
-                   GLYPH_VOLUME, LANGUAGES, SEEK_STYLES, SETTINGS,
+                   GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_MODES,
+                   SEEK_STYLES, SETTINGS,
                    SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES, Anim, aa,
                    adur, all_themes, anim_on, blend, icon_font, soft_shadow,
                    theme_color, theme_gradient, theme_label, tr, ui_font)
@@ -89,8 +90,10 @@ def settings_panel_type_options():
 PANEL_CATEGORY_KEYS = (
     "section_general",
     "section_appearance",
+    "section_text",
     "section_cover",
     "section_controls",
+    "section_buttons",
     "section_performance",
     "section_hotkeys",
 )
@@ -106,6 +109,10 @@ def seek_options():
 
 def seek_thumb_options():
     return [(k, tr(f"seek_thumb_{k}")) for k, _ in SEEK_THUMBS]
+
+
+def progress_time_options():
+    return [(k, tr(f"progress_time_{k}")) for k, _ in PROGRESS_TIME_MODES]
 
 
 def auto_theme_options():
@@ -1535,11 +1542,16 @@ class SwatchRow(QWidget):
         return len(self._keys) if self._show_all else self.COLS
 
     def _on_h(self, v):
-        self.setFixedHeight(round(float(v)))
+        h = round(float(v))
+        if h == self.height():
+            self.update()
+            return
+        self.setFixedHeight(h)
         self.size_changed.emit()   # 面板每幀跟著伸縮
 
     def _expand_done(self):
         self._show_all = self._expanded
+        self.size_changed.emit()
         self.update()
 
     def _on_hover_anim(self, v):
@@ -2660,6 +2672,7 @@ class SettingsPanel(QWidget):
         self._advanced_geo = QRectF()
         self._advanced_t = 0.0
         self._theme_row_h = 0
+        self._theme_resize_anchor: QPoint | None = None
         self._advanced_anim = Anim(self)
         self._advanced_anim.valueChanged.connect(self._on_advanced_anim)
         self._advanced_anim.finished.connect(self._advanced_anim_done)
@@ -2699,6 +2712,7 @@ class SettingsPanel(QWidget):
         lay.setContentsMargins(panel_px(20), panel_px(14),
                                panel_px(20), panel_px(18))
         lay.setSpacing(panel_px(10))
+        lay.setAlignment(Qt.AlignTop)
 
         # 標題列
         head = QHBoxLayout()
@@ -2743,6 +2757,7 @@ class SettingsPanel(QWidget):
                 box_lay.setContentsMargins(panel_px(20), panel_px(14),
                                            panel_px(20), panel_px(18))
                 box_lay.setSpacing(panel_px(8))
+                box_lay.setAlignment(Qt.AlignTop)
                 full_layouts[section_key] = box_lay
                 self._full_boxes.append(box)
                 self._full_box_sections[section_key] = box
@@ -2760,6 +2775,7 @@ class SettingsPanel(QWidget):
             self._section_labels.append((label_key, lab))
             lab.setFont(panel_font(11, QFont.DemiBold))
             lab.setStyleSheet("color: rgba(255,255,255,128);")
+            lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             layout.addWidget(lab)
             current_section = []
             current_section_key = label_key
@@ -2778,6 +2794,7 @@ class SettingsPanel(QWidget):
 
         def row(label_key, control, stretch=True, top=False):
             host = QWidget()
+            host.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             h = QHBoxLayout()
             host.setLayout(h)
             h.setContentsMargins(0, 0, 0, 0)
@@ -2817,7 +2834,6 @@ class SettingsPanel(QWidget):
                 accent=self._accent))
             self.sg_lang = row("language", Segmented(
                 LANGUAGES, SETTINGS["language"], accent=self._accent))
-            self.fp_font = row("font", FontPicker(SETTINGS["font"]))
 
         def build_appearance():
             section(lay, "section_appearance")
@@ -2845,6 +2861,31 @@ class SettingsPanel(QWidget):
             self.sg_card_preset = row("card_preset", Segmented(
                 card_preset_options(), SETTINGS["card_preset"], accent=self._accent))
 
+        def build_text():
+            section(lay, "section_text")
+            self.fp_font = row("font", FontPicker(SETTINGS["font"]))
+            self.tg_marquee = row("marquee_enabled", Toggle(
+                bool(SETTINGS["marquee_enabled"]), accent=self._accent),
+                stretch=False)
+            self.sl_title_size = row("title_size", PanelSlider(
+                60, 180, SETTINGS["title_size"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_artist_size = row("artist_size", PanelSlider(
+                60, 180, SETTINGS["artist_size"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_title_x = row("title_x_offset", PanelSlider(
+                -80, 80, SETTINGS["title_x_offset"],
+                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+            self.sl_title_y = row("title_y_offset", PanelSlider(
+                -80, 80, SETTINGS["title_y_offset"],
+                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+            self.sl_artist_x = row("artist_x_offset", PanelSlider(
+                -80, 80, SETTINGS["artist_x_offset"],
+                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+            self.sl_artist_y = row("artist_y_offset", PanelSlider(
+                -80, 80, SETTINGS["artist_y_offset"],
+                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+
         def build_cover():
             section(lay, "section_cover")
             self.tg_show_cover = row("show_cover", Toggle(
@@ -2852,6 +2893,9 @@ class SettingsPanel(QWidget):
                 stretch=False)
             self.sg_art_mode = row("art_mode", Segmented(
                 art_mode_options(), SETTINGS["art_mode"], accent=self._accent))
+            self.tg_show_tonearm = row("show_tonearm", Toggle(
+                bool(SETTINGS["show_tonearm"]), accent=self._accent),
+                stretch=False)
             self.sl_cover_blur = row("cover_blur", PanelSlider(
                 0, 14, SETTINGS["cover_blur"],
                 fmt=lambda v: f"{v:.1f}px", accent=self._accent, step=0.1))
@@ -2863,14 +2907,43 @@ class SettingsPanel(QWidget):
                             fmt=lambda v: f"{v:.0f}%",
                             accent=self._accent))
 
+        def build_buttons():
+            section(lay, "section_buttons")
+            self.sl_control_button_size = row("control_button_size", PanelSlider(
+                70, 160, SETTINGS["control_button_size"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_control_button_spacing = row(
+                "control_button_spacing",
+                PanelSlider(40, 220, SETTINGS["control_button_spacing"] * 100,
+                            fmt=lambda v: f"{v:.0f}%",
+                            accent=self._accent))
+            self.sg_ctl = row("button_pos", Segmented(
+                align_options(), SETTINGS["controls_align"], accent=self._accent))
+            self.tg_btn_shuffle = row("show_btn_shuffle", Toggle(
+                bool(SETTINGS["show_btn_shuffle"]), accent=self._accent),
+                stretch=False)
+            self.tg_btn_prev = row("show_btn_prev", Toggle(
+                bool(SETTINGS["show_btn_prev"]), accent=self._accent),
+                stretch=False)
+            self.tg_btn_next = row("show_btn_next", Toggle(
+                bool(SETTINGS["show_btn_next"]), accent=self._accent),
+                stretch=False)
+            self.tg_btn_repeat = row("show_btn_repeat", Toggle(
+                bool(SETTINGS["show_btn_repeat"]), accent=self._accent),
+                stretch=False)
+
         if panel_type == "normal":
             build_appearance()
+            build_text()
             build_general()
             build_cover()
+            build_buttons()
         else:
             build_general()
             build_appearance()
+            build_text()
             build_cover()
+            build_buttons()
 
         self.btn_advanced = PanelButton("", accent=self._accent, parent=self)
         self.advanced_box = _ScrollablePanelBody(self)
@@ -2885,6 +2958,7 @@ class SettingsPanel(QWidget):
             adv.setContentsMargins(panel_px(20), panel_px(14),
                                    panel_px(20), panel_px(18))
             adv.setSpacing(panel_px(8))
+            adv.setAlignment(Qt.AlignTop)
 
         def update_advanced_button():
             self._update_advanced_button()
@@ -2983,6 +3057,9 @@ class SettingsPanel(QWidget):
         section(adv, "section_controls")
         self.sg_seek = adv_row("seek_bar", Segmented(
             seek_options(), SETTINGS["seek_style"], accent=self._accent))
+        self.sg_progress_time = adv_row("progress_time", Segmented(
+            progress_time_options(), SETTINGS["progress_time_mode"],
+            accent=self._accent))
         self.sl_seek_wave_amp = adv_row("seek_wave_amp", PanelSlider(
             0, 200, SETTINGS["seek_wave_amp"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
@@ -3000,17 +3077,9 @@ class SettingsPanel(QWidget):
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.sg_thumb = adv_row("seek_thumb", Segmented(
             seek_thumb_options(), SETTINGS["seek_thumb"], accent=self._accent))
-        self.sg_ctl = adv_row("button_pos", Segmented(
-            align_options(), SETTINGS["controls_align"], accent=self._accent))
         self.tg_controls_hover = adv_toggle("controls_hover",
                                             "controls_hover")
         self.tg_topbar_hover = adv_toggle("topbar_hover", "topbar_hover")
-        self.tg_marquee = adv_toggle("marquee_enabled", "marquee_enabled")
-        self.tg_btn_shuffle = adv_toggle("show_btn_shuffle",
-                                         "show_btn_shuffle")
-        self.tg_btn_prev = adv_toggle("show_btn_prev", "show_btn_prev")
-        self.tg_btn_next = adv_toggle("show_btn_next", "show_btn_next")
-        self.tg_btn_repeat = adv_toggle("show_btn_repeat", "show_btn_repeat")
 
         section(adv, "section_performance")
         self.sl_fps = adv_row("FPS", PanelSlider(
@@ -3064,6 +3133,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("auto_theme", v))
         self.sg_art_mode.changed.connect(
             lambda v: self.setting_changed.emit("art_mode", v))
+        self.tg_show_tonearm.changed.connect(
+            lambda v: self.setting_changed.emit("show_tonearm", v))
         self.sg_source.changed.connect(
             lambda v: self.setting_changed.emit("source", v))
         self.sg_panel_type.changed.connect(
@@ -3125,6 +3196,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("hotkey_vol_down", v))
         self.sg_seek.changed.connect(
             lambda v: self.setting_changed.emit("seek_style", v))
+        self.sg_progress_time.changed.connect(
+            lambda v: self.setting_changed.emit("progress_time_mode", v))
         self.sl_seek_wave_amp.changed.connect(
             lambda v: self.setting_changed.emit("seek_wave_amp", v / 100.0))
         self.sl_seek_wave_speed.changed.connect(
@@ -3143,6 +3216,34 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("language", v))
         self.fp_font.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("font", v))
+        self.tg_marquee.changed.connect(
+            lambda v: self.setting_changed.emit("marquee_enabled", v))
+        self.sl_title_size.changed.connect(
+            lambda v: self.setting_changed.emit("title_size", v / 100.0))
+        self.sl_artist_size.changed.connect(
+            lambda v: self.setting_changed.emit("artist_size", v / 100.0))
+        self.sl_title_x.changed.connect(
+            lambda v: self.setting_changed.emit("title_x_offset", v))
+        self.sl_title_y.changed.connect(
+            lambda v: self.setting_changed.emit("title_y_offset", v))
+        self.sl_artist_x.changed.connect(
+            lambda v: self.setting_changed.emit("artist_x_offset", v))
+        self.sl_artist_y.changed.connect(
+            lambda v: self.setting_changed.emit("artist_y_offset", v))
+        self.sl_control_button_size.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "control_button_size", v / 100.0))
+        self.sl_control_button_spacing.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "control_button_spacing", v / 100.0))
+        self.tg_btn_shuffle.changed.connect(
+            lambda v: self.setting_changed.emit("show_btn_shuffle", v))
+        self.tg_btn_prev.changed.connect(
+            lambda v: self.setting_changed.emit("show_btn_prev", v))
+        self.tg_btn_next.changed.connect(
+            lambda v: self.setting_changed.emit("show_btn_next", v))
+        self.tg_btn_repeat.changed.connect(
+            lambda v: self.setting_changed.emit("show_btn_repeat", v))
         self.btn_reset.clicked.connect(
             lambda: self.setting_changed.emit("settings_reset", True))
         self.search.textChanged.connect(self._apply_search)
@@ -3182,9 +3283,6 @@ class SettingsPanel(QWidget):
         old_main_global = None
         if self.isVisible() and self._body.isVisible():
             old_main_global = self.mapToGlobal(self._body.geometry().topLeft())
-        lay = self._panel_layout(self._body)
-        if lay is not None:
-            lay.activate()
         pm = panel_margin()
         base_w = panel_w()
         geo0 = self._screen_geometry_for(
@@ -3323,7 +3421,13 @@ class SettingsPanel(QWidget):
         old_row_h = self._theme_row_h or new_row_h
         delta = new_row_h - old_row_h
         self._theme_row_h = new_row_h
+        resizing_theme = self.sw_theme._ea.state() == Anim.Running
+        if resizing_theme and self._theme_resize_anchor is None:
+            self._theme_resize_anchor = QPoint(self.pos())
         if abs(delta) < 1:
+            if not resizing_theme and self._theme_resize_anchor is not None:
+                self._theme_resize_anchor = None
+                self._set_window_geometry(self.pos(), self.size(), animate=False)
             self.sw_theme.update()
             return
 
@@ -3335,9 +3439,6 @@ class SettingsPanel(QWidget):
             self._relayout(animate=False)
             return
 
-        lay = self._panel_layout(self._body)
-        if lay is not None:
-            lay.activate()
         pm = panel_margin()
         geo = self._screen_geometry_for(
             self.pos(), QSize(self.width(), max(1, self.height() + delta)))
@@ -3346,23 +3447,28 @@ class SettingsPanel(QWidget):
         old_content_h = getattr(self._body, "_content_h", self._body.height())
         content_h = max(1, old_content_h + delta)
         body_h = min(content_h, max_body_h)
-        if self.sw_theme._ea.state() == Anim.Running:
+        final_window_size = None
+        if resizing_theme:
             target_row_h = self.sw_theme.row_h() * self.sw_theme._rows()
             final_content_h = max(1, old_content_h + target_row_h - old_row_h)
             final_body_h = min(final_content_h, max_body_h)
-            # 展開時先把半透明頂層視窗撐到最終高度，收合時維持目前高度
-            # 到最後一幀再縮回；避免每幀 resize 造成文字抖動與卡頓。
-            if final_body_h > body_h:
-                body_h = final_body_h
-            elif final_body_h < body_h:
-                body_h = max(body_geo.height(), final_body_h)
+            final_window_size = QSize(
+                self.width(), max(self.height(), final_body_h + pm * 2))
         self._body.setGeometry(body_geo.x(), body_geo.y(),
                                body_geo.width(), body_h)
         self._set_panel_viewport(self._body, body_geo.width(),
                                  body_h, content_h)
-        self._set_window_geometry(
-            self.pos(), QSize(self.width(), body_h + pm * 2),
-            animate=False)
+        target_size = QSize(self.width(), body_h + pm * 2)
+        if resizing_theme and self._theme_resize_anchor is not None:
+            self._geo_anim.stop()
+            if final_window_size is not None and self.size() != final_window_size:
+                self.setFixedSize(final_window_size)
+            if self.pos() != self._theme_resize_anchor:
+                self.move(self._theme_resize_anchor)
+        else:
+            if self._theme_resize_anchor is not None:
+                self._theme_resize_anchor = None
+            self._set_window_geometry(self.pos(), target_size, animate=False)
         self.update()
 
     def _screen_geometry_for(self, pos: QPoint, size: QSize):
@@ -3877,6 +3983,8 @@ class SettingsPanel(QWidget):
         self.sg_startup_show.set_options(startup_show_options(),
                                          SETTINGS["startup_show"])
         self.sg_seek.set_options(seek_options(), SETTINGS["seek_style"])
+        self.sg_progress_time.set_options(
+            progress_time_options(), SETTINGS["progress_time_mode"])
         self.sg_thumb.set_options(seek_thumb_options(),
                                   SETTINGS["seek_thumb"])
         self.sg_card_preset.set_options(card_preset_options(),
@@ -4027,18 +4135,23 @@ class SettingsPanel(QWidget):
     def _controls(self):
         controls = (self.sl_opacity, self.sl_brightness, self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
+                    self.sl_title_size, self.sl_artist_size,
+                    self.sl_title_x, self.sl_title_y,
+                    self.sl_artist_x, self.sl_artist_y,
                     self.sl_auto_strength, self.sl_cover_border_width,
                     self.sl_cover_border_opacity, self.sl_cover_blur,
                     self.sl_cover_radius_strength,
                     self.sl_seek_wave_amp, self.sl_seek_wave_speed,
                     self.sl_seek_glow_strength, self.sl_seek_length,
                     self.sl_seek_thumb_size,
+                    self.sl_control_button_size,
+                    self.sl_control_button_spacing,
                     self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
                     self.sl_art_cover_size, self.sl_art_vinyl_size,
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,
                     self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
-                    self.sg_thumb, self.sg_panel_type,
+                    self.sg_progress_time, self.sg_thumb, self.sg_panel_type,
                     self.sg_panel_category,
                     self.sg_source, self.sg_startup_show,
                     self.sg_ctl, self.sg_card_preset,
@@ -4049,7 +4162,8 @@ class SettingsPanel(QWidget):
                     self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
                     self.tg_topbar_hover, self.tg_show_fps,
                     self.tg_anim_enabled, self.tg_show_cover,
-                    self.tg_cover_border, self.tg_marquee,
+                    self.tg_show_tonearm, self.tg_cover_border,
+                    self.tg_marquee,
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
                     self.tg_btn_repeat)
         return tuple(w for w in controls if w is not None)
@@ -4120,12 +4234,33 @@ class SettingsPanel(QWidget):
             if op <= 0.001:
                 return
             g = w.geometry()
-            sh = soft_shadow(g.width(), g.height(), panel_f(16),
+            shadow_h = g.height()
+            scale_shadow = False
+            if (w is self._body and hasattr(self, "sw_theme")
+                    and self.sw_theme._ea.state() == Anim.Running):
+                target_row_h = self.sw_theme.row_h() * self.sw_theme._rows()
+                content_h = getattr(self._body, "_content_h", g.height())
+                target_content_h = max(
+                    1, content_h + target_row_h - self.sw_theme.height())
+                pm = panel_margin()
+                geo = self._screen_geometry_for(
+                    self.pos(), QSize(self.width(), max(1, self.height())))
+                max_body_h = max(panel_px(160), geo.height() - pm * 2)
+                shadow_h = min(target_content_h, max_body_h)
+                scale_shadow = shadow_h != g.height()
+            sh = soft_shadow(g.width(), shadow_h, panel_f(16),
                              blur=blur, alpha=160,
                              dpr=self.devicePixelRatioF())
             p.save()
             p.setOpacity(op)
-            p.drawPixmap(g.x() - blur, g.y() - blur + panel_px(5), sh)
+            if scale_shadow:
+                p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                p.drawPixmap(
+                    QRectF(g.x() - blur, g.y() - blur + panel_f(5),
+                           g.width() + blur * 2, g.height() + blur * 2),
+                    sh, QRectF(sh.rect()))
+            else:
+                p.drawPixmap(g.x() - blur, g.y() - blur + panel_px(5), sh)
             p.restore()
 
         # 縮放過渡進行中（scale 或面板類型切換）：陰影跟著內插矩形畫；

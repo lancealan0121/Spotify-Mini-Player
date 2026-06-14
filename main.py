@@ -227,15 +227,23 @@ class TimeLabel(QLabel):
         super().__init__(text, parent)
         self._sec = 0.0
         self._target = 0.0
+        self._prefix = ""
         self._anim = Anim(self)
         self._anim.valueChanged.connect(self._on_value)
 
+    def _text_for(self, sec: float) -> str:
+        return f"{self._prefix}{fmt_time(sec)}"
+
     def _on_value(self, v):
         self._sec = float(v)
-        QLabel.setText(self, fmt_time(self._sec))
+        QLabel.setText(self, self._text_for(self._sec))
 
-    def set_seconds(self, sec: float, animate: bool = False):
+    def set_seconds(self, sec: float, animate: bool = False,
+                    prefix: str = ""):
         sec = max(0.0, float(sec))
+        prefix = str(prefix or "")
+        prefix_changed = prefix != self._prefix
+        self._prefix = prefix
         if animate and anim_on() and abs(sec - self._sec) > 0.35:
             self._target = sec
             self._anim.stop()
@@ -248,7 +256,46 @@ class TimeLabel(QLabel):
         self._anim.stop()
         self._sec = sec
         self._target = sec
-        QLabel.setText(self, fmt_time(sec))
+        if prefix_changed or QLabel.text(self) != self._text_for(sec):
+            QLabel.setText(self, self._text_for(sec))
+
+
+class _SourceLogo(QWidget):
+    """來源小圖示；獨立 widget 避免封面切換時父層局部重繪裁切。"""
+
+    def __init__(self, spotify: bool = True, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
+        self._spotify = bool(spotify)
+
+    def set_spotify(self, spotify: bool):
+        spotify = bool(spotify)
+        if spotify == self._spotify:
+            return
+        self._spotify = spotify
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        d = max(1.0, min(self.width(), self.height()) - 2.0)
+        r = QRectF((self.width() - d) / 2.0, (self.height() - d) / 2.0,
+                   d, d)
+        if not self._spotify:
+            p.setFont(icon_font(max(1, round(d * 0.85))))
+            p.setPen(QColor(255, 255, 255, 170))
+            p.drawText(r, Qt.AlignCenter, GLYPH_GLOBE)
+            return
+        pm = spotify_logo_pixmap(d, self.devicePixelRatioF())
+        if pm is not None:
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(r, pm, QRectF(pm.rect()))
+        else:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(SPOTIFY_GREEN))
+            p.drawEllipse(r)
 
 
 class _ControlSlideOverlay(QWidget):
@@ -408,6 +455,12 @@ class Card(QWidget):
         self._layout_anim.finished.connect(self._cover_layout_done)
         self._layout_from: dict | None = None
         self._layout_to: dict | None = None
+        self._art_size_anim = Anim(self)
+        self._art_size_anim.valueChanged.connect(self._on_art_size_layout)
+        self._art_size_anim.finished.connect(self._art_size_layout_done)
+        self._art_scale_from = (self._cover_scale_setting(),
+                                self._vinyl_scale_setting())
+        self._art_scale_to = self._art_scale_from
         self._info_focus_timer = QTimer(self)
         self._info_focus_timer.setSingleShot(True)
         self._info_focus_timer.setInterval(2200)
@@ -438,17 +491,22 @@ class Card(QWidget):
     def target_accent(self) -> QColor:
         return theme_color() or self._dom or QColor(SPOTIFY_GREEN)
 
+    def _cover_scale_setting(self) -> float:
+        return max(0.6, min(
+            1.4, float(SETTINGS.get("art_cover_size", 1.0))))
+
+    def _vinyl_scale_setting(self) -> float:
+        return max(0.7, min(
+            1.35, float(SETTINGS.get("art_vinyl_size", 1.0))))
+
     def _cover_visual_size(self) -> int:
-        scale = max(0.6, min(1.4, float(SETTINGS.get("art_cover_size", 1.0))))
-        return max(1, round(self._art_size * scale))
+        return max(1, round(self._art_size * self._cover_scale_setting()))
 
     def _art_info_span(self) -> int:
         if hasattr(self, "art"):
             return self.art.layout_span()
         cover = self._cover_visual_size()
-        vinyl_scale = max(0.7, min(
-            1.35, float(SETTINGS.get("art_vinyl_size", 1.0))))
-        layout = max(cover, round(self._art_size * vinyl_scale))
+        layout = max(cover, round(self._art_size * self._vinyl_scale_setting()))
         return layout
 
     def _seek_bar_geometry(self, seek_y: int) -> tuple[int, int, int, int]:
@@ -459,11 +517,76 @@ class Card(QWidget):
         x = round((self._W - w) / 2)
         return x, seek_y, w, S(18)
 
+    def _text_layout_rects(self, info_x: int, title_y: int,
+                           artist_y: int, info_w: int):
+        title_scale = max(0.6, min(
+            1.8, float(SETTINGS.get("title_size", 1.0))))
+        artist_scale = max(0.6, min(
+            1.8, float(SETTINGS.get("artist_size", 1.0))))
+        self._title_px_base = max(1, S(15 * title_scale))
+        self._artist_px_base = max(1, S(11 * artist_scale))
+        self._title_scale_focus = 1.22
+        self._artist_scale_focus = 1.17
+
+        title_dx = S(float(SETTINGS.get("title_x_offset", 0.0)))
+        title_dy = S(float(SETTINGS.get("title_y_offset", 0.0)))
+        artist_dx = S(float(SETTINGS.get("artist_x_offset", 0.0)))
+        artist_dy = S(float(SETTINGS.get("artist_y_offset", 0.0)))
+        title_h = max(S(14), round(self._title_px_base * 1.42))
+        artist_h = max(S(12), round(self._artist_px_base * 1.46))
+        title_w = max(S(60), info_w - max(0, title_dx))
+        artist_w = max(S(60), info_w - max(0, artist_dx))
+
+        title_base = QRectF(info_x + title_dx, title_y + title_dy,
+                            title_w, title_h)
+        artist_base = QRectF(info_x + artist_dx, artist_y + artist_dy,
+                             artist_w, artist_h)
+        focus_title_h = max(title_h, round(title_h * 1.28))
+        focus_artist_h = max(artist_h, round(artist_h * 1.25))
+        pair_h = focus_title_h + S(4) + focus_artist_h
+        focus_top = round(self._H * 0.50 - pair_h / 2)
+
+        title_focus = QRectF(title_base)
+        artist_focus = QRectF(artist_base)
+        title_focus.setHeight(focus_title_h)
+        artist_focus.setHeight(focus_artist_h)
+        title_focus.moveTop(focus_top + title_dy)
+        artist_focus.moveTop(focus_top + focus_title_h + S(4) + artist_dy)
+        title_canvas = QRectF(title_base).united(title_focus).adjusted(
+            0, -S(4), 0, S(4))
+        artist_canvas = QRectF(artist_base).united(artist_focus).adjusted(
+            0, -S(4), 0, S(4))
+        return (title_base, artist_base, title_focus, artist_focus,
+                title_canvas, artist_canvas)
+
+    def _control_button_scale(self) -> float:
+        return max(0.7, min(
+            1.6, float(SETTINGS.get("control_button_size", 1.0))))
+
+    def _control_button_gap(self) -> int:
+        spacing = max(0.4, min(
+            2.2, float(SETTINGS.get("control_button_spacing", 1.0))))
+        return max(0, S(14 * spacing))
+
+    def _control_metric(self, glyph_px: float, diameter: float) -> tuple[int, int]:
+        scale = self._control_button_scale()
+        return max(1, S(glyph_px * scale)), max(1, S(diameter * scale))
+
     def apply_seek_length(self):
         if hasattr(self, "seek"):
             seek_y = S(self._base_h - (25 if self._compact else 30))
             self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
             self.seek.update()
+
+    def set_progress_times(self, pos: float, dur: float,
+                           animate_now: bool = False):
+        pos = max(0.0, float(pos))
+        dur = max(0.0, float(dur))
+        self.t_now.set_seconds(pos, animate=animate_now)
+        if SETTINGS.get("progress_time_mode") == "remaining" and dur > 0:
+            self.t_total.set_seconds(max(0.0, dur - pos), prefix="-")
+        else:
+            self.t_total.set_seconds(dur)
 
     def _build(self):
         W = self._W
@@ -498,17 +621,24 @@ class Card(QWidget):
         self._controls_y = Sf(78 if self._compact else 94)
         seek_y = S(self._base_h - (25 if self._compact else 30))
 
-        # 來源標示（圖示畫在 paintEvent）
+        # 來源標示
+        logo_d = S(15)
+        logo_gap = S(4)
         self.source = QLabel("SPOTIFY", self)
         f = ui_font(S(9), QFont.DemiBold)
         f.setLetterSpacing(QFont.AbsoluteSpacing, Sf(1.6))
         self.source.setFont(f)
         self.source.setStyleSheet("color: rgba(255,255,255,110);")
-        self.source.setGeometry(info_x + S(19), source_y, S(120), S(14))
+        self.source.setGeometry(info_x + logo_d + logo_gap, source_y,
+                                S(120), S(14))
+        self.source_logo = _SourceLogo(self._src_spotify, self)
+        self.source_logo.setGeometry(info_x, source_y, logo_d, logo_d)
         self._source_eff = QGraphicsOpacityEffect(self.source)
         self._source_eff.setOpacity(self._source_op)
         self.source.setGraphicsEffect(self._source_eff)
-        self._logo_pos = (info_x + Sf(8), float(source_y) + Sf(7))
+        self._source_logo_eff = QGraphicsOpacityEffect(self.source_logo)
+        self._source_logo_eff.setOpacity(self._source_op)
+        self.source_logo.setGraphicsEffect(self._source_logo_eff)
 
         # 右上角：音量、設定、釘選、隱藏
         self.btn_vol = IconButton(GLYPH_VOLUME, S(11), S(22), fx="volume",
@@ -533,34 +663,14 @@ class Card(QWidget):
             self._topbar_effects.append(eff)
 
         # 曲名與演出者
-        self._title_px_base = S(15)
-        self._title_px_focus = S(17)
-        self._artist_px_base = S(11)
-        self._artist_px_focus = S(12)
-        self._title_scale_focus = 1.22
-        self._artist_scale_focus = 1.17
+        (self._title_base, self._artist_base,
+         self._title_focus, self._artist_focus,
+         self._title_canvas, self._artist_canvas) = self._text_layout_rects(
+             info_x, title_y, artist_y, info_w)
         self.title = MarqueeLabel(self._title_px_base,
                                   QColor(255, 255, 255, 242),
                                   QFont.DemiBold, self)
-        self.title.setGeometry(info_x, title_y, info_w, S(21))
         self.artist = MarqueeLabel(self._artist_px_base, TEXT_DIM, parent=self)
-        self.artist.setGeometry(info_x, artist_y, info_w, S(16))
-        self._title_base = self.title.geometry()
-        self._artist_base = self.artist.geometry()
-        focus_title_h = S(27)
-        focus_artist_h = S(20)
-        pair_h = focus_title_h + S(4) + focus_artist_h
-        focus_top = round(self._H * 0.50 - pair_h / 2)
-        self._title_focus = QRectF(self._title_base)
-        self._artist_focus = QRectF(self._artist_base)
-        self._title_focus.setHeight(focus_title_h)
-        self._artist_focus.setHeight(focus_artist_h)
-        self._title_focus.moveTop(focus_top)
-        self._artist_focus.moveTop(focus_top + focus_title_h + S(4))
-        self._title_canvas = QRectF(self._title_base).united(
-            self._title_focus).adjusted(0, -S(4), 0, S(4))
-        self._artist_canvas = QRectF(self._artist_base).united(
-            self._artist_focus).adjusted(0, -S(4), 0, S(4))
         self.title.setGeometry(round(self._title_canvas.x()),
                                round(self._title_canvas.y()),
                                round(self._title_canvas.width()),
@@ -577,16 +687,19 @@ class Card(QWidget):
         self._controls_eff = QGraphicsOpacityEffect(self.controls)
         self._controls_eff.setOpacity(self._controls_op)
         self.controls.setGraphicsEffect(self._controls_eff)
-        self.btn_shuffle = IconButton(GLYPH_SHUFFLE, S(12), S(24),
+        small_px, small_d = self._control_metric(12, 24)
+        nav_px, nav_d = self._control_metric(14, 28)
+        play_d = max(1, S(36 * self._control_button_scale()))
+        self.btn_shuffle = IconButton(GLYPH_SHUFFLE, small_px, small_d,
                                       checkable=True, dot=True,
                                       fx="lift",
                                       parent=self.controls)
-        self.btn_prev = IconButton(GLYPH_PREV, S(14), S(28), nudge=-1,
+        self.btn_prev = IconButton(GLYPH_PREV, nav_px, nav_d, nudge=-1,
                                    parent=self.controls)
-        self.btn_play = PlayButton(S(36), self.controls)
-        self.btn_next = IconButton(GLYPH_NEXT, S(14), S(28), nudge=1,
+        self.btn_play = PlayButton(play_d, self.controls)
+        self.btn_next = IconButton(GLYPH_NEXT, nav_px, nav_d, nudge=1,
                                    parent=self.controls)
-        self.btn_repeat = IconButton(GLYPH_REPEAT_ALL, S(12), S(24),
+        self.btn_repeat = IconButton(GLYPH_REPEAT_ALL, small_px, small_d,
                                      checkable=True, dot=True,
                                      fx="lift",
                                      parent=self.controls)
@@ -667,8 +780,8 @@ class Card(QWidget):
         self.empty_btn.move((W - self.empty_btn.width()) // 2,
                             S(74 if self._compact else 92) - self.empty_btn.pad)
 
-        self._content = [self.art, self.source, self.title, self.artist,
-                         self.controls,
+        self._content = [self.art, self.source_logo, self.source,
+                         self.title, self.artist, self.controls,
                          self.t_now, self.t_total, self.seek]
         self._empty = [self.empty_icon, self.empty_text, self.empty_btn]
         self._apply_cover_layout(self._cover_layout_data(self._cover_enabled))
@@ -676,7 +789,7 @@ class Card(QWidget):
 
     def _layout_control_rail(self):
         """控制列內部固定排列；對齊切換時只移動外層容器。"""
-        gap = S(14)
+        gap = self._control_button_gap()
         visible = [b for b in self._ctrls if not b.isHidden()]
         if not visible:
             visible = [self.btn_play]
@@ -719,29 +832,19 @@ class Card(QWidget):
         if info_w < S(150):
             info_w = max(S(120), self._W - info_x - S(16))
         source_y = S(10 if self._compact else 14)
+        logo_d = S(15)
+        logo_gap = S(4)
         title_y = S(26 if self._compact else 34)
         artist_y = S(46 if self._compact else 56)
-        title_base = QRectF(info_x, title_y, info_w, S(21))
-        artist_base = QRectF(info_x, artist_y, info_w, S(16))
-        focus_title_h = S(27)
-        focus_artist_h = S(20)
-        pair_h = focus_title_h + S(4) + focus_artist_h
-        focus_top = round(self._H * 0.50 - pair_h / 2)
-        title_focus = QRectF(title_base)
-        artist_focus = QRectF(artist_base)
-        title_focus.setHeight(focus_title_h)
-        artist_focus.setHeight(focus_artist_h)
-        title_focus.moveTop(focus_top)
-        artist_focus.moveTop(focus_top + focus_title_h + S(4))
-        title_canvas = QRectF(title_base).united(title_focus).adjusted(
-            0, -S(4), 0, S(4))
-        artist_canvas = QRectF(artist_base).united(artist_focus).adjusted(
-            0, -S(4), 0, S(4))
+        (title_base, artist_base, title_focus, artist_focus,
+         title_canvas, artist_canvas) = self._text_layout_rects(
+             info_x, title_y, artist_y, info_w)
         return {
             "art_pos": art_on if cover_enabled else art_off,
             "art_op": 1.0 if cover_enabled else 0.0,
-            "source_rect": QRectF(info_x + S(19), source_y, S(120), S(14)),
-            "logo_pos": (info_x + Sf(8), float(source_y) + Sf(7)),
+            "source_rect": QRectF(info_x + logo_d + logo_gap, source_y,
+                                  S(120), S(14)),
+            "logo_rect": QRectF(info_x, source_y, logo_d, logo_d),
             "title_base": title_base,
             "artist_base": artist_base,
             "title_focus": title_focus,
@@ -756,7 +859,7 @@ class Card(QWidget):
             "art_pos": QPointF(self.art.pos()),
             "art_op": float(self._art_eff.opacity()),
             "source_rect": QRectF(self.source.geometry()),
-            "logo_pos": (float(self._logo_pos[0]), float(self._logo_pos[1])),
+            "logo_rect": QRectF(self.source_logo.geometry()),
             "title_base": QRectF(self._title_base),
             "artist_base": QRectF(self._artist_base),
             "title_focus": QRectF(self._title_focus),
@@ -780,10 +883,8 @@ class Card(QWidget):
             "art_op": a["art_op"] + (b["art_op"] - a["art_op"]) * t,
             "source_rect": self._lerp_rectf(a["source_rect"],
                                             b["source_rect"], t),
-            "logo_pos": (
-                a["logo_pos"][0] + (b["logo_pos"][0] - a["logo_pos"][0]) * t,
-                a["logo_pos"][1] + (b["logo_pos"][1] - a["logo_pos"][1]) * t,
-            ),
+            "logo_rect": self._lerp_rectf(a["logo_rect"],
+                                          b["logo_rect"], t),
             "title_base": self._lerp_rectf(a["title_base"],
                                            b["title_base"], t),
             "artist_base": self._lerp_rectf(a["artist_base"],
@@ -809,13 +910,17 @@ class Card(QWidget):
         sr = data["source_rect"]
         self.source.setGeometry(round(sr.x()), round(sr.y()),
                                 round(sr.width()), round(sr.height()))
-        self._logo_pos = data["logo_pos"]
+        lr = data["logo_rect"]
+        self.source_logo.setGeometry(round(lr.x()), round(lr.y()),
+                                     round(lr.width()), round(lr.height()))
         self._title_base = QRectF(data["title_base"])
         self._artist_base = QRectF(data["artist_base"])
         self._title_focus = QRectF(data["title_focus"])
         self._artist_focus = QRectF(data["artist_focus"])
         self._title_canvas = QRectF(data["title_canvas"])
         self._artist_canvas = QRectF(data["artist_canvas"])
+        self.title.set_font_px(self._title_px_base)
+        self.artist.set_font_px(self._artist_px_base)
         self.title.setGeometry(round(self._title_canvas.x()),
                                round(self._title_canvas.y()),
                                round(self._title_canvas.width()),
@@ -833,6 +938,24 @@ class Card(QWidget):
         if self._ctrl_overlay is not None:
             self._ctrl_overlay.hide()
         self.controls.move(round(target.x()), round(target.y()))
+
+    def apply_text_layout(self):
+        if hasattr(self, "title") and hasattr(self, "artist"):
+            self._apply_cover_layout(self._cover_layout_data(self._cover_enabled))
+            self.update()
+
+    def apply_control_button_layout(self, animate: bool = True):
+        if not hasattr(self, "btn_play"):
+            return
+        small_px, small_d = self._control_metric(12, 24)
+        nav_px, nav_d = self._control_metric(14, 28)
+        play_d = max(1, S(36 * self._control_button_scale()))
+        self.btn_shuffle.set_metrics(small_px, small_d)
+        self.btn_repeat.set_metrics(small_px, small_d)
+        self.btn_prev.set_metrics(nav_px, nav_d)
+        self.btn_next.set_metrics(nav_px, nav_d)
+        self.btn_play.set_diameter(play_d)
+        self.relayout_controls(animate=animate)
         self.update()
 
     def _on_cover_layout(self, v):
@@ -1224,6 +1347,7 @@ class Card(QWidget):
             self._source_done()
             return
         if target > 0:
+            self.source_logo.show()
             self.source.show()
         self._source_anim.setStartValue(self._source_op)
         self._source_anim.setEndValue(target)
@@ -1234,12 +1358,15 @@ class Card(QWidget):
     def _on_source_op(self, v):
         self._source_op = float(v)
         self._source_eff.setOpacity(self._source_op)
+        self._source_logo_eff.setOpacity(self._source_op)
         self.update()
 
     def _source_done(self):
         if self._source_target <= 0.001:
+            self.source_logo.hide()
             self.source.hide()
         else:
+            self.source_logo.show()
             self.source.show()
         self.update()
 
@@ -1248,6 +1375,7 @@ class Card(QWidget):
         if label != self._src_label or is_sp != self._src_spotify:
             self._src_label = label
             self._src_spotify = is_sp
+            self.source_logo.set_spotify(is_sp)
             self.source.setText(label)
             self.update()
 
@@ -1268,9 +1396,12 @@ class Card(QWidget):
         self._source_target = max(0.0, min(1.0, float(
             state.get("source_target", self._source_target))))
         self._source_eff.setOpacity(self._source_op)
+        self._source_logo_eff.setOpacity(self._source_op)
         if self._source_op > 0.001 or self._source_target > 0.001:
+            self.source_logo.show()
             self.source.show()
         else:
+            self.source_logo.hide()
             self.source.hide()
         self.seek.restore_visual_state(state.get("seek"))
         self.update()
@@ -1380,28 +1511,81 @@ class Card(QWidget):
                             float(SETTINGS.get("cover_border_opacity", 0.85)),
                             animate=animate)
 
-    def _cover_radius(self) -> int:
+    def _cover_radius_for_size(self, cover_size: int) -> int:
         shape = SETTINGS.get("cover_shape", "rounded")
         if shape == "square":
             return 0
         if shape == "circle":
-            return self._cover_visual_size() // 2
+            return max(1, int(cover_size)) // 2
         strength = max(0.0, min(
             2.0, float(SETTINGS.get("cover_radius_strength", 1.0))))
         return round(S(8 if self._compact else 10)
-                     * self._cover_visual_size() / max(1, self._art_size)
+                     * max(1, int(cover_size)) / max(1, self._art_size)
                      * strength)
+
+    def _cover_radius(self) -> int:
+        return self._cover_radius_for_size(self._cover_visual_size())
 
     def apply_cover_shape(self, animate: bool = True):
         radius = self._cover_radius()
-        self.art.set_radius(radius)
+        self.art.set_radius(radius, animate=animate)
         if self._art_img is not None:
             dpr = self.devicePixelRatioF()
             self._art_pm = rounded_pixmap(self._art_img, self._cover_visual_size(),
                                           radius, dpr)
-            self.art.set_pixmap(self._art_pm, animate=False)
+            self.art.set_pixmap(self._art_pm, animate=animate)
         else:
             self.art.update()
+
+    def _set_art_scales_for_layout(self, cover_scale: float,
+                                   vinyl_scale: float):
+        self.art.set_scales(cover_scale, vinyl_scale)
+        self.art.set_radius(
+            self._cover_radius_for_size(self.art.cover_size()),
+            animate=False)
+        self._apply_cover_layout(self._cover_layout_data(self._cover_enabled))
+
+    def _on_art_size_layout(self, v):
+        t = max(0.0, min(1.0, float(v)))
+        c0, v0 = self._art_scale_from
+        c1, v1 = self._art_scale_to
+        self._set_art_scales_for_layout(c0 + (c1 - c0) * t,
+                                        v0 + (v1 - v0) * t)
+
+    def _art_size_layout_done(self):
+        c1, v1 = self._art_scale_to
+        self._set_art_scales_for_layout(c1, v1)
+        if self._art_img is not None:
+            dpr = self.devicePixelRatioF()
+            radius = self._cover_radius()
+            self._art_pm = rounded_pixmap(
+                self._art_img, self._cover_visual_size(), radius, dpr)
+            self.art.set_radius(radius, animate=False)
+            self.art.set_pixmap(self._art_pm, animate=False)
+        self.update()
+
+    def apply_art_size_layout(self, animate: bool = True):
+        if not hasattr(self, "art"):
+            return
+        if self._art_size_anim.state() == Anim.Running:
+            self._art_size_anim.stop()
+        target = (self._cover_scale_setting(), self._vinyl_scale_setting())
+        current = (float(self.art._cover_scale), float(self.art._vinyl_scale))
+        if (abs(current[0] - target[0]) < 0.0001
+                and abs(current[1] - target[1]) < 0.0001):
+            return
+        ms = adur(260, 150)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._art_scale_to = target
+            self._art_size_layout_done()
+            return
+        self._art_scale_from = current
+        self._art_scale_to = target
+        self._art_size_anim.setStartValue(0.0)
+        self._art_size_anim.setEndValue(1.0)
+        self._art_size_anim.setDuration(ms)
+        self._art_size_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._art_size_anim.start()
 
     def apply_fps(self):
         self.art.apply_fps()
@@ -1544,36 +1728,11 @@ class Card(QWidget):
         self._bg = pm
         return pm
 
-    def _draw_source_logo(self, p: QPainter):
-        x, y = self._logo_pos
-        r = Sf(6.5)
-        if not self._src_spotify:        # 非 Spotify：地球（瀏覽器）圖示
-            p.setFont(icon_font(S(11)))
-            p.setPen(QColor(255, 255, 255, 170))
-            p.drawText(QRectF(x - r, y - r, r * 2, r * 2),
-                       Qt.AlignCenter, GLYPH_GLOBE)
-            return
-        # 官方 Spotify 標誌（spt.png 預縮快取）
-        pm = spotify_logo_pixmap(r * 2, self.devicePixelRatioF())
-        if pm is not None:
-            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            p.drawPixmap(QRectF(x - r, y - r, r * 2, r * 2),
-                         pm, QRectF(pm.rect()))
-        else:                            # 圖檔遺失時退回綠圓
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(SPOTIFY_GREEN))
-            p.drawEllipse(QPointF(x, y), r, r)
-
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
         p.drawPixmap(0, 0, self._bg_pixmap())
 
-        # 來源標誌
-        if self.source.isVisible() and self._source_op > 0.001:
-            p.setOpacity(self._source_op)
-            self._draw_source_logo(p)
-            p.setOpacity(1.0)
         if SETTINGS.get("show_fps", False):
             self._fps_frames += 1
 
@@ -2144,8 +2303,10 @@ class PlayerWindow(QWidget):
             return
         SETTINGS[key] = value
         self._save_timer.start()         # 防抖寫檔（拖曳滑桿時每幀都會進來）
-        if key in ("scale", "font", "art_cover_size", "art_vinyl_size"):
+        if key in ("scale", "font"):
             self._request_rebuild()
+        elif key in ("art_cover_size", "art_vinyl_size"):
+            self.card.apply_art_size_layout(animate=True)
         elif key == "settings_scale":
             if self._panel is not None:
                 self._panel.rebuild_for_scale()
@@ -2181,6 +2342,9 @@ class PlayerWindow(QWidget):
             self.card.apply_seek_length()
         elif key in ("seek_thumb", "seek_thumb_size"):
             self.card.seek.style_changed()
+        elif key == "progress_time_mode":
+            dur = self.state.duration if self.state is not None else self.card.seek._dur
+            self.card.set_progress_times(self._dpos, dur)
         elif key == "auto_color_strength":
             self.card.refresh_accent()
             self.card.invalidate_bg()
@@ -2190,6 +2354,12 @@ class PlayerWindow(QWidget):
             self.card._sync_controls_hover(animate=True)
         elif key == "topbar_hover":
             self.card._sync_topbar_hover(animate=True)
+        elif key in ("title_size", "artist_size",
+                     "title_x_offset", "title_y_offset",
+                     "artist_x_offset", "artist_y_offset"):
+            self.card.apply_text_layout()
+        elif key in ("control_button_size", "control_button_spacing"):
+            self.card.apply_control_button_layout(animate=True)
         elif key in ("show_btn_shuffle", "show_btn_prev",
                      "show_btn_next", "show_btn_repeat"):
             self.card.apply_button_visibility(relayout=True, animate=True)
@@ -2212,6 +2382,8 @@ class PlayerWindow(QWidget):
             self.card.art.set_blur(float(value))
         elif key in ("tonearm_speed", "vinyl_spin_speed"):
             self.card.art.apply_motion_settings()
+        elif key == "show_tonearm":
+            self.card.art.update()
         elif key in ("cover_border", "cover_border_width",
                      "cover_border_opacity"):
             self.card.apply_cover_border(animate=True)
@@ -2343,7 +2515,8 @@ class PlayerWindow(QWidget):
             self._panel.set_accent(color)
 
     def _preview_seek_time(self, sec: float):
-        self.card.t_now.set_seconds(sec, animate=True)
+        dur = self.card.seek._dur if self.card is not None else 0.0
+        self.card.set_progress_times(sec, dur, animate_now=True)
 
     def _bind_open_or_drag(self, widget: QWidget, kind: str):
         def press(e):
@@ -2977,9 +3150,10 @@ class PlayerWindow(QWidget):
 
         if not self.card.seek.is_dragging():
             self.card.seek.set_data(self._dpos, st.duration)
-            if not reset_to_start:
-                self.card.t_now.set_seconds(self._dpos)
-            self.card.t_total.set_seconds(st.duration)
+            self.card.set_progress_times(
+                0.0 if reset_to_start else self._dpos,
+                st.duration,
+                animate_now=reset_to_start)
 
     # ---- demo 假資料 ----
     def _demo_fill(self):
