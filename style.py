@@ -59,56 +59,56 @@ GLYPH_CHEVRON_UP = "\uE70E"
 # ---------------------------------------------------------------- 設定 ----
 
 DEFAULTS = {
-    "pinned": False,
+    "pinned": True,
     "theme": "auto",        # auto 或 THEMES 內的 key
     "bg_opacity": 1.0,      # 0.35 ~ 1.0
-    "brightness": 0.95,     # 0.55 ~ 1.45，mini player 背景亮度
+    "brightness": 0.9540801010635326,     # 0.55 ~ 1.45，mini player 背景亮度
     "auto_color_strength": 1.0,  # 0.0 ~ 1.0，自動主色背景強度
-    "scale": 1.70,          # 0.8 ~ 3.0
-    "settings_scale": 1.20, # 0.8 ~ 2.0
+    "scale": 1.7038678271081824,          # 0.8 ~ 3.0
+    "settings_scale": 1.199758606299479, # 0.8 ~ 2.0
     "settings_panel_type": "normal",  # normal / categories
     "radius": 15,           # 6 ~ 28
     "anim": "full",
     "anim_enabled": True,
     "seek_style": "wave",   # plain / wave / glow
     "seek_thumb": "always", # hover / always，進度條白色圓鈕顯示方式
-    "seek_wave_amp": 0.70,
-    "seek_wave_speed": 0.90,
-    "seek_glow_strength": 1.0,
-    "seek_length": 1.05,
-    "seek_thumb_size": 0.60,
+    "seek_wave_amp": 0.7049731860774968,
+    "seek_wave_speed": 0.8993361381128148,
+    "seek_glow_strength": 1.0031393708391512,
+    "seek_length": 1.0504252783388335,
+    "seek_thumb_size": 0.595937135919813,
     "progress_time_mode": "current",
     "controls_hover": True, # 控制列只在 hover 時顯示
     "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
-    "title_size": 1.0,
-    "artist_size": 1.0,
-    "title_x_offset": 0.0,
-    "title_y_offset": 0.0,
-    "artist_x_offset": 0.0,
-    "artist_y_offset": 0.0,
+    "title_size": 0.997494556708598,
+    "artist_size": 0.997494556708598,
+    "title_x_offset": -0.20591344239150544,
+    "title_y_offset": -0.20591344239150544,
+    "artist_x_offset": -0.20591344239150544,
+    "artist_y_offset": -0.20591344239150544,
     "auto_theme": "gradient",  # solid / gradient，封面自動主題背景模式
     "art_mode": "cover",    # cover / vinyl，封面區顯示模式
-    "art_cover_size": 0.92,
-    "art_vinyl_size": 1.0,
+    "art_cover_size": 0.9245844436826636,
+    "art_vinyl_size": 0.9983334355091419,
     "show_tonearm": True,
-    "tonearm_speed": 0.77,
+    "tonearm_speed": 0.7711820866029643,
     "vinyl_spin_speed": 1.0,
     "topbar_hover": False,
     "card_preset": "standard",
     "show_cover": True,
     "cover_blur": 0.0,
     "cover_shape": "rounded",  # rounded / square / circle
-    "cover_radius_strength": 1.0,
+    "cover_radius_strength": 0.9974260819701061,
     "cover_border": True,
-    "cover_border_width": 4.5,
-    "cover_border_opacity": 0.35,
+    "cover_border_width": 4.5109877979370285,
+    "cover_border_opacity": 0.3524865930387484,
     "show_fps": False,
     "show_btn_shuffle": True,
     "show_btn_prev": True,
     "show_btn_next": True,
     "show_btn_repeat": True,
-    "control_button_size": 1.0,
-    "control_button_spacing": 1.0,
+    "control_button_size": 0.9981209175314486,
+    "control_button_spacing": 0.9962418350628971,
     "font": "Arial",
     "fps": 144,             # 24 ~ 240，特效計時器更新率
     "antialias": True,      # 反鋸齒
@@ -137,7 +137,7 @@ DEFAULTS = {
     "hotkey_next": "",
     "hotkey_vol_up": "",
     "hotkey_vol_down": "",
-    "language": "zh",       # zh / ja / en
+    "language": "ja",       # zh / ja / en
 }
 
 THEMES = [

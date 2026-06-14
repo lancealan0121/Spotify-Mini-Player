@@ -4420,7 +4420,7 @@ class SettingsPanel(QWidget):
         self._zoom_anim.start()
 
     def _section_toggle_anim_enabled(self) -> bool:
-        return SETTINGS.get("settings_panel_type", "normal") != "normal"
+        return True
 
     def _toggle_section(self, group_id: str, header: SectionLabel,
                         container: QWidget):
