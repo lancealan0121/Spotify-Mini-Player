@@ -333,6 +333,10 @@ class ArtView(QWidget):
         self._arm_target = 0.0
         self._arma = Anim(self)
         self._arma.valueChanged.connect(self._on_arm)
+        self._tonearm_op = 1.0 if SETTINGS.get("show_tonearm", True) else 0.0
+        self._tonearm_target = self._tonearm_op
+        self._tonearm_oa = Anim(self)
+        self._tonearm_oa.valueChanged.connect(self._on_tonearm_op)
         self._spin = 0.0
         self._spin_speed = 0.0
         self._spin_cooldown = 0.0
@@ -490,6 +494,29 @@ class ArtView(QWidget):
     def _on_arm(self, v):
         self._arm = float(v)
         self.update()
+
+    def _on_tonearm_op(self, v):
+        self._tonearm_op = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def set_tonearm_visible(self, visible: bool, animate: bool = True):
+        target = 1.0 if visible else 0.0
+        self._tonearm_target = target
+        if abs(target - self._tonearm_op) < 0.001:
+            self._tonearm_op = target
+            self.update()
+            return
+        self._tonearm_oa.stop()
+        ms = adur(240 if target > self._tonearm_op else 190, 120)
+        if not animate or not anim_on() or ms <= 0 or not self.isVisible():
+            self._tonearm_op = target
+            self.update()
+            return
+        self._tonearm_oa.setStartValue(self._tonearm_op)
+        self._tonearm_oa.setEndValue(target)
+        self._tonearm_oa.setDuration(ms)
+        self._tonearm_oa.setEasingCurve(QEasingCurve.OutCubic)
+        self._tonearm_oa.start()
 
     def _spin_tick(self):
         now = time.monotonic()
@@ -1033,8 +1060,8 @@ class ArtView(QWidget):
         self._draw_border(p, cover_alpha)
         self._draw_vinyl(p, vinyl_alpha)
         p.restore()
-        if SETTINGS.get("show_tonearm", True):
-            self._draw_tonearm(p, vinyl_alpha)
+        if self._tonearm_op > 0.001:
+            self._draw_tonearm(p, vinyl_alpha * self._tonearm_op)
 
 
 class _AnimButton(QAbstractButton):
@@ -1176,6 +1203,7 @@ class IconButton(_AnimButton):
         self._fx_kind = fx
         self._nudge_dir = nudge
         self._accent = QColor(SPOTIFY_GREEN)
+        self._color_override: QColor | None = None
         self._extra_opacity = 1.0
         self.setCheckable(checkable)
         self.setFixedSize(diameter, diameter)
@@ -1209,6 +1237,10 @@ class IconButton(_AnimButton):
 
     def set_accent(self, c: QColor):
         self._accent = QColor(c)
+        self.update()
+
+    def set_color_override(self, c: QColor | None):
+        self._color_override = QColor(c) if c is not None else None
         self.update()
 
     def set_extra_opacity(self, value: float):
@@ -1355,13 +1387,24 @@ class IconButton(_AnimButton):
         angle = self._fx_angle()
 
         checked_t = self._check_t if self.isCheckable() else 0.0
+        override = (QColor(self._color_override)
+                    if self._color_override is not None else None)
         if not self.isEnabled():
-            col = QColor(255, 255, 255, 55)
+            col = QColor(override) if override is not None else QColor(255, 255, 255)
+            col.setAlpha(55)
         else:
-            normal = blend(QColor(255, 255, 255, 150),
-                           QColor(255, 255, 255, 245), self._hov)
-            active = blend(self._accent.lighter(118),
-                           self._accent.lighter(140), self._hov)
+            if override is None:
+                normal = blend(QColor(255, 255, 255, 150),
+                               QColor(255, 255, 255, 245), self._hov)
+                active = blend(self._accent.lighter(118),
+                               self._accent.lighter(140), self._hov)
+            else:
+                c0, c1 = QColor(override), QColor(override)
+                c0.setAlpha(150)
+                c1.setAlpha(245)
+                normal = blend(c0, c1, self._hov)
+                active = blend(override.lighter(118),
+                               override.lighter(140), self._hov)
             col = blend(normal, active, checked_t)
         p.setFont(icon_font(self._px))
         p.setPen(col)
@@ -1635,6 +1678,9 @@ class SeekBar(QWidget):
         self._playing = False
         self._accent = QColor(SPOTIFY_GREEN)
         self._enabled_seek = False
+        self._fill_col = QColor(self._accent)
+        self._thumb_col = QColor(255, 255, 255)
+        self._track_col = QColor(255, 255, 255, 36)
 
         # 點擊滑移動畫
         self._ca = Anim(self)
@@ -1664,6 +1710,12 @@ class SeekBar(QWidget):
 
     def set_accent(self, c: QColor):
         self._accent = QColor(c)
+        self.update()
+
+    def set_custom_colors(self, fill: QColor, thumb: QColor, track: QColor):
+        self._fill_col = QColor(fill)
+        self._thumb_col = QColor(thumb)
+        self._track_col = QColor(track)
         self.update()
 
     def set_seek_enabled(self, ok: bool):
@@ -1977,6 +2029,103 @@ class SeekBar(QWidget):
         cur = self._chase if self._chase is not None else self._pos
         return min(1.0, max(0.0, cur / dur))
 
+    def _fill_color(self) -> QColor:
+        return QColor(self._fill_col)
+
+    def _thumb_color(self) -> QColor:
+        return QColor(self._thumb_col)
+
+    def _track_color(self) -> QColor:
+        return QColor(self._track_col)
+
+    def _draw_wave_track(self, p: QPainter, w: float, h: float, pad: float,
+                         tw: float, cy: float, bar_h: float, ratio: float,
+                         fill_w: float, grad, gray: QColor,
+                         thumb_color: QColor):
+        wave_amp = float(SETTINGS.get("seek_wave_amp", 1.0))
+        amp = h * self.WAVE_AMP * wave_amp * self._amp
+        k = 2 * math.pi / max(26.0, h * 1.9)
+
+        def wy(x: float) -> float:
+            return cy + math.sin(x * k - self._phase) * amp
+
+        def wave_path(x0: float, x1: float) -> QPainterPath:
+            path = QPainterPath()
+            steps = max(3, math.ceil((x1 - x0) / 0.75))
+            for i in range(steps + 1):
+                x = x0 + (x1 - x0) * i / steps
+                if i == 0:
+                    path.moveTo(x, wy(x))
+                else:
+                    path.lineTo(x, wy(x))
+            return path
+
+        def draw_segment(left: float, right: float, pen: QPen):
+            if right <= left:
+                return
+            if right - left <= bar_h:
+                x0 = x1 = (left + right) / 2
+            else:
+                x0 = left + bar_h / 2
+                x1 = right - bar_h / 2
+            p.setPen(pen)
+            p.drawPath(wave_path(x0, x1))
+
+        sample = min(max(pad + bar_h / 2, fill_w - bar_h / 2),
+                     pad + tw - bar_h / 2)
+        wave_y = wy(sample)
+        p.setBrush(Qt.NoBrush)
+        if fill_w < pad + tw - 1:
+            pen = QPen(gray, bar_h)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            draw_segment(fill_w, pad + tw, pen)
+        if ratio > 0:
+            pen = QPen(QBrush(grad), bar_h)
+            pen.setCapStyle(Qt.RoundCap)
+            pen.setJoinStyle(Qt.RoundJoin)
+            draw_segment(pad, max(pad + bar_h, fill_w), pen)
+        if ratio > 0 and self._glow > 0.01:
+            fw = max(bar_h, tw * ratio)
+            strength = max(0.0, min(
+                2.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
+            alpha = max(0, min(180, round(76 * self._glow * strength)))
+            if alpha > 0:
+                t = self._glow_phase % 1.4 - 0.2
+                band = max(24.0, fw * 0.22)
+                bx = pad + t / 1.0 * (fw + band * 2) - band
+                left = max(pad, bx - band * 0.42)
+                right = min(fill_w, bx + band * 0.42)
+                if right > left:
+                    pen = QPen(QColor(255, 255, 255, alpha),
+                               bar_h * 1.18)
+                    pen.setCapStyle(Qt.RoundCap)
+                    pen.setJoinStyle(Qt.RoundJoin)
+                    draw_segment(left, right, pen)
+        if self._thumb > 0.01 and self._dur > 0:
+            r = self._thumb_radius()
+            p.setPen(Qt.NoPen)
+            c = QColor(thumb_color)
+            c.setAlpha(round(c.alpha() * min(1.0, self._thumb)))
+            p.setBrush(c)
+            p.drawEllipse(QPointF(fill_w, wave_y), r, r)
+
+    def _paint_wave_antialiased(self, p: QPainter, w: float, h: float,
+                                pad: float, tw: float, cy: float,
+                                bar_h: float, ratio: float, fill_w: float,
+                                grad, gray: QColor, thumb_color: QColor):
+        ss = 2.0
+        pm = QPixmap(max(1, math.ceil(w * ss)), max(1, math.ceil(h * ss)))
+        pm.fill(Qt.transparent)
+        pp = QPainter(pm)
+        aa(pp)
+        pp.scale(ss, ss)
+        self._draw_wave_track(pp, w, h, pad, tw, cy, bar_h,
+                              ratio, fill_w, grad, gray, thumb_color)
+        pp.end()
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawPixmap(QRectF(0, 0, w, h), pm, QRectF(pm.rect()))
+
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
@@ -1990,114 +2139,60 @@ class SeekBar(QWidget):
         ratio = self._ratio()
         fill_w = pad + tw * ratio        # 填滿端點（絕對 x）
         grad = QLinearGradient(pad, 0, pad + tw, 0)
-        grad.setColorAt(0.0, self._accent.lighter(125))
-        grad.setColorAt(1.0, self._accent)
-        gray = QColor(255, 255, 255, 36)
+        fill_color = self._fill_color()
+        thumb_color = self._thumb_color()
+        grad.setColorAt(0.0, fill_color.lighter(125))
+        grad.setColorAt(1.0, fill_color)
+        gray = self._track_color()
 
         wave_y = cy
         wavy = self._amp > 0.001
         if wavy:
-            # 整條（灰底 + 填滿）都跟著波動
-            wave_amp = float(SETTINGS.get("seek_wave_amp", 1.0))
-            amp = h * self.WAVE_AMP * wave_amp * self._amp
-            k = 2 * math.pi / max(26.0, h * 1.9)   # 波長
+            self._paint_wave_antialiased(p, float(w), h, pad, tw, cy,
+                                         bar_h, ratio, fill_w, grad, gray,
+                                         thumb_color)
+            return
 
-            def wy(x: float) -> float:
-                return cy + math.sin(x * k - self._phase) * amp
-
-            def wave_path(x0: float, x1: float) -> QPainterPath:
-                path = QPainterPath()
-                steps = max(2, int((x1 - x0) / 3))
-                for i in range(steps + 1):
-                    x = x0 + (x1 - x0) * i / steps
-                    if i == 0:
-                        path.moveTo(x, wy(x))
-                    else:
-                        path.lineTo(x, wy(x))
-                return path
-
-            def draw_segment(left: float, right: float, pen: QPen):
-                if right <= left:
-                    return
-                if right - left <= bar_h:
-                    x0 = x1 = (left + right) / 2
-                else:
-                    x0 = left + bar_h / 2
-                    x1 = right - bar_h / 2
-                p.setPen(pen)
-                p.drawPath(wave_path(x0, x1))
-
-            sample = min(max(pad + bar_h / 2, fill_w - bar_h / 2),
-                         pad + tw - bar_h / 2)
-            wave_y = wy(sample)
-            p.setBrush(Qt.NoBrush)
-            if fill_w < pad + tw - 1:
-                pen = QPen(gray, bar_h)
-                pen.setCapStyle(Qt.RoundCap)
-                pen.setJoinStyle(Qt.RoundJoin)
-                draw_segment(fill_w, pad + tw, pen)
-            if ratio > 0:
-                pen = QPen(QBrush(grad), bar_h)
-                pen.setCapStyle(Qt.RoundCap)
-                pen.setJoinStyle(Qt.RoundJoin)
-                draw_segment(pad, max(pad + bar_h, fill_w), pen)
-            if ratio > 0 and self._glow > 0.01:
-                fw = max(bar_h, tw * ratio)
+        # 底軌
+        p.setPen(Qt.NoPen)
+        p.setBrush(gray)
+        p.drawRoundedRect(QRectF(pad, cy - bar_h / 2, tw, bar_h),
+                          bar_h / 2, bar_h / 2)
+        if ratio > 0:
+            fw = max(bar_h, tw * ratio)
+            p.setPen(Qt.NoPen)
+            p.setBrush(grad)
+            p.drawRoundedRect(
+                QRectF(pad, cy - bar_h / 2, fw, bar_h),
+                bar_h / 2, bar_h / 2)
+            # 流光：在填滿區掃過一道亮帶
+            if self._glow > 0.01 and fw > 8:
+                t = self._glow_phase % 1.4 - 0.2  # 留一點頭尾停頓
+                band = max(24.0, fw * 0.22)
+                bx = pad + t / 1.0 * (fw + band * 2) - band
+                g2 = QLinearGradient(bx - band, 0, bx + band, 0)
+                white = QColor(255, 255, 255, 0)
                 strength = max(0.0, min(
                     2.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
-                alpha = max(0, min(180, round(
-                    76 * self._glow * strength)))
-                if alpha > 0:
-                    t = self._glow_phase % 1.4 - 0.2
-                    band = max(24.0, fw * 0.22)
-                    bx = pad + t / 1.0 * (fw + band * 2) - band
-                    left = max(pad, bx - band * 0.42)
-                    right = min(fill_w, bx + band * 0.42)
-                    if right > left:
-                        pen = QPen(QColor(255, 255, 255, alpha),
-                                   bar_h * 1.18)
-                        pen.setCapStyle(Qt.RoundCap)
-                        pen.setJoinStyle(Qt.RoundJoin)
-                        draw_segment(left, right, pen)
-        else:
-            # 底軌
-            p.setPen(Qt.NoPen)
-            p.setBrush(gray)
-            p.drawRoundedRect(QRectF(pad, cy - bar_h / 2, tw, bar_h),
-                              bar_h / 2, bar_h / 2)
-            if ratio > 0:
-                fw = max(bar_h, tw * ratio)
-                p.setPen(Qt.NoPen)
-                p.setBrush(grad)
-                p.drawRoundedRect(
+                alpha = max(0, min(255, round(
+                    110 * self._glow * strength)))
+                g2.setColorAt(0.0, white)
+                g2.setColorAt(0.5, QColor(255, 255, 255, alpha))
+                g2.setColorAt(1.0, white)
+                clip = QPainterPath()
+                clip.addRoundedRect(
                     QRectF(pad, cy - bar_h / 2, fw, bar_h),
                     bar_h / 2, bar_h / 2)
-                # 流光：在填滿區掃過一道亮帶
-                if self._glow > 0.01 and fw > 8:
-                    t = self._glow_phase % 1.4 - 0.2  # 留一點頭尾停頓
-                    band = max(24.0, fw * 0.22)
-                    bx = pad + t / 1.0 * (fw + band * 2) - band
-                    g2 = QLinearGradient(bx - band, 0, bx + band, 0)
-                    white = QColor(255, 255, 255, 0)
-                    strength = max(0.0, min(
-                        2.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
-                    alpha = max(0, min(255, round(
-                        110 * self._glow * strength)))
-                    g2.setColorAt(0.0, white)
-                    g2.setColorAt(0.5, QColor(255, 255, 255, alpha))
-                    g2.setColorAt(1.0, white)
-                    clip = QPainterPath()
-                    clip.addRoundedRect(
-                        QRectF(pad, cy - bar_h / 2, fw, bar_h),
-                        bar_h / 2, bar_h / 2)
-                    p.setPen(Qt.NoPen)
-                    p.setBrush(g2)
-                    p.drawPath(clip)
+                p.setPen(Qt.NoPen)
+                p.setBrush(g2)
+                p.drawPath(clip)
 
         # hover / 拖曳圓鈕（彈出動畫）
         if self._thumb > 0.01 and self._dur > 0:
             r = self._thumb_radius()
             cx = fill_w
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, int(255 * min(1.0, self._thumb))))
+            c = QColor(thumb_color)
+            c.setAlpha(round(c.alpha() * min(1.0, self._thumb)))
+            p.setBrush(c)
             p.drawEllipse(QPointF(cx, wave_y), r, r)

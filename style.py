@@ -6,8 +6,8 @@ import time
 from collections import OrderedDict
 
 import shiboken6
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QImage, QPainter,
-                           QPainterPath, QPixmap)
+from PySide6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication,
+                           QImage, QPainter, QPainterPath, QPixmap)
 from PySide6.QtCore import (QEasingCurve, QObject, QRectF, Qt, QTimer,
                             Signal)
 
@@ -16,6 +16,16 @@ CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
 SPOTIFY_GREEN = QColor("#1DB954")
 TEXT_DIM = QColor(255, 255, 255, 150)
+
+COLOR_SETTING_KEYS = (
+    "font_color",
+    "source_text_color",
+    "topbar_icon_color",
+    "number_color",
+    "seek_fill_color",
+    "seek_thumb_color",
+    "seek_track_color",
+)
 
 CARD_W, CARD_H = 400, 148
 ART_SIZE = 96
@@ -48,26 +58,26 @@ GLYPH_CHEVRON_UP = "\uE70E"
 # ---------------------------------------------------------------- 設定 ----
 
 DEFAULTS = {
-    "pinned": True,
+    "pinned": False,
     "theme": "auto",        # auto 或 THEMES 內的 key
     "bg_opacity": 1.0,      # 0.35 ~ 1.0
-    "brightness": 1.0,      # 0.55 ~ 1.45，mini player 背景亮度
+    "brightness": 0.95,     # 0.55 ~ 1.45，mini player 背景亮度
     "auto_color_strength": 1.0,  # 0.0 ~ 1.0，自動主色背景強度
-    "scale": 1.0,           # 0.8 ~ 3.0
-    "settings_scale": 1.0,  # 0.8 ~ 2.0
+    "scale": 1.70,          # 0.8 ~ 3.0
+    "settings_scale": 1.20, # 0.8 ~ 2.0
     "settings_panel_type": "normal",  # normal / categories
-    "radius": 18,           # 6 ~ 28
+    "radius": 15,           # 6 ~ 28
     "anim": "full",
     "anim_enabled": True,
     "seek_style": "wave",   # plain / wave / glow
-    "seek_thumb": "hover",  # hover / always，進度條白色圓鈕顯示方式
-    "seek_wave_amp": 1.0,
-    "seek_wave_speed": 1.0,
+    "seek_thumb": "always", # hover / always，進度條白色圓鈕顯示方式
+    "seek_wave_amp": 0.70,
+    "seek_wave_speed": 0.90,
     "seek_glow_strength": 1.0,
-    "seek_length": 1.0,
-    "seek_thumb_size": 1.0,
+    "seek_length": 1.05,
+    "seek_thumb_size": 0.60,
     "progress_time_mode": "current",
-    "controls_hover": False, # 控制列只在 hover 時顯示
+    "controls_hover": True, # 控制列只在 hover 時顯示
     "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
     "title_size": 1.0,
     "artist_size": 1.0,
@@ -75,12 +85,12 @@ DEFAULTS = {
     "title_y_offset": 0.0,
     "artist_x_offset": 0.0,
     "artist_y_offset": 0.0,
-    "auto_theme": "solid",  # solid / gradient，封面自動主題背景模式
+    "auto_theme": "gradient",  # solid / gradient，封面自動主題背景模式
     "art_mode": "cover",    # cover / vinyl，封面區顯示模式
-    "art_cover_size": 1.0,
+    "art_cover_size": 0.92,
     "art_vinyl_size": 1.0,
     "show_tonearm": True,
-    "tonearm_speed": 1.0,
+    "tonearm_speed": 0.77,
     "vinyl_spin_speed": 1.0,
     "topbar_hover": False,
     "card_preset": "standard",
@@ -88,9 +98,9 @@ DEFAULTS = {
     "cover_blur": 0.0,
     "cover_shape": "rounded",  # rounded / square / circle
     "cover_radius_strength": 1.0,
-    "cover_border": False,
-    "cover_border_width": 2.0,
-    "cover_border_opacity": 0.85,
+    "cover_border": True,
+    "cover_border_width": 4.5,
+    "cover_border_opacity": 0.35,
     "show_fps": False,
     "show_btn_shuffle": True,
     "show_btn_prev": True,
@@ -98,8 +108,8 @@ DEFAULTS = {
     "show_btn_repeat": True,
     "control_button_size": 1.0,
     "control_button_spacing": 1.0,
-    "font": "Segoe UI",
-    "fps": 60,              # 24 ~ 240，特效計時器更新率
+    "font": "Arial",
+    "fps": 144,             # 24 ~ 240，特效計時器更新率
     "antialias": True,      # 反鋸齒
     "show_source": True,    # 左上角來源標誌（Spotify 圖示 + 文字）
     "source": "spotify",    # spotify / browser / any 媒體來源
@@ -107,8 +117,17 @@ DEFAULTS = {
     "startup_show": "boot",  # boot / spotify
     "gpu": True,            # GPU 合成（QT_WIDGETS_RHI，重啟後生效）
     "shadow": True,         # 背景陰影
-    "controls_align": "center",   # 控制列位置 left / center / right
-    "custom_grad": ["#1DB954", "#3D9BE9"],   # 自訂漸層主題的兩端色
+    "controls_align": "left",   # 控制列位置 left / center / right
+    "custom_grad": ["#1db954", "#3d9be9"],   # 自訂漸層主題的兩端色
+    "background_image": "",     # 自訂卡片背景圖片路徑
+    "background_image_mode": "cover",  # cover / contain / stretch / tile
+    "font_color": "",           # 曲名 / 作者文字顏色，空字串 = 預設
+    "source_text_color": "",    # 左上來源文字顏色，空字串 = 預設
+    "topbar_icon_color": "",    # 右上工具列圖示顏色，空字串 = 預設
+    "number_color": "",         # 進度數字顏色，空字串 = 預設
+    "seek_fill_color": "",      # 進度條已播放顏色，空字串 = 跟隨主題色
+    "seek_thumb_color": "",     # 進度條圓鈕顏色，空字串 = 白色
+    "seek_track_color": "",     # 進度條總長度底色，空字串 = 預設淡白
     "custom_themes": [],    # 使用者新增主題：{key, name, colors:[hex] / [hex, hex]}
     "held_theme": None,     # 已刪除但目前仍套用中的自訂主題快照
     "hotkey": "",           # 全域快捷鍵：顯示 / 隱藏小播放器
@@ -151,6 +170,12 @@ CARD_PRESETS = [("mini", "超迷你"), ("standard", "標準"),
                 ("wide", "寬版"), ("controls", "控制列")]
 LANGUAGES = [("zh", "中文"), ("ja", "日本語"), ("en", "English")]
 SETTINGS_PANEL_TYPES = [("normal", "一般"), ("categories", "分類")]
+BACKGROUND_IMAGE_MODES = [
+    ("cover", "填滿裁切"),
+    ("contain", "完整顯示"),
+    ("stretch", "拉伸填滿"),
+    ("tile", "平鋪"),
+]
 
 _I18N = {
     "zh": {
@@ -243,6 +268,24 @@ _I18N = {
         "hotkey_vol_down": "音量降低",
         "button_pos": "按鈕位置",
         "font": "字體",
+        "font_color": "字體顏色",
+        "source_text_color": "Spotify 字色",
+        "topbar_icon_color": "右上工具列",
+        "number_color": "數字顏色",
+        "background_image": "背景圖",
+        "background_image_mode": "圖片填滿",
+        "bg_image_cover": "填滿",
+        "bg_image_contain": "完整",
+        "bg_image_stretch": "拉伸",
+        "bg_image_tile": "平鋪",
+        "choose_image": "選擇",
+        "clear_image": "清除",
+        "choose_color": "選擇顏色",
+        "color_apply": "套用",
+        "color_reset": "預設",
+        "seek_fill_color": "進度顏色",
+        "seek_thumb_color": "圓鈕顏色",
+        "seek_track_color": "軌道底色",
         "language": "語言",
         "antialias": "反鋸齒",
         "show_source": "來源圖示",
@@ -420,6 +463,24 @@ _I18N = {
         "hotkey_vol_down": "音量ダウン",
         "button_pos": "ボタン位置",
         "font": "フォント",
+        "font_color": "文字色",
+        "source_text_color": "Spotify 文字色",
+        "topbar_icon_color": "右上ツールバー",
+        "number_color": "数字色",
+        "background_image": "背景画像",
+        "background_image_mode": "画像表示",
+        "bg_image_cover": "カバー",
+        "bg_image_contain": "全体",
+        "bg_image_stretch": "伸縮",
+        "bg_image_tile": "タイル",
+        "choose_image": "選択",
+        "clear_image": "クリア",
+        "choose_color": "色を選択",
+        "color_apply": "適用",
+        "color_reset": "既定",
+        "seek_fill_color": "進行色",
+        "seek_thumb_color": "ノブ色",
+        "seek_track_color": "トラック色",
         "language": "言語",
         "antialias": "アンチエイリアス",
         "show_source": "ソース表示",
@@ -597,6 +658,24 @@ _I18N = {
         "hotkey_vol_down": "Volume Down",
         "button_pos": "Buttons",
         "font": "Font",
+        "font_color": "Font Color",
+        "source_text_color": "Spotify Text",
+        "topbar_icon_color": "Top Toolbar",
+        "number_color": "Number Color",
+        "background_image": "Background",
+        "background_image_mode": "Image Fill",
+        "bg_image_cover": "Cover",
+        "bg_image_contain": "Fit",
+        "bg_image_stretch": "Stretch",
+        "bg_image_tile": "Tile",
+        "choose_image": "Choose",
+        "clear_image": "Clear",
+        "choose_color": "Choose Color",
+        "color_apply": "Apply",
+        "color_reset": "Default",
+        "seek_fill_color": "Progress Color",
+        "seek_thumb_color": "Knob Color",
+        "seek_track_color": "Track Color",
         "language": "Language",
         "antialias": "Antialias",
         "show_source": "Source Icon",
@@ -692,6 +771,35 @@ for _lang in ("ja", "en"):
         _I18N[_lang].setdefault(_key, _value)
 
 SETTINGS = dict(DEFAULTS)
+
+_SAFE_UI_FONT = "Arial"
+_BAD_UI_FONTS = {
+    "fixedsys",
+    "terminal",
+    "system",
+    "small fonts",
+    "ms sans serif",
+    "ms serif",
+    "8514oem",
+}
+
+
+def is_safe_ui_font(family: str) -> bool:
+    name = str(family or "").strip()
+    return bool(name) and not name.startswith("@") and name.lower() not in _BAD_UI_FONTS
+
+
+def safe_font_family(family: str | None = None) -> str:
+    name = str(family or "").strip()
+    if is_safe_ui_font(name):
+        return name
+    if QGuiApplication.instance() is None:
+        return _SAFE_UI_FONT
+    fams = set(QFontDatabase.families())
+    for candidate in (_SAFE_UI_FONT, "Segoe UI", "Microsoft JhengHei UI"):
+        if candidate in fams:
+            return candidate
+    return _SAFE_UI_FONT
 
 
 def _valid_hex(value) -> str | None:
@@ -870,6 +978,15 @@ def load_settings():
     SETTINGS["anim_enabled"] = bool(SETTINGS.get("anim_enabled", True))
     SETTINGS["controls_hover"] = bool(SETTINGS.get("controls_hover", False))
     SETTINGS["topbar_hover"] = bool(SETTINGS.get("topbar_hover", False))
+    SETTINGS["background_image"] = str(
+        SETTINGS.get("background_image", "") or "").strip()
+    if SETTINGS.get("background_image_mode") not in [
+            k for k, _ in BACKGROUND_IMAGE_MODES]:
+        SETTINGS["background_image_mode"] = "cover"
+    for key in COLOR_SETTING_KEYS:
+        raw = str(SETTINGS.get(key, "") or "").strip()
+        c = QColor(raw) if raw else QColor()
+        SETTINGS[key] = c.name(QColor.HexRgb) if c.isValid() else ""
     SETTINGS["marquee_enabled"] = bool(
         SETTINGS.get("marquee_enabled", True))
     SETTINGS["title_size"] = min(
@@ -911,6 +1028,7 @@ def load_settings():
         1.6, max(0.7, float(SETTINGS.get("control_button_size", 1.0))))
     SETTINGS["control_button_spacing"] = min(
         2.2, max(0.4, float(SETTINGS.get("control_button_spacing", 1.0))))
+    SETTINGS["font"] = safe_font_family(SETTINGS.get("font"))
     SETTINGS["auto_color_strength"] = min(
         1.0, max(0.0, float(SETTINGS.get("auto_color_strength", 1.0))))
     if SETTINGS.get("card_preset") not in [k for k, _ in CARD_PRESETS]:
@@ -987,6 +1105,25 @@ def load_settings():
 def tr(key: str) -> str:
     lang = SETTINGS.get("language", "zh")
     return _I18N.get(lang, _I18N["zh"]).get(key, _I18N["zh"].get(key, key))
+
+
+def optional_setting_color(key: str) -> QColor | None:
+    raw = str(SETTINGS.get(key, "") or "").strip()
+    if not raw:
+        return None
+    c = QColor(raw)
+    return c if c.isValid() else None
+
+
+def setting_color(key: str, fallback, alpha: int | None = None) -> QColor:
+    c = optional_setting_color(key)
+    if c is None:
+        c = QColor(fallback)
+    if not c.isValid():
+        c = QColor("#ffffff")
+    if alpha is not None:
+        c.setAlpha(max(0, min(255, int(alpha))))
+    return c
 
 
 def theme_label(key: str, fallback: str) -> str:
@@ -1355,7 +1492,7 @@ def icon_font(px: int) -> QFont:
 
 
 def ui_font(px: int, weight=QFont.Normal) -> QFont:
-    f = QFont(SETTINGS["font"], weight=weight)
+    f = QFont(safe_font_family(SETTINGS.get("font")), weight=weight)
     f.setPixelSize(px)
     return f
 

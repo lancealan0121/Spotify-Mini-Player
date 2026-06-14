@@ -38,8 +38,8 @@ from style import (ART_SIZE, CARD_H, CARD_W, GLYPH_CLOSE, GLYPH_GLOBE,
                    cover_gradient, dominant_color,
                    fmt_time, remove_custom_theme,
                    glass_theme, icon_font, load_settings, save_settings,
-                   soft_shadow, source_info, theme_color, theme_gradient,
-                   tr, ui_font)
+                   optional_setting_color, safe_font_family, soft_shadow, source_info,
+                   theme_color, theme_gradient, tr, ui_font)
 from volume import AppVolume
 from widgets import (ArtView, IconButton, LaunchButton, MarqueeLabel,
                      PlayButton, SeekBar)
@@ -230,20 +230,72 @@ class TimeLabel(QLabel):
         self._prefix = ""
         self._anim = Anim(self)
         self._anim.valueChanged.connect(self._on_value)
+        self._text_t = 1.0
+        self._old_text = text
+        self._new_text = text
+        self._text_anim = Anim(self)
+        self._text_anim.valueChanged.connect(self._on_text_t)
+        self._text_anim.finished.connect(self._text_done)
 
-    def _text_for(self, sec: float) -> str:
-        return f"{self._prefix}{fmt_time(sec)}"
+    def _text_for(self, sec: float, prefix: str | None = None) -> str:
+        return f"{self._prefix if prefix is None else prefix}{fmt_time(sec)}"
 
     def _on_value(self, v):
         self._sec = float(v)
         QLabel.setText(self, self._text_for(self._sec))
 
+    def _on_text_t(self, v):
+        self._text_t = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def _text_done(self):
+        self._text_t = 1.0
+        QLabel.setText(self, self._new_text)
+        self.update()
+
+    def _animate_text_to(self, text: str) -> bool:
+        old = self._new_text if self._text_anim.state() == Anim.Running else QLabel.text(self)
+        if old == text:
+            QLabel.setText(self, text)
+            return False
+        self._anim.stop()
+        self._text_anim.stop()
+        self._old_text = old
+        self._new_text = text
+        QLabel.setText(self, text)
+        ms = adur(180, 110)
+        if not anim_on() or ms <= 0 or not self.isVisible():
+            self._text_t = 1.0
+            self.update()
+            return False
+        self._text_t = 0.0
+        self._text_anim.setStartValue(0.0)
+        self._text_anim.setEndValue(1.0)
+        self._text_anim.setDuration(ms)
+        self._text_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._text_anim.start()
+        return True
+
     def set_seconds(self, sec: float, animate: bool = False,
-                    prefix: str = ""):
+                    prefix: str = "", text_transition: bool = False):
         sec = max(0.0, float(sec))
         prefix = str(prefix or "")
         prefix_changed = prefix != self._prefix
+        new_text = self._text_for(sec, prefix)
         self._prefix = prefix
+        if text_transition:
+            self._sec = sec
+            self._target = sec
+            self._animate_text_to(new_text)
+            return
+        if self._text_anim.state() == Anim.Running:
+            if new_text != self._new_text:
+                self._new_text = new_text
+                QLabel.setText(self, new_text)
+                self.update()
+            self._sec = sec
+            self._target = sec
+            return
         if animate and anim_on() and abs(sec - self._sec) > 0.35:
             self._target = sec
             self._anim.stop()
@@ -256,8 +308,28 @@ class TimeLabel(QLabel):
         self._anim.stop()
         self._sec = sec
         self._target = sec
-        if prefix_changed or QLabel.text(self) != self._text_for(sec):
-            QLabel.setText(self, self._text_for(sec))
+        if prefix_changed or QLabel.text(self) != new_text:
+            QLabel.setText(self, new_text)
+
+    def paintEvent(self, e):
+        if self._text_t >= 0.999:
+            super().paintEvent(e)
+            return
+        p = QPainter(self)
+        aa(p)
+        p.setFont(self.font())
+        col = self.palette().color(self.foregroundRole())
+        if not col.isValid():
+            col = QColor(255, 255, 255, 120)
+        r = QRectF(self.rect())
+        dy = max(3.0, self.height() * 0.42)
+        align = self.alignment() or (Qt.AlignLeft | Qt.AlignVCenter)
+        t = self._text_t
+        p.setPen(col)
+        p.setOpacity(1.0 - t)
+        p.drawText(r.translated(0, -dy * t), align, self._old_text)
+        p.setOpacity(t)
+        p.drawText(r.translated(0, dy * (1.0 - t)), align, self._new_text)
 
 
 class _SourceLogo(QWidget):
@@ -269,12 +341,17 @@ class _SourceLogo(QWidget):
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
         self._spotify = bool(spotify)
+        self._color = QColor(255, 255, 255, 170)
 
     def set_spotify(self, spotify: bool):
         spotify = bool(spotify)
         if spotify == self._spotify:
             return
         self._spotify = spotify
+        self.update()
+
+    def set_color(self, color: QColor):
+        self._color = QColor(color)
         self.update()
 
     def paintEvent(self, _):
@@ -285,7 +362,7 @@ class _SourceLogo(QWidget):
                    d, d)
         if not self._spotify:
             p.setFont(icon_font(max(1, round(d * 0.85))))
-            p.setPen(QColor(255, 255, 255, 170))
+            p.setPen(self._color)
             p.drawText(r, Qt.AlignCenter, GLYPH_GLOBE)
             return
         pm = spotify_logo_pixmap(d, self.devicePixelRatioF())
@@ -419,6 +496,8 @@ class Card(QWidget):
         self._art_img: QImage | None = None
         self._drag_off: QPoint | None = None
         self._bg: QPixmap | None = None      # 背景快取（漸層很貴，只畫一次）
+        self._bg_image_path = ""
+        self._bg_image: QImage | None = None
         self._empty_state = True
         self._src_spotify = True
         self._src_label = "SPOTIFY"
@@ -478,11 +557,28 @@ class Card(QWidget):
         self._glass_to = self._glass
         self._acc_anim = Anim(self)
         self._acc_anim.valueChanged.connect(self._on_acc_anim)
+        self._custom_color_anim = Anim(self)
+        self._custom_color_anim.valueChanged.connect(self._on_custom_color_anim)
+        self._custom_color_anim.finished.connect(self._custom_color_done)
+        self._custom_color_abort = False
+        self._custom_color_from: dict[str, QColor] = {}
+        self._custom_color_to: dict[str, QColor] = {}
+        self._custom_colors: dict[str, QColor] = {}
+        self._topbar_override = False
+        self._topbar_override_to = False
+        self._bg_fade_old: QPixmap | None = None
+        self._bg_fade_new: QPixmap | None = None
+        self._bg_fade_t = 1.0
+        self._bg_fade_abort = False
+        self._bg_fade_anim = Anim(self)
+        self._bg_fade_anim.valueChanged.connect(self._on_bg_fade)
+        self._bg_fade_anim.finished.connect(self._bg_fade_done)
         self._build()
         # 子元件建立時 accent 都是預設綠；初始主題色直接灌一次，
         # 否則 refresh_accent 看到目標色相同會早退，固定/漸層主題
         # 重啟後控制元件會停在預設綠
         self._apply_colors(self._accent, self._bg1, self._bg2)
+        self.apply_custom_colors()
         self.set_empty(True)
 
     def accent(self) -> QColor:
@@ -579,14 +675,18 @@ class Card(QWidget):
             self.seek.update()
 
     def set_progress_times(self, pos: float, dur: float,
-                           animate_now: bool = False):
+                           animate_now: bool = False,
+                           animate_mode: bool = False):
         pos = max(0.0, float(pos))
         dur = max(0.0, float(dur))
-        self.t_now.set_seconds(pos, animate=animate_now)
         if SETTINGS.get("progress_time_mode") == "remaining" and dur > 0:
-            self.t_total.set_seconds(max(0.0, dur - pos), prefix="-")
+            self.t_now.set_seconds(max(0.0, dur - pos),
+                                   animate=animate_now, prefix="-",
+                                   text_transition=animate_mode)
         else:
-            self.t_total.set_seconds(dur)
+            self.t_now.set_seconds(pos, animate=animate_now,
+                                   text_transition=animate_mode)
+        self.t_total.set_seconds(dur)
 
     def _build(self):
         W = self._W
@@ -1472,9 +1572,152 @@ class Card(QWidget):
         self.btn_shuffle.set_accent(acc)
         self.btn_repeat.set_accent(acc)
         self.empty_btn.set_theme(acc, self._control_gradient(acc))
+        if hasattr(self, "_custom_colors"):
+            self.apply_custom_colors(animate=False)
         self._bg = None
         self.update()
         self.accent_changed.emit(QColor(acc))
+
+    @staticmethod
+    def _css_color(c: QColor) -> str:
+        return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
+
+    @staticmethod
+    def _with_alpha(c: QColor, alpha: int) -> QColor:
+        out = QColor(c)
+        out.setAlpha(max(0, min(255, int(alpha))))
+        return out
+
+    def _custom_color_targets(self) -> tuple[dict[str, QColor], bool]:
+        text = optional_setting_color("font_color")
+        if text is None:
+            title_col = QColor(255, 255, 255, 242)
+            artist_col = QColor(TEXT_DIM)
+            empty_icon_col = QColor(255, 255, 255, 70)
+            empty_text_col = QColor(255, 255, 255, 140)
+        else:
+            title_col = self._with_alpha(text, 242)
+            artist_col = self._with_alpha(text, 170)
+            empty_icon_col = self._with_alpha(text, 82)
+            empty_text_col = self._with_alpha(text, 160)
+
+        source_col = optional_setting_color("source_text_color")
+        if source_col is None:
+            source_col = QColor(255, 255, 255, 110)
+        else:
+            source_col = self._with_alpha(source_col, 190)
+
+        number_col = optional_setting_color("number_color")
+        if number_col is None:
+            number_col = QColor(255, 255, 255, 120)
+        else:
+            number_col = self._with_alpha(number_col, 205)
+
+        topbar_raw = optional_setting_color("topbar_icon_color")
+        topbar_override = topbar_raw is not None
+        topbar_col = (QColor(topbar_raw) if topbar_raw is not None
+                      else QColor(255, 255, 255, 245))
+
+        seek_fill = optional_setting_color("seek_fill_color")
+        if seek_fill is None:
+            seek_fill = QColor(self._accent)
+        else:
+            seek_fill = self._with_alpha(seek_fill, 230)
+        seek_thumb = optional_setting_color("seek_thumb_color")
+        seek_thumb = QColor(255, 255, 255) if seek_thumb is None else QColor(seek_thumb)
+        seek_track = optional_setting_color("seek_track_color")
+        if seek_track is None:
+            seek_track = QColor(255, 255, 255, 36)
+        else:
+            seek_track = self._with_alpha(seek_track, 110)
+
+        return {
+            "title": title_col,
+            "artist": artist_col,
+            "empty_icon": empty_icon_col,
+            "empty_text": empty_text_col,
+            "source": source_col,
+            "number": number_col,
+            "topbar": topbar_col,
+            "seek_fill": seek_fill,
+            "seek_thumb": seek_thumb,
+            "seek_track": seek_track,
+        }, topbar_override
+
+    def _set_custom_color_frame(self, colors: dict[str, QColor],
+                                topbar_override: bool,
+                                force_topbar_override: bool = False):
+        self.title.set_color(colors["title"])
+        self.artist.set_color(colors["artist"])
+        self.empty_icon.setStyleSheet(
+            f"color: {self._css_color(colors['empty_icon'])};")
+        self.empty_text.setStyleSheet(
+            f"color: {self._css_color(colors['empty_text'])};")
+        self.source.setStyleSheet(f"color: {self._css_color(colors['source'])};")
+        self.source_logo.set_color(colors["source"])
+
+        qss = f"color: {self._css_color(colors['number'])};"
+        self.t_now.setStyleSheet(qss)
+        self.t_total.setStyleSheet(qss)
+
+        topbar_col = (colors["topbar"] if (topbar_override
+                      or force_topbar_override) else None)
+        for b in self._topbar_buttons:
+            b.set_color_override(topbar_col)
+
+        self.seek.set_custom_colors(colors["seek_fill"],
+                                    colors["seek_thumb"],
+                                    colors["seek_track"])
+        self._custom_colors = {k: QColor(v) for k, v in colors.items()}
+        self._topbar_override = bool(topbar_override)
+        self.update()
+
+    def _on_custom_color_anim(self, value):
+        t = max(0.0, min(1.0, float(value)))
+        colors = {
+            key: blend(self._custom_color_from[key],
+                       self._custom_color_to[key], t)
+            for key in self._custom_color_to
+        }
+        self._set_custom_color_frame(
+            colors, self._topbar_override_to,
+            force_topbar_override=t < 0.999)
+
+    def _custom_color_done(self):
+        if self._custom_color_abort:
+            return
+        if self._custom_color_to:
+            self._set_custom_color_frame(
+                self._custom_color_to, self._topbar_override_to)
+
+    def apply_custom_colors(self, animate: bool = True):
+        target, topbar_override = self._custom_color_targets()
+        if not self._custom_colors:
+            self._set_custom_color_frame(target, topbar_override)
+            return
+        same_colors = all(self._custom_colors.get(k) == v
+                          for k, v in target.items())
+        if same_colors and self._topbar_override == topbar_override:
+            return
+        self._custom_color_abort = True
+        self._custom_color_anim.stop()
+        self._custom_color_abort = False
+        ms = adur(260, 150)
+        if not animate or not anim_on() or ms <= 0 or not self.isVisible():
+            self._set_custom_color_frame(target, topbar_override)
+            return
+        self._custom_color_from = {
+            key: QColor(self._custom_colors.get(key, value))
+            for key, value in target.items()
+        }
+        self._custom_color_to = {key: QColor(value)
+                                 for key, value in target.items()}
+        self._topbar_override_to = bool(topbar_override)
+        self._custom_color_anim.setStartValue(0.0)
+        self._custom_color_anim.setEndValue(1.0)
+        self._custom_color_anim.setDuration(ms)
+        self._custom_color_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._custom_color_anim.start()
 
     def refresh_accent(self, animate=True):
         t_acc = self.target_accent()
@@ -1504,6 +1747,44 @@ class Card(QWidget):
     def invalidate_bg(self):
         self._bg = None
         self.update()
+
+    def _on_bg_fade(self, value):
+        self._bg_fade_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _bg_fade_done(self):
+        if self._bg_fade_abort:
+            return
+        self._bg_fade_old = None
+        self._bg_fade_new = None
+        self._bg_fade_t = 1.0
+        self.update()
+
+    def transition_background(self, old_pm: QPixmap | None,
+                              animate: bool = True):
+        self._bg_fade_abort = True
+        self._bg_fade_anim.stop()
+        self._bg_fade_abort = False
+        self._bg = None
+        new_pm = QPixmap(self._bg_pixmap())
+        if old_pm is None or old_pm.isNull():
+            self.update()
+            return
+        ms = adur(300, 170)
+        if not animate or not anim_on() or ms <= 0 or not self.isVisible():
+            self._bg_fade_old = None
+            self._bg_fade_new = None
+            self._bg_fade_t = 1.0
+            self.update()
+            return
+        self._bg_fade_old = QPixmap(old_pm)
+        self._bg_fade_new = new_pm
+        self._bg_fade_t = 0.0
+        self._bg_fade_anim.setStartValue(0.0)
+        self._bg_fade_anim.setEndValue(1.0)
+        self._bg_fade_anim.setDuration(ms)
+        self._bg_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._bg_fade_anim.start()
 
     def apply_cover_border(self, animate: bool = True):
         self.art.set_border(bool(SETTINGS.get("cover_border", False)),
@@ -1656,6 +1937,53 @@ class Card(QWidget):
 
     # ---- 繪製 ----
 
+    def _custom_bg_image(self) -> QImage | None:
+        path = str(SETTINGS.get("background_image", "") or "").strip()
+        if path != self._bg_image_path:
+            self._bg_image_path = path
+            self._bg_image = QImage(path) if path else None
+        if self._bg_image is None or self._bg_image.isNull():
+            return None
+        return self._bg_image
+
+    def _draw_custom_bg_image(self, p: QPainter, clip: QPainterPath,
+                              opacity: float) -> bool:
+        img = self._custom_bg_image()
+        if img is None:
+            return False
+        iw, ih = img.width(), img.height()
+        if iw <= 0 or ih <= 0:
+            return False
+        mode = str(SETTINGS.get("background_image_mode", "cover"))
+        p.save()
+        p.setClipPath(clip)
+        p.setOpacity(max(0.0, min(1.0, opacity)))
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        target = QRectF(0, 0, self._W, self._H)
+        if mode == "tile":
+            p.drawTiledPixmap(target, QPixmap.fromImage(img), QPointF(0, 0))
+        elif mode == "stretch":
+            p.drawImage(target, img, QRectF(0, 0, iw, ih))
+        elif mode == "contain":
+            scale = min(self._W / iw, self._H / ih)
+            tw, th = iw * scale, ih * scale
+            tr = QRectF((self._W - tw) / 2.0, (self._H - th) / 2.0, tw, th)
+            p.drawImage(tr, img, QRectF(0, 0, iw, ih))
+        else:
+            target_ratio = self._W / max(1, self._H)
+            src_ratio = iw / max(1, ih)
+            if src_ratio > target_ratio:
+                sw = ih * target_ratio
+                sx = (iw - sw) / 2.0
+                src = QRectF(sx, 0, sw, ih)
+            else:
+                sh = iw / target_ratio
+                sy = (ih - sh) / 2.0
+                src = QRectF(0, sy, iw, sh)
+            p.drawImage(target, img, src)
+        p.restore()
+        return True
+
     def _bg_pixmap(self) -> QPixmap:
         if self._bg is not None:
             return self._bg
@@ -1683,6 +2011,10 @@ class Card(QWidget):
         border_path = QPainterPath()
         border_path.addRoundedRect(brect, brad, brad)
         op = SETTINGS["bg_opacity"]
+        has_bg_image = self._draw_custom_bg_image(p, path, op)
+        overlay_factor = 0.55 if has_bg_image else 1.0
+        if has_bg_image:
+            p.fillPath(path, self._bright(QColor(0, 0, 0, int(82 * op))))
 
         glass = min(1.0, max(0.0, self._glass))
         solid = 1.0 - glass
@@ -1691,8 +2023,8 @@ class Card(QWidget):
             g = QLinearGradient(0, 0, self._W, self._H)
             c1 = self._bright(QColor(self._bg1))
             c2 = self._bright(QColor(self._bg2))
-            c1.setAlpha(int(255 * op * solid))
-            c2.setAlpha(int(255 * op * solid))
+            c1.setAlpha(int(255 * op * solid * overlay_factor))
+            c2.setAlpha(int(255 * op * solid * overlay_factor))
             g.setColorAt(0.0, c1)
             g.setColorAt(1.0, c2)
             p.fillPath(path, g)
@@ -1700,19 +2032,24 @@ class Card(QWidget):
         if glass > 0.001:
             # 玻璃透明：煙燻玻璃底 + 斜向白色高光，與一般漸層層做透明度內插
             p.fillPath(path, self._bright(QColor(24, 26, 33,
-                                                 int(72 * op * glass))))
+                                                 int(72 * op * glass
+                                                     * overlay_factor))))
             g = QLinearGradient(0, 0, self._W, self._H)
             g.setColorAt(0.0, self._bright(QColor(255, 255, 255,
-                                                  int(34 * op * glass))))
+                                                  int(34 * op * glass
+                                                      * overlay_factor))))
             g.setColorAt(0.45, self._bright(QColor(255, 255, 255,
-                                                   int(9 * op * glass))))
+                                                   int(9 * op * glass
+                                                       * overlay_factor))))
             g.setColorAt(1.0, self._bright(QColor(255, 255, 255,
-                                                  int(20 * op * glass))))
+                                                  int(20 * op * glass
+                                                      * overlay_factor))))
             p.fillPath(path, g)
 
         glow = QRadialGradient(Sf(96), Sf(26), Sf(300))
         gc = self._bright(QColor(self._accent))
-        gc.setAlpha(int((42 * solid + 26 * glass) * op))
+        gc.setAlpha(int((42 * solid + 26 * glass) * op
+                        * (0.75 if has_bg_image else 1.0)))
         glow.setColorAt(0.0, gc)
         gc2 = self._bright(QColor(self._accent))
         gc2.setAlpha(0)
@@ -1731,7 +2068,15 @@ class Card(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
-        p.drawPixmap(0, 0, self._bg_pixmap())
+        if (self._bg_fade_old is not None and self._bg_fade_new is not None
+                and self._bg_fade_t < 0.999):
+            p.setOpacity(1.0 - self._bg_fade_t)
+            p.drawPixmap(0, 0, self._bg_fade_old)
+            p.setOpacity(self._bg_fade_t)
+            p.drawPixmap(0, 0, self._bg_fade_new)
+            p.setOpacity(1.0)
+        else:
+            p.drawPixmap(0, 0, self._bg_pixmap())
 
         if SETTINGS.get("show_fps", False):
             self._fps_frames += 1
@@ -2301,6 +2646,14 @@ class PlayerWindow(QWidget):
             self.card.invalidate_bg()
             self._save_timer.start()
             return
+        bg_old = None
+        if key in ("background_image", "background_image_mode") and self.card is not None:
+            bg_old = QPixmap(self.card._bg_pixmap())
+        if key == "font":
+            value = safe_font_family(value)
+            app = QApplication.instance()
+            if app is not None:
+                app.setFont(QFont(value))
         SETTINGS[key] = value
         self._save_timer.start()         # 防抖寫檔（拖曳滑桿時每幀都會進來）
         if key in ("scale", "font"):
@@ -2326,9 +2679,16 @@ class PlayerWindow(QWidget):
             self.card.invalidate_bg()
             if self._panel is not None and self._panel.isVisible():
                 self._panel.set_accent(self.card.accent(), force=True)
+        elif key in ("background_image", "background_image_mode"):
+            self.card.transition_background(bg_old, animate=True)
         elif key in ("radius", "bg_opacity", "brightness", "antialias"):
             self.card.invalidate_bg()
             self.update()                # 陰影貼圖依圓角快取，重畫視窗
+        elif key in ("font_color", "source_text_color",
+                     "topbar_icon_color", "number_color",
+                     "seek_fill_color", "seek_thumb_color",
+                     "seek_track_color"):
+            self.card.apply_custom_colors()
         elif key == "shadow":
             self._set_shadow_visible(bool(value), animate=True)
             if self._panel is not None:
@@ -2344,7 +2704,7 @@ class PlayerWindow(QWidget):
             self.card.seek.style_changed()
         elif key == "progress_time_mode":
             dur = self.state.duration if self.state is not None else self.card.seek._dur
-            self.card.set_progress_times(self._dpos, dur)
+            self.card.set_progress_times(self._dpos, dur, animate_mode=True)
         elif key == "auto_color_strength":
             self.card.refresh_accent()
             self.card.invalidate_bg()
@@ -2383,7 +2743,7 @@ class PlayerWindow(QWidget):
         elif key in ("tonearm_speed", "vinyl_spin_speed"):
             self.card.art.apply_motion_settings()
         elif key == "show_tonearm":
-            self.card.art.update()
+            self.card.art.set_tonearm_visible(bool(value), animate=True)
         elif key in ("cover_border", "cover_border_width",
                      "cover_border_opacity"):
             self.card.apply_cover_border(animate=True)
@@ -3200,6 +3560,7 @@ def main():
         os.environ.setdefault("QT_WIDGETS_RHI", "1")
 
     app = QApplication(sys.argv)
+    app.setFont(QFont(safe_font_family(SETTINGS.get("font"))))
     app.setQuitOnLastWindowClosed(False)
 
     # 單一實例：已有實例在跑就通知它現身，然後直接退出（demo 不檢查）

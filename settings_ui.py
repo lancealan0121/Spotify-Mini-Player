@@ -1,4 +1,5 @@
 """自訂設定面板與音量彈窗：全部自繪控制項，不用內建外觀。"""
+import os
 import time
 
 from PySide6.QtCore import (QEvent, QEasingCurve, QPoint, QPointF, QRect,
@@ -8,16 +9,19 @@ from PySide6.QtGui import (QColor, QConicalGradient, QFont, QFontDatabase,
                            QFontMetricsF, QIcon, QLinearGradient, QPainter,
                            QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import (QApplication, QDialog,
+                               QFileDialog,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QSizePolicy, QVBoxLayout, QWidget)
 
-from style import (AUTO_THEME_MODES, CARD_PRESETS, CONTROLS_ALIGN,
+from style import (AUTO_THEME_MODES, BACKGROUND_IMAGE_MODES, CARD_PRESETS,
+                   CONTROLS_ALIGN,
                    GLYPH_CHECK, GLYPH_CHEVRON_DOWN, GLYPH_CHEVRON_UP,
                    GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
                    GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_MODES,
                    SEEK_STYLES, SETTINGS,
                    SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES, Anim, aa,
-                   adur, all_themes, anim_on, blend, icon_font, soft_shadow,
+                   adur, all_themes, anim_on, blend, icon_font,
+                   is_safe_ui_font, safe_font_family, soft_shadow,
                    theme_color, theme_gradient, theme_label, tr, ui_font)
 from widgets import IconButton
 
@@ -47,6 +51,17 @@ def panel_icon_font(px: int) -> QFont:
     f = icon_font(panel_px(px))
     f.setHintingPreference(QFont.PreferNoHinting)
     return f
+
+
+def ensure_safe_app_font():
+    app = QApplication.instance()
+    if app is None:
+        return
+    f = QFont(app.font())
+    family = safe_font_family(SETTINGS.get("font") or f.family())
+    if f.family() != family:
+        f.setFamily(family)
+        app.setFont(f)
 
 
 def glyph_icon(glyph: str, px: int, color: QColor) -> QIcon:
@@ -117,6 +132,10 @@ def progress_time_options():
 
 def auto_theme_options():
     return [(k, tr(f"auto_theme_{k}")) for k, _ in AUTO_THEME_MODES]
+
+
+def background_image_mode_options():
+    return [(k, tr(f"bg_image_{k}")) for k, _ in BACKGROUND_IMAGE_MODES]
 
 
 def art_mode_options():
@@ -814,6 +833,12 @@ class PanelButton(QWidget):
         self._accent = QColor(c)
         self.update()
 
+    def set_text(self, text: str):
+        if text == self._text:
+            return
+        self._text = text
+        self.update()
+
     def _on_hover(self, v):
         self._hover = float(v)
         self.update()
@@ -974,6 +999,39 @@ class ColorSlot(QWidget):
                    self._label)
 
 
+class SectionLabel(QLabel):
+    clicked = Signal()
+
+    def __init__(self, title: str, collapsed: bool = False, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._collapsed = bool(collapsed)
+        self.setCursor(Qt.PointingHandCursor)
+        self._refresh()
+
+    def set_title(self, title: str):
+        self._title = title
+        self._refresh()
+
+    def set_collapsed(self, collapsed: bool):
+        collapsed = bool(collapsed)
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        self._refresh()
+
+    def _refresh(self):
+        glyph = "▸" if self._collapsed else "▾"
+        self.setText(f"{glyph} {self._title}")
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+
 class ThemePreview(QWidget):
     def __init__(self, colors, gradient: bool | None = None, parent=None):
         super().__init__(parent)
@@ -1045,7 +1103,9 @@ class CustomThemeDialog(QDialog):
     """內建自訂主題視窗：單色 / 漸層、HSV 拉桿、即時預覽。"""
 
     def __init__(self, accent: QColor, parent=None):
+        ensure_safe_app_font()
         super().__init__(parent)
+        self.setFont(panel_font(12))
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -1248,7 +1308,8 @@ class CustomThemeDialog(QDialog):
             self.move(base.x(), round(base.y() + off))
 
         def finish():
-            self.move(base)
+            final_y = base.y() if end >= start else base.y() + slide
+            self.move(base.x(), round(final_y))
             self.setWindowOpacity(end)
             if done:
                 done()
@@ -1298,6 +1359,437 @@ class CustomThemeDialog(QDialog):
         p.setPen(QPen(QColor(255, 255, 255, 28), 1))
         p.setBrush(Qt.NoBrush)
         p.drawPath(path)
+
+
+def _place_dialog_near_host(dlg: QWidget, host: QWidget | None):
+    if host is None:
+        return
+    scr = QApplication.screenAt(host.frameGeometry().center())
+    geo = (scr.availableGeometry() if scr is not None
+           else QApplication.primaryScreen().availableGeometry())
+    hg = host.frameGeometry()
+    gap = panel_px(12)
+    x = hg.right() + gap
+    if x + dlg.width() > geo.right():
+        x = hg.left() - dlg.width() - gap
+    x = min(max(geo.left(), x), geo.right() - dlg.width())
+    y = min(max(geo.top(), hg.top() + panel_px(6)),
+            geo.bottom() - dlg.height())
+    dlg.move(x, y)
+
+
+class ColorEditDialog(QDialog):
+    """單一顏色選擇視窗：沿用面板的 HSV 滑桿與預覽。"""
+
+    def __init__(self, title: str, current: str, fallback, accent: QColor,
+                 parent=None):
+        ensure_safe_app_font()
+        super().__init__(parent)
+        self.setFont(panel_font(12))
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                            | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._accent = QColor(accent)
+        c = QColor(str(current or ""))
+        self._color = c if c.isValid() else QColor(fallback)
+        if not self._color.isValid():
+            self._color = QColor("#ffffff")
+        self._result: str | None = None
+        self._updating = False
+        self._sync_serial = 0
+        self._drag_off = None
+        self._closing = False
+        self._opened = False
+        self._win_anim = None
+        self.setWindowOpacity(0.0)
+        self.setFixedSize(panel_px(310), panel_px(306))
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(panel_px(18), panel_px(14),
+                               panel_px(18), panel_px(16))
+        lay.setSpacing(panel_px(10))
+
+        head = QHBoxLayout()
+        title_lab = QLabel(title or tr("choose_color"))
+        title_lab.setFont(panel_font(14, QFont.DemiBold))
+        title_lab.setStyleSheet("color: rgba(255,255,255,235);")
+        head.addWidget(title_lab)
+        head.addStretch(1)
+        close = IconButton(GLYPH_CLOSE, panel_px(10), panel_px(24),
+                           fx="spin")
+        close.clicked.connect(self.reject)
+        head.addWidget(close)
+        lay.addLayout(head)
+
+        self.preview = ThemePreview([self._color], gradient=False)
+        lay.addWidget(self.preview)
+
+        self.sl_h = PanelSlider(0, 359, 0,
+                                fmt=lambda v: f"{v:.0f}",
+                                accent=self._accent)
+        self.sl_s = PanelSlider(0, 100, 0,
+                                fmt=lambda v: f"{v:.0f}%",
+                                accent=self._accent)
+        self.sl_v = PanelSlider(0, 100, 0,
+                                fmt=lambda v: f"{v:.0f}%",
+                                accent=self._accent)
+        lay.addWidget(self._labeled_slider(tr("custom_hue"), self.sl_h))
+        lay.addWidget(self._labeled_slider(tr("custom_saturation"), self.sl_s))
+        lay.addWidget(self._labeled_slider(tr("custom_value"), self.sl_v))
+        for sl in (self.sl_h, self.sl_s, self.sl_v):
+            sl.changed.connect(self._sliders_changed)
+
+        foot = QHBoxLayout()
+        reset = PanelButton(tr("color_reset"), accent=self._accent)
+        cancel = PanelButton(tr("custom_cancel"), accent=self._accent)
+        apply = PanelButton(tr("color_apply"), primary=True,
+                            accent=self._accent)
+        reset.clicked.connect(self._reset)
+        cancel.clicked.connect(self.reject)
+        apply.clicked.connect(self._accept)
+        foot.addWidget(reset)
+        foot.addStretch(1)
+        foot.addWidget(cancel)
+        foot.addWidget(apply)
+        lay.addLayout(foot)
+
+        self._sync_sliders()
+
+    def _labeled_slider(self, text: str, slider: PanelSlider) -> QWidget:
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(panel_px(10))
+        lab = QLabel(text)
+        lab.setFixedWidth(panel_px(64))
+        lab.setFont(panel_font(12))
+        lab.setStyleSheet("color: rgba(255,255,255,185);")
+        h.addWidget(lab)
+        h.addWidget(slider, 1)
+        return w
+
+    def _sync_sliders(self):
+        h, s, v, _ = self._color.getHsv()
+        if h < 0:
+            h = 0
+        self._sync_serial += 1
+        serial = self._sync_serial
+        self._updating = True
+        self.sl_h._slide_to(float(h), 0)
+        self.sl_s._slide_to(float(s) / 2.55, 0)
+        self.sl_v._slide_to(float(v) / 2.55, 0)
+        QTimer.singleShot(0, lambda s=serial: self._finish_sync(s))
+
+    def _finish_sync(self, serial: int):
+        if serial == self._sync_serial:
+            self._updating = False
+
+    def _sliders_changed(self, _):
+        if self._updating:
+            return
+        h = round(self.sl_h.value())
+        s = round(self.sl_s.value() * 2.55)
+        v = round(self.sl_v.value() * 2.55)
+        self._color = QColor.fromHsv(h, s, v)
+        self.preview.set_colors([self._color], gradient=False)
+
+    def _reset(self):
+        self._result = ""
+        self.accept()
+
+    def _accept(self):
+        self._result = self._color.name(QColor.HexRgb)
+        self.accept()
+
+    def result_color(self) -> str:
+        return "" if self._result is None else self._result
+
+    def _window_anim(self, start: float, end: float, done=None):
+        ms = adur(180, 100)
+        if not anim_on() or ms <= 0:
+            self.setWindowOpacity(end)
+            if done:
+                done()
+            return
+        base = self.pos()
+        slide = panel_px(8)
+        anim = QVariantAnimation(self)
+        self._win_anim = anim
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic if end > start
+                            else QEasingCurve.InCubic)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+
+        def step(v):
+            t = float(v)
+            self.setWindowOpacity(t)
+            off = (1.0 - t) * slide
+            self.move(base.x(), round(base.y() + off))
+
+        def finish():
+            final_y = base.y() if end >= start else base.y() + slide
+            self.move(base.x(), round(final_y))
+            self.setWindowOpacity(end)
+            if done:
+                done()
+
+        anim.valueChanged.connect(step)
+        anim.finished.connect(finish)
+        anim.start(QVariantAnimation.DeleteWhenStopped)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not self._opened:
+            self._opened = True
+            self.setWindowOpacity(0.0)
+            self._window_anim(0.0, 1.0)
+
+    def accept(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._window_anim(1.0, 0.0, lambda: QDialog.accept(self))
+
+    def reject(self):
+        if self._closing:
+            return
+        self._closing = True
+        self._window_anim(1.0, 0.0, lambda: QDialog.reject(self))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_off = (e.globalPosition().toPoint()
+                              - self.frameGeometry().topLeft())
+
+    def mouseMoveEvent(self, e):
+        if self._drag_off is not None and e.buttons() & Qt.LeftButton:
+            self.move(e.globalPosition().toPoint() - self._drag_off)
+
+    def mouseReleaseEvent(self, e):
+        self._drag_off = None
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(rect, panel_f(16), panel_f(16))
+        p.fillPath(path, QColor(21, 21, 27, 250))
+        p.setPen(QPen(QColor(255, 255, 255, 28), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+
+class ColorValueButton(QWidget):
+    changed = Signal(str)
+
+    def __init__(self, value: str, fallback="#ffffff", title_key="choose_color",
+                 accent=None, parent=None):
+        super().__init__(parent)
+        self._value = self._normalize(value)
+        self._fallback_from_accent = str(fallback).lower() == "accent"
+        self._fallback = (QColor(accent) if self._fallback_from_accent
+                          else QColor(fallback))
+        if not self._fallback.isValid():
+            self._fallback = QColor("#ffffff")
+        self._title_key = title_key
+        self._accent = QColor(accent) if accent else QColor("#1DB954")
+        self._hover = 0.0
+        self._press = 1.0
+        self._ha = Anim(self)
+        self._ha.valueChanged.connect(self._on_hover)
+        self._pa = Anim(self)
+        self._pa.valueChanged.connect(self._on_press)
+        self.setFixedHeight(panel_px(30))
+        self.setMinimumWidth(panel_px(138))
+        self.setCursor(Qt.PointingHandCursor)
+
+    def _normalize(self, value: str) -> str:
+        c = QColor(str(value or "").strip())
+        return c.name(QColor.HexRgb) if c.isValid() else ""
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: str):
+        value = self._normalize(value)
+        if value == self._value:
+            return
+        self._value = value
+        self.update()
+
+    def set_accent(self, c: QColor):
+        self._accent = QColor(c)
+        if self._fallback_from_accent:
+            self._fallback = QColor(c)
+        self.update()
+
+    def _display_color(self) -> QColor:
+        c = QColor(self._value) if self._value else QColor(self._fallback)
+        if not c.isValid():
+            c = QColor("#ffffff")
+        return c
+
+    def _on_hover(self, v):
+        self._hover = float(v)
+        self.update()
+
+    def _on_press(self, v):
+        self._press = float(v)
+        self.update()
+
+    def _anim_to(self, anim: Anim, cur: float, target: float, ms: int):
+        anim.stop()
+        if not anim_on() or ms <= 0:
+            anim.valueChanged.emit(target)
+            return
+        anim.setStartValue(cur)
+        anim.setEndValue(target)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+
+    def enterEvent(self, e):
+        self._anim_to(self._ha, self._hover, 1.0, adur(150, 90))
+
+    def leaveEvent(self, e):
+        self._anim_to(self._ha, self._hover, 0.0, adur(180, 100))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._anim_to(self._pa, self._press, 0.96, adur(70, 50))
+
+    def mouseReleaseEvent(self, e):
+        self._anim_to(self._pa, self._press, 1.0, adur(150, 90))
+        if not self.rect().contains(e.position().toPoint()):
+            return
+        dlg = ColorEditDialog(tr(self._title_key), self._value,
+                              self._fallback, self._accent, self.window())
+        _place_dialog_near_host(dlg, self.window())
+        if dlg.exec() == QDialog.Accepted:
+            value = dlg.result_color()
+            self.set_value(value)
+            self.changed.emit(self._value)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        c = self.rect().center()
+        p.translate(c.x(), c.y())
+        p.scale(self._press, self._press)
+        p.translate(-c.x(), -c.y())
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 40 + round(28 * self._hover)), 1))
+        p.setBrush(QColor(255, 255, 255, 18 + round(12 * self._hover)))
+        p.drawRoundedRect(r, panel_f(9), panel_f(9))
+        sw = QRectF(panel_f(9), panel_f(7), panel_f(16), panel_f(16))
+        sw_col = self._display_color()
+        if not self._value:
+            sw_col.setAlpha(135)
+        p.setPen(QPen(QColor(255, 255, 255, 82), 1))
+        p.setBrush(sw_col)
+        p.drawEllipse(sw)
+        if not self._value:
+            p.setPen(QPen(QColor(20, 20, 24, 170), 1.4))
+            p.drawLine(sw.bottomLeft() + QPointF(2, -1),
+                       sw.topRight() + QPointF(-2, 1))
+        txt = self._value.upper() if self._value else tr("unset")
+        p.setFont(panel_font(11, QFont.DemiBold if self._value else QFont.Normal))
+        p.setPen(QColor(255, 255, 255, 218 if self._value else 150))
+        p.drawText(QRectF(panel_f(33), 0,
+                          self.width() - panel_f(42), self.height()),
+                   Qt.AlignVCenter | Qt.AlignLeft, txt)
+
+
+class _PathDisplay(QWidget):
+    def __init__(self, path: str, parent=None):
+        super().__init__(parent)
+        self._path = str(path or "")
+        self.setFixedHeight(panel_px(30))
+        self.setMinimumWidth(panel_px(78))
+
+    def set_path(self, path: str):
+        self._path = str(path or "")
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 38), 1))
+        p.setBrush(QColor(255, 255, 255, 16))
+        p.drawRoundedRect(r, panel_f(9), panel_f(9))
+        text = os.path.basename(self._path) if self._path else tr("unset")
+        p.setFont(panel_font(11))
+        p.setPen(QColor(255, 255, 255, 205 if self._path else 145))
+        fm = QFontMetricsF(p.font())
+        avail = max(1, self.width() - panel_px(18))
+        text = fm.elidedText(text, Qt.ElideMiddle, avail)
+        p.drawText(r.adjusted(panel_f(9), 0, -panel_f(9), 0),
+                   Qt.AlignVCenter | Qt.AlignLeft, text)
+
+
+class ImagePathPicker(QWidget):
+    changed = Signal(str)
+
+    def __init__(self, value: str, accent=None, parent=None):
+        super().__init__(parent)
+        self._value = str(value or "")
+        self._accent = QColor(accent) if accent else QColor("#1DB954")
+        self.setFixedHeight(panel_px(30))
+        self.setMinimumWidth(panel_px(210))
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(panel_px(6))
+        self.display = _PathDisplay(self._value)
+        self.btn_choose = PanelButton(tr("choose_image"), accent=self._accent)
+        self.btn_clear = PanelButton(tr("clear_image"), accent=self._accent)
+        self.btn_choose.setFixedWidth(panel_px(58))
+        self.btn_clear.setFixedWidth(panel_px(52))
+        lay.addWidget(self.display, 1)
+        lay.addWidget(self.btn_choose)
+        lay.addWidget(self.btn_clear)
+        self.btn_choose.clicked.connect(self._choose)
+        self.btn_clear.clicked.connect(self._clear)
+
+    def value(self) -> str:
+        return self._value
+
+    def set_value(self, value: str):
+        value = str(value or "")
+        if value == self._value:
+            return
+        self._value = value
+        self.display.set_path(value)
+
+    def set_accent(self, c: QColor):
+        self._accent = QColor(c)
+        self.btn_choose.set_accent(c)
+        self.btn_clear.set_accent(c)
+
+    def refresh_language(self):
+        self.btn_choose.set_text(tr("choose_image"))
+        self.btn_clear.set_text(tr("clear_image"))
+        self.display.update()
+
+    def _choose(self):
+        start = self._value if self._value else os.path.expanduser("~")
+        if os.path.isfile(start):
+            start = os.path.dirname(start)
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("background_image"), start,
+            "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)")
+        if not path:
+            return
+        self.set_value(path)
+        self.changed.emit(self._value)
+
+    def _clear(self):
+        if not self._value:
+            return
+        self.set_value("")
+        self.changed.emit("")
 
 
 class SwatchRow(QWidget):
@@ -1950,7 +2442,9 @@ class _FontPopup(QWidget):
 
     def __init__(self, families: list[str], current: str, accent: QColor,
                  parent=None):
+        ensure_safe_app_font()
         super().__init__(parent)
+        self.setFont(panel_font(12))
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -2096,15 +2590,16 @@ class FontPicker(QWidget):
         if FontPicker._families_cache is None:
             FontPicker._families_cache = [
                 f for f in QFontDatabase.families()
-                if not f.startswith("@")
+                if is_safe_ui_font(f)
             ]
             if not FontPicker._families_cache:
-                FontPicker._families_cache = ["Segoe UI"]
+                FontPicker._families_cache = [safe_font_family()]
         self._families = FontPicker._families_cache
-        if current and current not in self._families:
+        current = safe_font_family(current)
+        if current and current not in self._families and is_safe_ui_font(current):
             self._families = [current] + self._families
         self._text = (current if current in self._families
-                      else (current or SETTINGS.get("font", "Segoe UI")))
+                      else safe_font_family(SETTINGS.get("font")))
         self._accent = QColor("#1DB954")
         self._hover = 0.0
         self._press = 1.0
@@ -2131,7 +2626,7 @@ class FontPicker(QWidget):
         self.update()
 
     def _set_text(self, text: str, emit: bool = True):
-        text = str(text or "").strip()
+        text = safe_font_family(text)
         if not text:
             return
         if text == self._text:
@@ -2608,7 +3103,9 @@ class SettingsPanel(QWidget):
     closed = Signal()
 
     def __init__(self, accent: QColor, parent=None):
+        ensure_safe_app_font()
         super().__init__(parent)
+        self.setFont(panel_font(12))
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -2693,6 +3190,11 @@ class SettingsPanel(QWidget):
         self._section_labels = []
         self._search_rows = []
         self._section_groups = []
+        self._section_collapsed = getattr(self, "_section_collapsed", {})
+        self._section_anims = {}
+        self._section_anim_containers = {}
+        self._section_anim_targets = {}
+        self._section_animating = set()
         panel_type = SETTINGS.get("settings_panel_type", "normal")
         self._current_panel_type = panel_type
         categorized = panel_type == "categories"
@@ -2770,16 +3272,32 @@ class SettingsPanel(QWidget):
             nonlocal current_section, current_section_key, current_layout
             if full_mode and label_key in full_layouts:
                 layout = full_layouts[label_key]
-            current_layout = layout
-            lab = QLabel(tr(label_key))
+            group_id = f"{label_key}:{len(self._section_groups)}"
+            collapsed = bool(self._section_collapsed.get(group_id, False))
+            lab = SectionLabel(tr(label_key), collapsed)
             self._section_labels.append((label_key, lab))
-            lab.setFont(panel_font(11, QFont.DemiBold))
-            lab.setStyleSheet("color: rgba(255,255,255,128);")
+            lab.setFont(panel_font(14, QFont.DemiBold))
+            lab.setStyleSheet("color: rgba(255,255,255,225);")
             lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             layout.addWidget(lab)
+            group = QWidget()
+            group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            group_lay = QVBoxLayout(group)
+            group_lay.setContentsMargins(0, 0, 0, 0)
+            group_lay.setSpacing(panel_px(10))
+            group_lay.setAlignment(Qt.AlignTop)
+            if collapsed:
+                group.setFixedHeight(0)
+                group.hide()
+            layout.addWidget(group)
+            current_layout = group_lay
             current_section = []
             current_section_key = label_key
-            self._section_groups.append((label_key, lab, current_section))
+            self._section_groups.append(
+                (label_key, lab, current_section, group_id, group))
+            lab.clicked.connect(
+                lambda gid=group_id, header=lab, container=group:
+                    self._toggle_section(gid, header, container))
             return lab
 
         def register_search(host: QWidget, label_key: str):
@@ -2840,6 +3358,11 @@ class SettingsPanel(QWidget):
             self.sw_theme = row("theme", SwatchRow(SETTINGS["theme"],
                                                    expanded=expanded),
                                 stretch=False, top=True)
+            self.bg_image = row("background_image", ImagePathPicker(
+                SETTINGS.get("background_image", ""), accent=self._accent))
+            self.sg_bg_image_mode = row("background_image_mode", Segmented(
+                background_image_mode_options(),
+                SETTINGS["background_image_mode"], accent=self._accent))
             self.sg_auto_theme = row("auto_theme", Segmented(
                 auto_theme_options(), SETTINGS["auto_theme"],
                 accent=self._accent))
@@ -2864,6 +3387,16 @@ class SettingsPanel(QWidget):
         def build_text():
             section(lay, "section_text")
             self.fp_font = row("font", FontPicker(SETTINGS["font"]))
+            self.cp_font_color = row("font_color", ColorValueButton(
+                SETTINGS.get("font_color", ""), "#ffffff",
+                "font_color", accent=self._accent))
+            self.cp_source_text_color = row("source_text_color",
+                ColorValueButton(SETTINGS.get("source_text_color", ""),
+                                 "#ffffff", "source_text_color",
+                                 accent=self._accent))
+            self.cp_number_color = row("number_color", ColorValueButton(
+                SETTINGS.get("number_color", ""), "#ffffff",
+                "number_color", accent=self._accent))
             self.tg_marquee = row("marquee_enabled", Toggle(
                 bool(SETTINGS["marquee_enabled"]), accent=self._accent),
                 stretch=False)
@@ -2909,6 +3442,10 @@ class SettingsPanel(QWidget):
 
         def build_buttons():
             section(lay, "section_buttons")
+            self.cp_topbar_icon_color = row("topbar_icon_color",
+                ColorValueButton(SETTINGS.get("topbar_icon_color", ""),
+                                 "#ffffff", "topbar_icon_color",
+                                 accent=self._accent))
             self.sl_control_button_size = row("control_button_size", PanelSlider(
                 70, 160, SETTINGS["control_button_size"] * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
@@ -3017,7 +3554,7 @@ class SettingsPanel(QWidget):
             else:
                 h.addWidget(control)
                 h.addStretch(1)
-            adv.addWidget(host)
+            current_layout.addWidget(host)
             register_search(host, label_key)
             return control
 
@@ -3069,6 +3606,18 @@ class SettingsPanel(QWidget):
         self.sl_seek_glow_strength = adv_row("seek_glow_strength", PanelSlider(
             0, 200, SETTINGS["seek_glow_strength"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.cp_seek_fill_color = adv_row("seek_fill_color",
+            ColorValueButton(SETTINGS.get("seek_fill_color", ""),
+                             "accent", "seek_fill_color",
+                             accent=self._accent))
+        self.cp_seek_thumb_color = adv_row("seek_thumb_color",
+            ColorValueButton(SETTINGS.get("seek_thumb_color", ""),
+                             "#ffffff", "seek_thumb_color",
+                             accent=self._accent))
+        self.cp_seek_track_color = adv_row("seek_track_color",
+            ColorValueButton(SETTINGS.get("seek_track_color", ""),
+                             "#ffffff", "seek_track_color",
+                             accent=self._accent))
         self.sl_seek_length = adv_row("seek_length", PanelSlider(
             20, 130, SETTINGS["seek_length"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
@@ -3131,6 +3680,10 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("custom_theme_delete", v))
         self.sg_auto_theme.changed.connect(
             lambda v: self.setting_changed.emit("auto_theme", v))
+        self.bg_image.changed.connect(
+            lambda v: self.setting_changed.emit("background_image", v))
+        self.sg_bg_image_mode.changed.connect(
+            lambda v: self.setting_changed.emit("background_image_mode", v))
         self.sg_art_mode.changed.connect(
             lambda v: self.setting_changed.emit("art_mode", v))
         self.tg_show_tonearm.changed.connect(
@@ -3204,6 +3757,12 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("seek_wave_speed", v / 100.0))
         self.sl_seek_glow_strength.changed.connect(
             lambda v: self.setting_changed.emit("seek_glow_strength", v / 100.0))
+        self.cp_seek_fill_color.changed.connect(
+            lambda v: self.setting_changed.emit("seek_fill_color", v))
+        self.cp_seek_thumb_color.changed.connect(
+            lambda v: self.setting_changed.emit("seek_thumb_color", v))
+        self.cp_seek_track_color.changed.connect(
+            lambda v: self.setting_changed.emit("seek_track_color", v))
         self.sl_seek_length.changed.connect(
             lambda v: self.setting_changed.emit("seek_length", v / 100.0))
         self.sl_seek_thumb_size.changed.connect(
@@ -3216,6 +3775,12 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("language", v))
         self.fp_font.currentTextChanged.connect(
             lambda v: self.setting_changed.emit("font", v))
+        self.cp_font_color.changed.connect(
+            lambda v: self.setting_changed.emit("font_color", v))
+        self.cp_source_text_color.changed.connect(
+            lambda v: self.setting_changed.emit("source_text_color", v))
+        self.cp_number_color.changed.connect(
+            lambda v: self.setting_changed.emit("number_color", v))
         self.tg_marquee.changed.connect(
             lambda v: self.setting_changed.emit("marquee_enabled", v))
         self.sl_title_size.changed.connect(
@@ -3233,6 +3798,8 @@ class SettingsPanel(QWidget):
         self.sl_control_button_size.changed.connect(
             lambda v: self.setting_changed.emit(
                 "control_button_size", v / 100.0))
+        self.cp_topbar_icon_color.changed.connect(
+            lambda v: self.setting_changed.emit("topbar_icon_color", v))
         self.sl_control_button_spacing.changed.connect(
             lambda v: self.setting_changed.emit(
                 "control_button_spacing", v / 100.0))
@@ -3254,8 +3821,7 @@ class SettingsPanel(QWidget):
         # 否則每幀 _relayout 都重啟 geo 動畫、視窗高度卡住不長，body 卻同步
         # 長高，footer（重設按鈕）會被擠出視窗外被裁
         self.sw_theme.size_changed.connect(self._on_theme_size_changed)
-        if categorized or full_mode:
-            self._apply_search(self.search.text(), relayout=False)
+        self._apply_search(self.search.text(), relayout=False)
         return self._apply_body_geometry(resize_window=resize_window)
 
     def _panel_layout(self, panel: QWidget):
@@ -3575,7 +4141,7 @@ class SettingsPanel(QWidget):
         if self._body is None:
             return QRect()
         top = None
-        for _, lab, _ in self._section_groups:
+        for _, lab, _, _, _ in self._section_groups:
             if lab.isVisible():
                 top = lab.mapTo(self._body, QPoint(0, 0)).y()
                 break
@@ -3642,11 +4208,110 @@ class SettingsPanel(QWidget):
         self._category_slide_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._category_slide_anim.start()
 
+    def _toggle_section(self, group_id: str, header: SectionLabel,
+                        container: QWidget):
+        collapsed = not bool(self._section_collapsed.get(group_id, False))
+        self._section_collapsed[group_id] = collapsed
+        header.set_collapsed(collapsed)
+        self._animate_section(group_id, container, collapsed)
+
+    def _section_content_height(self, container: QWidget) -> int:
+        lay = container.layout()
+        if lay is not None:
+            lay.activate()
+            hint = lay.sizeHint().height()
+        else:
+            hint = container.sizeHint().height()
+        return max(0, hint)
+
+    def _set_section_height(self, group_id: str, value: float):
+        container = self._section_anim_containers.get(group_id)
+        if container is None:
+            return
+        h = max(0, round(float(value)))
+        container.setFixedHeight(h)
+        if h > 0 and not container.isVisible():
+            container.show()
+        self._relayout(animate=False)
+
+    def _on_section_anim(self, group_id: str, value):
+        self._set_section_height(group_id, float(value))
+
+    def _section_anim_done(self, group_id: str):
+        collapsed = bool(self._section_anim_targets.get(group_id, False))
+        container = self._section_anim_containers.get(group_id)
+        self._section_animating.discard(group_id)
+        if container is None:
+            return
+        if collapsed:
+            container.setFixedHeight(0)
+            container.hide()
+            self._apply_search(self.search.text(), relayout=False)
+            self._relayout(animate=False)
+        else:
+            container.setFixedHeight(self._section_content_height(container))
+            container.show()
+            self._relayout(animate=False)
+            QTimer.singleShot(
+                0, lambda gid=group_id, c=container:
+                self._release_section_height(gid, c))
+
+    def _release_section_height(self, group_id: str, container: QWidget):
+        if self._section_anim_containers.get(group_id) is not container:
+            return
+        if group_id in self._section_animating:
+            return
+        if bool(self._section_collapsed.get(group_id, False)):
+            return
+        container.setMinimumHeight(0)
+        container.setMaximumHeight(16777215)
+
+    def _animate_section(self, group_id: str, container: QWidget,
+                         collapsed: bool):
+        anim = self._section_anims.get(group_id)
+        if anim is None:
+            anim = Anim(self)
+            anim.valueChanged.connect(
+                lambda v, gid=group_id: self._on_section_anim(gid, v))
+            anim.finished.connect(
+                lambda gid=group_id: self._section_anim_done(gid))
+            self._section_anims[group_id] = anim
+        if anim.state() == Anim.Running:
+            anim.stop()
+        self._section_anim_containers[group_id] = container
+        self._section_anim_targets[group_id] = bool(collapsed)
+        if getattr(self, "search", None) is not None and self.search.text().strip():
+            self._section_animating.discard(group_id)
+            container.setMinimumHeight(0)
+            container.setMaximumHeight(16777215)
+            self._apply_search(self.search.text(), relayout=False)
+            self._relayout(animate=False)
+            return
+        self._section_animating.add(group_id)
+        self._apply_search(self.search.text(), relayout=False)
+        full_h = self._section_content_height(container)
+        start = container.height() if container.isVisible() else 0
+        if collapsed and start <= 0:
+            start = full_h
+        end = 0 if collapsed else full_h
+        ms = adur(260, 150)
+        if not anim_on() or ms <= 0 or not self.isVisible():
+            self._set_section_height(group_id, end)
+            self._section_anim_done(group_id)
+            return
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+
     def _apply_search(self, text: str = "", relayout: bool = True):
         query = str(text or "").strip().lower()
         categorized = SETTINGS.get("settings_panel_type", "normal") == "categories"
         full_mode = SETTINGS.get("settings_panel_type", "normal") == "full"
         any_advanced = False
+        row_match: dict[QWidget, bool] = {}
+        full_box_visible: dict[str, bool] = {}
         for host, label_key, keys in self._search_rows:
             terms = set(keys)
             if label_key == "FPS":
@@ -3654,24 +4319,45 @@ class SettingsPanel(QWidget):
             else:
                 terms.add(tr(label_key).lower())
             match = not query or any(query in term for term in terms)
+            row_match[host] = match
             host.setVisible(match)
             if (match and query and self.advanced_box is not None
                     and self.advanced_box.isAncestorOf(host)):
                 any_advanced = True
 
-        for section_key, lab, children in self._section_groups:
+        for section_key, lab, children, group_id, container in self._section_groups:
             category_match = (not categorized or query
                               or section_key == self._panel_category)
-            if categorized and not query:
-                for w in children:
-                    w.setVisible(category_match)
-            lab.setVisible(category_match
-                           and (not query
-                                or any(w.isVisible() for w in children)))
+            collapsed = bool(self._section_collapsed.get(group_id, False))
+            lab.set_collapsed(collapsed and not query)
+            any_match = any(row_match.get(w, w.isVisible()) for w in children)
+            animating = group_id in self._section_animating
+            section_visible = category_match and (not query or any_match)
+            show_content = section_visible and (query or not collapsed
+                                                or animating)
+            for w in children:
+                w.setMinimumHeight(0)
+                w.setMaximumHeight(16777215)
+                w.setVisible(show_content and row_match.get(w, w.isVisible()))
+            lab.setVisible(section_visible)
+            if animating:
+                if show_content and not container.isVisible():
+                    container.show()
+            elif show_content:
+                container.setMinimumHeight(0)
+                container.setMaximumHeight(16777215)
+                container.show()
+            else:
+                container.setFixedHeight(0)
+                container.hide()
             if full_mode:
-                box = self._full_box_sections.get(section_key)
-                if box is not None:
-                    box.setVisible(lab.isVisible())
+                full_box_visible[section_key] = (
+                    full_box_visible.get(section_key, False)
+                    or section_visible)
+
+        if full_mode:
+            for key, box in self._full_box_sections.items():
+                box.setVisible(full_box_visible.get(key, False))
 
         if (not categorized and query and any_advanced
                 and not self._advanced_open):
@@ -3969,11 +4655,13 @@ class SettingsPanel(QWidget):
         for key, lab in self._labels.items():
             lab.setText(tr(key) if key != "FPS" else "FPS")
         for key, lab in self._section_labels:
-            lab.setText(tr(key))
+            lab.set_title(tr(key))
         for key, lab in self._toggle_labels.items():
             lab.setText(tr(key))
         self.sg_auto_theme.set_options(auto_theme_options(),
                                        SETTINGS["auto_theme"])
+        self.sg_bg_image_mode.set_options(
+            background_image_mode_options(), SETTINGS["background_image_mode"])
         self.sg_source.set_options(source_options(), SETTINGS["source"])
         self.sg_panel_type.set_options(settings_panel_type_options(),
                                        SETTINGS["settings_panel_type"])
@@ -4003,6 +4691,17 @@ class SettingsPanel(QWidget):
         self.kb_vol_down.update()
         self.btn_reset._text = tr("reset_settings")
         self.btn_reset.update()
+        if hasattr(self, "bg_image"):
+            self.bg_image.refresh_language()
+        for w in (getattr(self, "cp_font_color", None),
+                  getattr(self, "cp_source_text_color", None),
+                  getattr(self, "cp_number_color", None),
+                  getattr(self, "cp_topbar_icon_color", None),
+                  getattr(self, "cp_seek_fill_color", None),
+                  getattr(self, "cp_seek_thumb_color", None),
+                  getattr(self, "cp_seek_track_color", None)):
+            if w is not None:
+                w.update()
         self._update_advanced_button()
         self.sw_theme.update()
         self._apply_search(self.search.text())
@@ -4066,7 +4765,8 @@ class SettingsPanel(QWidget):
             # 過濾）的可見性，否則會把所有子面板誤判成不可見而全部藏掉
             for key, box in self._full_box_sections.items():
                 vis = any(lab.isVisibleTo(box)
-                          for k, lab, _ in self._section_groups if k == key)
+                          for k, lab, _, _, _ in self._section_groups
+                          if k == key)
                 box.setVisible(vis)
                 if vis:
                     box.raise_()
@@ -4120,7 +4820,8 @@ class SettingsPanel(QWidget):
             # 同 _type_slide_done：box 仍 hidden，須用 isVisibleTo 判斷
             for key, box in self._full_box_sections.items():
                 vis = any(lab.isVisibleTo(box)
-                          for k, lab, _ in self._section_groups if k == key)
+                          for k, lab, _, _, _ in self._section_groups
+                          if k == key)
                 box.setVisible(vis)
                 if vis:
                     box.raise_()
@@ -4152,12 +4853,16 @@ class SettingsPanel(QWidget):
                     self.kb_prev, self.kb_next, self.kb_vol_up,
                     self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
                     self.sg_progress_time, self.sg_thumb, self.sg_panel_type,
-                    self.sg_panel_category,
+                    self.sg_panel_category, self.sg_bg_image_mode,
                     self.sg_source, self.sg_startup_show,
                     self.sg_ctl, self.sg_card_preset,
                     self.sg_art_mode, self.sg_cover_shape,
                     self.sg_lang, self.btn_advanced, self.btn_reset,
                     self.btn_advanced_close, self.fp_font,
+                    self.bg_image, self.cp_font_color,
+                    self.cp_source_text_color, self.cp_number_color,
+                    self.cp_topbar_icon_color, self.cp_seek_fill_color,
+                    self.cp_seek_thumb_color, self.cp_seek_track_color,
                     self.tg_startup, self.tg_aa, self.tg_src,
                     self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
                     self.tg_topbar_hover, self.tg_show_fps,
@@ -4352,7 +5057,9 @@ class VolumePopup(QWidget):
     M = 14                 # 陰影留邊
 
     def __init__(self, accent: QColor, value, muted=False, parent=None):
+        ensure_safe_app_font()
         super().__init__(parent)
+        self.setFont(panel_font(12))
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.NoDropShadowWindowHint
                             | Qt.WindowStaysOnTopHint)
