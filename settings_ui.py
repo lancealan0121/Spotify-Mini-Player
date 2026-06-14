@@ -2416,8 +2416,14 @@ class _FontList(QWidget):
         self._hover = -1
         self._scroll = 0.0
         self._target_scroll = 0.0
+        self._scroll_hover = False
+        self._scroll_hover_t = 0.0
+        self._scroll_drag = False
+        self._scroll_drag_delta = 0.0
         self._sa = Anim(self)
         self._sa.valueChanged.connect(self._on_scroll)
+        self._scroll_ha = Anim(self)
+        self._scroll_ha.valueChanged.connect(self._on_scrollbar_hover)
         self._row_h = panel_px(28)
         self.setMouseTracking(True)
         self.setCursor(Qt.PointingHandCursor)
@@ -2437,6 +2443,8 @@ class _FontList(QWidget):
         self._scroll = 0.0
         self._target_scroll = 0.0
         self._hover = -1
+        self._scroll_hover = False
+        self._scroll_hover_to(False)
         self.update()
 
     def set_current(self, text: str):
@@ -2454,6 +2462,87 @@ class _FontList(QWidget):
 
     def _clamp_scroll(self, value: float) -> float:
         return max(0.0, min(self._max_scroll(), float(value)))
+
+    def _scrollbar_geometry(self):
+        if self._max_scroll() <= 1:
+            return None
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        total_h = max(1.0, float(len(self._items) * self._row_h))
+        thumb_h = max(panel_f(24), rect.height() * rect.height() / total_h)
+        thumb_h = min(rect.height(), thumb_h)
+        span = max(1.0, rect.height() - thumb_h)
+        thumb_y = rect.y() + span * (self._scroll / self._max_scroll())
+        hit = QRectF(rect.right() - panel_f(16), rect.y(),
+                     panel_f(16), rect.height())
+        thumb = QRectF(rect.right() - panel_f(5), thumb_y,
+                       panel_f(3), thumb_h)
+        thumb_hit = QRectF(hit.x(), thumb_y, hit.width(), thumb_h)
+        return hit, thumb, thumb_hit
+
+    def _set_scrollbar_hover(self, pos: QPointF | None) -> bool:
+        geo = self._scrollbar_geometry()
+        hover = bool(geo is not None and pos is not None
+                     and geo[0].contains(pos))
+        if hover != self._scroll_hover:
+            self._scroll_hover = hover
+            self._scroll_hover_to(hover)
+        if not self._scroll_drag:
+            self.setCursor(Qt.OpenHandCursor if hover else Qt.PointingHandCursor)
+        return hover
+
+    def _on_scrollbar_hover(self, value):
+        self._scroll_hover_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _scroll_hover_to(self, on: bool):
+        target = 1.0 if on else 0.0
+        self._scroll_ha.stop()
+        ms = adur(150 if on else 180, 90)
+        if not anim_on() or ms <= 0:
+            self._scroll_hover_t = target
+            self.update()
+            return
+        self._scroll_ha.setStartValue(self._scroll_hover_t)
+        self._scroll_ha.setEndValue(target)
+        self._scroll_ha.setDuration(ms)
+        self._scroll_ha.setEasingCurve(QEasingCurve.OutCubic)
+        self._scroll_ha.start()
+
+    def _scroll_from_thumb_y(self, y: float, drag_delta: float) -> float:
+        geo = self._scrollbar_geometry()
+        if geo is None:
+            return self._scroll
+        hit, thumb, _ = geo
+        span = max(1.0, hit.height() - thumb.height())
+        ratio = (float(y) - drag_delta - hit.y()) / span
+        return self._clamp_scroll(ratio * self._max_scroll())
+
+    def _set_scroll_direct(self, value: float):
+        self._sa.stop()
+        self._scroll = self._clamp_scroll(value)
+        self._target_scroll = self._scroll
+        self.update()
+
+    def _begin_scrollbar_drag(self, pos: QPointF) -> bool:
+        geo = self._scrollbar_geometry()
+        if geo is None:
+            return False
+        hit, thumb, thumb_hit = geo
+        if not hit.contains(pos):
+            return False
+        self._scroll_drag = True
+        self._scroll_hover = True
+        self._scroll_hover_to(True)
+        self._sa.stop()
+        if thumb_hit.contains(pos):
+            self._scroll_drag_delta = pos.y() - thumb.y()
+        else:
+            self._scroll_drag_delta = thumb.height() / 2.0
+            self._set_scroll_direct(
+                self._scroll_from_thumb_y(pos.y(), self._scroll_drag_delta))
+        self.grabMouse()
+        self.setCursor(Qt.ClosedHandCursor)
+        return True
 
     def _on_scroll(self, value):
         self._scroll = self._clamp_scroll(float(value))
@@ -2492,20 +2581,42 @@ class _FontList(QWidget):
         e.accept()
 
     def mouseMoveEvent(self, e):
+        if self._scroll_drag:
+            self._set_scroll_direct(
+                self._scroll_from_thumb_y(e.position().y(),
+                                          self._scroll_drag_delta))
+            e.accept()
+            return
+        over_scrollbar = self._set_scrollbar_hover(e.position())
         real = int((e.position().y() + self._scroll) // self._row_h)
-        self._hover = real if 0 <= real < len(self._items) else -1
+        self._hover = (-1 if over_scrollbar else
+                       real if 0 <= real < len(self._items) else -1)
         self.update()
 
     def leaveEvent(self, e):
+        if self._scroll_drag:
+            return
         self._hover = -1
+        self._set_scrollbar_hover(None)
         self.update()
 
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
             return
+        if self._begin_scrollbar_drag(e.position()):
+            e.accept()
+            return
         idx = int((e.position().y() + self._scroll) // self._row_h)
         if 0 <= idx < len(self._items):
             self.selected.emit(self._items[idx])
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if self._scroll_drag:
+            self._scroll_drag = False
+            self.releaseMouse()
+            self._set_scrollbar_hover(e.position())
+            e.accept()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -2549,16 +2660,19 @@ class _FontList(QWidget):
         if not self._items:
             p.setPen(QColor(255, 255, 255, 120))
             p.drawText(rect, Qt.AlignCenter, tr("unset"))
-        elif self._max_scroll() > 1:
-            thumb_h = max(panel_f(24), rect.height()
-                          * rect.height() / (len(self._items) * self._row_h))
-            thumb_y = rect.y() + (rect.height() - thumb_h) * (
-                self._scroll / self._max_scroll())
+        else:
+            geo = self._scrollbar_geometry()
+            if geo is None:
+                return
+            _, thumb, _ = geo
+            t = self._scroll_hover_t
+            w = panel_f(3 + 2 * t)
+            draw_thumb = QRectF(thumb.center().x() - w / 2.0, thumb.y(),
+                                w, thumb.height())
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(255, 255, 255, 42))
-            p.drawRoundedRect(QRectF(rect.right() - panel_f(5), thumb_y,
-                                     panel_f(3), thumb_h),
-                              panel_f(1.5), panel_f(1.5))
+            alpha = round(42 + (94 - 42) * t)
+            p.setBrush(QColor(255, 255, 255, alpha))
+            p.drawRoundedRect(draw_thumb, w / 2.0, w / 2.0)
 
 
 class _FontPopup(QWidget):
@@ -2872,11 +2986,19 @@ class _ScrollablePanelBody(_PanelBody):
         super().__init__(parent)
         self.content = QWidget(self)
         self.content.setAttribute(Qt.WA_TranslucentBackground)
+        self.content.setMouseTracking(True)
+        self.content.installEventFilter(self)
         self._offset = 0.0
         self._target_offset = 0.0
         self._content_h = 0
+        self._scroll_hover = False
+        self._scroll_hover_t = 0.0
+        self._scroll_drag = False
+        self._scroll_drag_delta = 0.0
         self._sa = Anim(self)
         self._sa.valueChanged.connect(self._on_scroll)
+        self._scroll_ha = Anim(self)
+        self._scroll_ha.valueChanged.connect(self._on_scrollbar_hover)
         self.setMouseTracking(True)
 
     def content_height_for_width(self, width: int) -> int:
@@ -2901,6 +3023,113 @@ class _ScrollablePanelBody(_PanelBody):
 
     def _clamp(self, value: float) -> float:
         return max(0.0, min(self._max_offset(), float(value)))
+
+    def _scrollbar_geometry(self):
+        if self._max_offset() <= 1:
+            return None
+        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        track_h = rect.height() - panel_f(24)
+        if track_h <= 0:
+            return None
+        thumb_h = max(panel_f(28), track_h * self.height()
+                      / max(1.0, float(self._content_h)))
+        thumb_h = min(track_h, thumb_h)
+        track_y = rect.y() + panel_f(12)
+        span = max(1.0, track_h - thumb_h)
+        thumb_y = track_y + span * (self._offset / self._max_offset())
+        hit = QRectF(rect.right() - panel_f(18), track_y,
+                     panel_f(18), track_h)
+        thumb = QRectF(rect.right() - panel_f(7), thumb_y,
+                       panel_f(3), thumb_h)
+        thumb_hit = QRectF(hit.x(), thumb_y, hit.width(), thumb_h)
+        return hit, thumb, thumb_hit
+
+    def _set_scrollbar_hover(self, pos: QPointF | None) -> bool:
+        geo = self._scrollbar_geometry()
+        hover = bool(geo is not None and pos is not None
+                     and geo[0].contains(pos))
+        if hover != self._scroll_hover:
+            self._scroll_hover = hover
+            self._scroll_hover_to(hover)
+        if not self._scroll_drag:
+            cursor = Qt.OpenHandCursor if hover else Qt.ArrowCursor
+            self.setCursor(cursor)
+            self.content.setCursor(cursor)
+        return hover
+
+    def _on_scrollbar_hover(self, value):
+        self._scroll_hover_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _scroll_hover_to(self, on: bool):
+        target = 1.0 if on else 0.0
+        self._scroll_ha.stop()
+        ms = adur(150 if on else 180, 90)
+        if not anim_on() or ms <= 0:
+            self._scroll_hover_t = target
+            self.update()
+            return
+        self._scroll_ha.setStartValue(self._scroll_hover_t)
+        self._scroll_ha.setEndValue(target)
+        self._scroll_ha.setDuration(ms)
+        self._scroll_ha.setEasingCurve(QEasingCurve.OutCubic)
+        self._scroll_ha.start()
+
+    def _offset_from_thumb_y(self, y: float, drag_delta: float) -> float:
+        geo = self._scrollbar_geometry()
+        if geo is None:
+            return self._offset
+        hit, thumb, _ = geo
+        span = max(1.0, hit.height() - thumb.height())
+        ratio = (float(y) - drag_delta - hit.y()) / span
+        return self._clamp(ratio * self._max_offset())
+
+    def _set_offset_direct(self, value: float):
+        self._sa.stop()
+        self._offset = self._clamp(value)
+        self._target_offset = self._offset
+        self._place_content()
+
+    def _begin_scrollbar_drag(self, pos: QPointF) -> bool:
+        geo = self._scrollbar_geometry()
+        if geo is None:
+            return False
+        hit, thumb, thumb_hit = geo
+        if not hit.contains(pos):
+            return False
+        self._scroll_drag = True
+        self._scroll_hover = True
+        self._scroll_hover_to(True)
+        self._sa.stop()
+        if thumb_hit.contains(pos):
+            self._scroll_drag_delta = pos.y() - thumb.y()
+        else:
+            self._scroll_drag_delta = thumb.height() / 2.0
+            self._set_offset_direct(
+                self._offset_from_thumb_y(pos.y(), self._scroll_drag_delta))
+        self.grabMouse()
+        self.setCursor(Qt.ClosedHandCursor)
+        self.content.setCursor(Qt.ClosedHandCursor)
+        return True
+
+    def _drag_scrollbar_to(self, pos: QPointF) -> bool:
+        if not self._scroll_drag:
+            return False
+        self._set_offset_direct(
+            self._offset_from_thumb_y(pos.y(), self._scroll_drag_delta))
+        return True
+
+    def _end_scrollbar_drag(self) -> bool:
+        if not self._scroll_drag:
+            return False
+        self._scroll_drag = False
+        self.releaseMouse()
+        return True
+
+    def _content_event_pos(self, event) -> QPointF:
+        pos = event.position()
+        cp = self.content.pos()
+        return QPointF(pos.x() + cp.x(), pos.y() + cp.y())
 
     def _place_content(self):
         self.content.move(0, -round(self._offset))
@@ -2938,6 +3167,30 @@ class _ScrollablePanelBody(_PanelBody):
         self._target_offset = self._clamp(self._target_offset)
         self._place_content()
 
+    def eventFilter(self, obj, event):
+        if obj is self.content:
+            if event.type() == QEvent.MouseButtonPress:
+                if (event.button() == Qt.LeftButton
+                        and self._begin_scrollbar_drag(
+                            self._content_event_pos(event))):
+                    event.accept()
+                    return True
+            elif event.type() == QEvent.MouseMove:
+                pos = self._content_event_pos(event)
+                if self._drag_scrollbar_to(pos):
+                    event.accept()
+                    return True
+                self._set_scrollbar_hover(pos)
+            elif event.type() == QEvent.MouseButtonRelease:
+                pos = self._content_event_pos(event)
+                if self._end_scrollbar_drag():
+                    self._set_scrollbar_hover(pos)
+                    event.accept()
+                    return True
+            elif event.type() == QEvent.Leave and not self._scroll_drag:
+                self._set_scrollbar_hover(None)
+        return super().eventFilter(obj, event)
+
     def wheelEvent(self, e):
         if self._max_offset() <= 1:
             e.ignore()
@@ -2950,25 +3203,48 @@ class _ScrollablePanelBody(_PanelBody):
         self._scroll_to(self._target_offset - delta)
         e.accept()
 
+    def mousePressEvent(self, e):
+        if (e.button() == Qt.LeftButton
+                and self._begin_scrollbar_drag(e.position())):
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self._drag_scrollbar_to(e.position()):
+            e.accept()
+            return
+        self._set_scrollbar_hover(e.position())
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self._end_scrollbar_drag():
+            self._set_scrollbar_hover(e.position())
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def leaveEvent(self, e):
+        if not self._scroll_drag:
+            self._set_scrollbar_hover(None)
+        super().leaveEvent(e)
+
     def paintEvent(self, e):
         super().paintEvent(e)
-        if self._max_offset() <= 1:
+        geo = self._scrollbar_geometry()
+        if geo is None:
             return
+        _, thumb, _ = geo
+        t = self._scroll_hover_t
+        w = panel_f(3 + 2 * t)
+        draw_thumb = QRectF(thumb.center().x() - w / 2.0, thumb.y(),
+                            w, thumb.height())
         p = QPainter(self)
         aa(p)
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        track_h = rect.height() - panel_f(24)
-        if track_h <= 0:
-            return
-        thumb_h = max(panel_f(28), track_h * self.height()
-                      / max(1.0, float(self._content_h)))
-        y = rect.y() + panel_f(12) + (track_h - thumb_h) * (
-            self._offset / self._max_offset())
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 44))
-        p.drawRoundedRect(QRectF(rect.right() - panel_f(7), y,
-                                 panel_f(3), thumb_h),
-                          panel_f(1.5), panel_f(1.5))
+        alpha = round(44 + (98 - 44) * t)
+        p.setBrush(QColor(255, 255, 255, alpha))
+        p.drawRoundedRect(draw_thumb, w / 2.0, w / 2.0)
 
 
 class _PanelZoomOverlay(QWidget):
