@@ -43,7 +43,7 @@ from style import (ART_SIZE, CARD_H, CARD_W, GLYPH_CLOSE, GLYPH_GLOBE,
                    install_qt_message_filter, load_settings, save_settings,
                    optional_setting_color, safe_font_family, soft_shadow, source_info,
                    theme_color, theme_gradient, tr, ui_font)
-from volume import AppVolume
+from volume import AppMasterAudioMeter, AppVolume
 from widgets import (ArtView, IconButton, LaunchButton, MarqueeLabel,
                      PlayButton, SeekBar)
 
@@ -1138,7 +1138,7 @@ class Card(QWidget):
         self._art_scale_to = self._art_scale_from
         self._info_focus_timer = QTimer(self)
         self._info_focus_timer.setSingleShot(True)
-        self._info_focus_timer.setInterval(2200)
+        self._info_focus_timer.setInterval(1100)
         self._info_focus_timer.timeout.connect(self._start_info_focus)
 
         # 主題色淡化過渡：accent 與背景漸層兩端色一起逐幀內插，
@@ -1880,7 +1880,7 @@ class Card(QWidget):
 
     def _animate_info_focus(self, target: float, animate: bool = True):
         self._info_anim.stop()
-        ms = adur(650, 375)
+        ms = adur(320, 190)
         if not animate or not anim_on() or ms <= 0 or not self.isVisible():
             self._on_info_focus(target)
             return
@@ -3196,10 +3196,13 @@ class PlayerWindow(QWidget):
         self._panel: SettingsPanel | None = None
         self._vol_pop: VolumePopup | None = None   # 保持參照避免被 GC 回收
         self._volume = AppVolume()
+        self._audio_meter = AppMasterAudioMeter()
         self._app_id = "spotify"
         self._vol_checked_at = 0.0   # 滾輪調音量的 session 列舉節流
         self._vol_ok = False
         self._vol_session_key = ""
+        self._audio_meter_checked_at = 0.0
+        self._audio_meter_ok = False
         self._vol_preheated = False
         self._open_drag = None
         hotkey_base = 0x53504D   # "SPM"
@@ -3577,6 +3580,8 @@ class PlayerWindow(QWidget):
             self.card.set_cover_enabled(bool(value), animate=True)
         elif key == "art_mode":
             self.card.art.set_mode(str(value), animate=True)
+        elif key == "audio_feedback_thickness":
+            self.card.art.update()
         elif key in ("cover_shape", "cover_radius_strength"):
             self.card.apply_cover_shape(animate=True)
         elif key == "cover_blur":
@@ -3700,6 +3705,7 @@ class PlayerWindow(QWidget):
         c.btn_repeat.clicked.connect(self._cycle_repeat)
         c.seek.seeked.connect(self._seek_to)
         c.seek.previewed.connect(self._preview_seek_time)
+        c.art.set_audio_level_provider(self._read_audio_peak)
         c.empty_btn.clicked.connect(self._launch_spotify)
         c.title.setCursor(Qt.PointingHandCursor)
         c.artist.setCursor(Qt.PointingHandCursor)
@@ -4014,6 +4020,18 @@ class PlayerWindow(QWidget):
         val = self._volume.get() if self._vol_ok else None
         muted = self._volume.get_mute() if self._vol_ok else False
         return val, muted
+
+    def _read_audio_peak(self) -> float | None:
+        if self.demo:
+            return random.uniform(0.02, 0.85)
+        now = time.monotonic()
+        stale = now - self._audio_meter_checked_at > 5.0
+        if stale or not self._audio_meter_ok:
+            self._audio_meter_ok = self._audio_meter.refresh()
+            self._audio_meter_checked_at = now
+        if not self._audio_meter_ok:
+            return None
+        return self._audio_meter.peak()
 
     def _prewarm_volume_popup(self):
         if self._vol_preheated or self.card is None:

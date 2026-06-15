@@ -87,9 +87,10 @@ DEFAULTS = {
     "artist_x_offset": -0.20591344239150544,
     "artist_y_offset": -0.20591344239150544,
     "auto_theme": "gradient",  # solid / gradient，封面自動主題背景模式
-    "art_mode": "cover",    # cover / vinyl，封面區顯示模式
+    "art_mode": "cover",    # cover / vinyl / pulse / audio，封面區顯示模式
     "art_cover_size": 0.9245844436826636,
     "art_vinyl_size": 0.9983334355091419,
+    "audio_feedback_thickness": 1.0,
     "show_vinyl_center": True,
     "vinyl_center_size": 1.0,
     "show_tonearm": True,
@@ -257,8 +258,11 @@ _I18N = {
         "art_mode": "封面模式",
         "art_cover": "封面",
         "art_vinyl": "黑膠",
+        "art_pulse": "律動主題",
+        "art_audio": "音訊反饋",
         "art_cover_size": "封面圖大小",
         "art_vinyl_size": "黑膠大小",
+        "audio_feedback_thickness": "反饋線條粗細",
         "show_vinyl_center": "中心黑圈",
         "vinyl_center_size": "中心圖片大小",
         "show_tonearm": "顯示唱針",
@@ -488,8 +492,11 @@ _I18N = {
         "art_mode": "カバー表示",
         "art_cover": "カバー",
         "art_vinyl": "レコード",
+        "art_pulse": "リズムテーマ",
+        "art_audio": "音声反応",
         "art_cover_size": "カバーサイズ",
         "art_vinyl_size": "レコードサイズ",
+        "audio_feedback_thickness": "反応ライン太さ",
         "show_vinyl_center": "中央黒リング",
         "vinyl_center_size": "中央画像サイズ",
         "show_tonearm": "針を表示",
@@ -718,8 +725,11 @@ _I18N = {
         "art_mode": "Cover Mode",
         "art_cover": "Cover",
         "art_vinyl": "Vinyl",
+        "art_pulse": "Pulse Theme",
+        "art_audio": "Audio Feedback",
         "art_cover_size": "Cover Size",
         "art_vinyl_size": "Vinyl Size",
+        "audio_feedback_thickness": "Feedback Line Width",
         "show_vinyl_center": "Center Ring",
         "vinyl_center_size": "Center Image Size",
         "show_tonearm": "Show Tonearm",
@@ -1286,12 +1296,14 @@ def load_settings():
                 "artist_x_offset", "artist_y_offset"):
         SETTINGS[key] = min(80.0, max(
             -80.0, float(SETTINGS.get(key, 0.0))))
-    if SETTINGS.get("art_mode") not in ("cover", "vinyl"):
+    if SETTINGS.get("art_mode") not in ("cover", "vinyl", "pulse", "audio"):
         SETTINGS["art_mode"] = "cover"
     SETTINGS["art_cover_size"] = min(
         1.4, max(0.6, float(SETTINGS.get("art_cover_size", 1.0))))
     SETTINGS["art_vinyl_size"] = min(
         1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0))))
+    SETTINGS["audio_feedback_thickness"] = min(
+        2.5, max(0.4, float(SETTINGS.get("audio_feedback_thickness", 1.0))))
     SETTINGS["show_vinyl_center"] = bool(
         SETTINGS.get("show_vinyl_center", True))
     SETTINGS["vinyl_center_size"] = min(

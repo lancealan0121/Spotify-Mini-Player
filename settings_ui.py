@@ -144,7 +144,10 @@ def weather_effect_options():
 
 
 def art_mode_options():
-    return [("cover", tr("art_cover")), ("vinyl", tr("art_vinyl"))]
+    return [("cover", tr("art_cover")),
+            ("vinyl", tr("art_vinyl")),
+            ("pulse", tr("art_pulse")),
+            ("audio", tr("art_audio"))]
 
 
 def cover_shape_options():
@@ -4237,6 +4240,10 @@ class SettingsPanel(QWidget):
         self.sl_art_vinyl_size = adv_row("art_vinyl_size", PanelSlider(
             70, 135, SETTINGS["art_vinyl_size"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_audio_feedback_thickness = adv_row(
+            "audio_feedback_thickness",
+            PanelSlider(40, 250, SETTINGS["audio_feedback_thickness"] * 100,
+                        fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.tg_show_vinyl_center = adv_toggle(
             "show_vinyl_center", "show_vinyl_center")
         self.sl_vinyl_center_size = adv_row("vinyl_center_size", PanelSlider(
@@ -4445,6 +4452,9 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("art_cover_size", v / 100.0))
         self.sl_art_vinyl_size.changed.connect(
             lambda v: self.setting_changed.emit("art_vinyl_size", v / 100.0))
+        self.sl_audio_feedback_thickness.changed.connect(
+            lambda v: self.setting_changed.emit("audio_feedback_thickness",
+                                                v / 100.0))
         self.sl_vinyl_center_size.changed.connect(
             lambda v: self.setting_changed.emit("vinyl_center_size", v / 100.0))
         self.tg_show_cover.changed.connect(
@@ -5800,6 +5810,7 @@ class SettingsPanel(QWidget):
                     self.sl_control_button_spacing,
                     self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
                     self.sl_art_cover_size, self.sl_art_vinyl_size,
+                    self.sl_audio_feedback_thickness,
                     self.sl_vinyl_center_size,
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,
