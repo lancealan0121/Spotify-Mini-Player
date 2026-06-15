@@ -379,8 +379,8 @@ class _SourceLogo(QWidget):
             p.drawEllipse(r)
 
 
-class _RainLayer(QWidget):
-    """卡片背景上的輕量雨層：斜向雨線、深度速度差、底部濺落。"""
+class _WeatherLayer(QWidget):
+    """卡片背景上的輕量降水層：雨線或飄雪，共用一組顯示面板控制。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -394,10 +394,16 @@ class _RainLayer(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._last = time.monotonic()
+        self._effect = "rain"
         self._intensity = 0.0
         self._length_scale = 1.0
         self._thickness_scale = 1.0
+        self._size_scale = 1.0
+        self._spin_speed = 1.0
+        self._fall_speed = 1.0
         self._direction = 18.0
+        self._snow_symbols = ("❄", "❅", "❆")
+        self._snow_cache: dict[tuple[str, int, int], QPixmap] = {}
         self._fade = 0.0
         self._active_target = False
         self._fade_anim = Anim(self)
@@ -407,17 +413,53 @@ class _RainLayer(QWidget):
         self.apply_settings()
 
     def apply_settings(self):
+        old_effect = self._effect
+        self._effect = str(SETTINGS.get("weather_effect", "rain"))
+        if self._effect not in ("rain", "snow", "custom"):
+            self._effect = "rain"
+        if old_effect != self._effect:
+            self._drops.clear()
+            self._splashes.clear()
+            self._fade = 0.0
         self._intensity = max(
-            0.0, min(1.0, float(SETTINGS.get("rain_intensity", 0.55))))
-        self._length_scale = max(
-            0.05, min(1.6, float(SETTINGS.get("rain_length", 1.0))))
-        self._thickness_scale = max(
-            0.3, min(2.6, float(SETTINGS.get("rain_thickness", 1.0))))
-        self._direction = max(
-            -55.0, min(55.0, float(SETTINGS.get("rain_direction", 18.0))))
-        active = bool(SETTINGS.get("rain_enabled", False)) and self._intensity > 0.0005
+            0.0, min(1.0, float(SETTINGS.get(
+                f"{self._effect}_intensity", 0.55))))
+        if self._effect in ("snow", "custom"):
+            prefix = self._effect
+            self._size_scale = max(
+                0.45, min(2.2, float(SETTINGS.get(f"{prefix}_size", 1.0))))
+            self._spin_speed = max(
+                0.0, min(3.0, float(SETTINGS.get(
+                    f"{prefix}_spin_speed", 1.0))))
+            self._fall_speed = max(
+                0.25, min(2.5, float(SETTINGS.get(
+                    f"{prefix}_fall_speed", 1.0))))
+            if self._effect == "custom":
+                raw_symbols = str(
+                    SETTINGS.get("custom_symbols", "❄,❅,❆") or "")
+                symbols = tuple(s.strip()[:4] for s in raw_symbols.split(",")
+                                if s.strip())
+                self._snow_symbols = (
+                    symbols[:24] if symbols else ("❄", "❅", "❆"))
+            else:
+                self._snow_symbols = ("❄", "❅", "❆")
+            self._length_scale = 0.0
+            self._thickness_scale = self._size_scale
+            self._direction = 0.0
+        else:
+            self._length_scale = max(
+                0.05, min(1.6, float(SETTINGS.get("rain_length", 1.0))))
+            self._thickness_scale = max(
+                0.3, min(2.6, float(SETTINGS.get("rain_thickness", 1.0))))
+            self._direction = max(
+                -55.0, min(55.0, float(SETTINGS.get("rain_direction", 18.0))))
+            self._fall_speed = max(
+                0.25, min(2.5, float(SETTINGS.get("rain_fall_speed", 1.0))))
+        active = (bool(SETTINGS.get("weather_enabled", False))
+                  and self._intensity > 0.0005)
         self._active_target = active
         self.apply_fps()
+        self._refresh_drop_settings()
         if active:
             self._sync_drop_count()
             self.show()
@@ -464,27 +506,66 @@ class _RainLayer(QWidget):
         fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
         self._timer.setInterval(max(8, round(1000 / fps)))
 
+    def _refresh_drop_settings(self):
+        if self._effect in ("snow", "custom"):
+            for d in self._drops:
+                if "base_size" in d:
+                    d["size"] = d["base_size"] * self._size_scale
+                if "base_speed" in d:
+                    d["speed"] = d["base_speed"] * self._fall_speed
+                if "base_spin" in d:
+                    d["spin"] = d["base_spin"] * self._spin_speed
+        else:
+            for d in self._drops:
+                if "base_speed" in d:
+                    d["speed"] = d["base_speed"] * self._fall_speed
+
     def _target_count(self) -> int:
         if self._intensity <= 0.0005:
             return 0
         area = max(1, self.width() * self.height())
         area_scale = max(0.6, area / float(CARD_W * CARD_H))
         density = self._intensity ** 1.55
+        if self._effect in ("snow", "custom"):
+            return max(1, min(140, round(
+                (2 + 74 * density) * area_scale)))
         return max(1, min(260, round(
             (1 + 130 * density) * area_scale)))
 
     def _new_drop(self, reset: bool = False) -> dict:
         w, h = max(1, self.width()), max(1, self.height())
         depth = self._rng.random() ** 0.45
+        if self._effect in ("snow", "custom"):
+            base_size = (0.85 + 2.2 * depth) * max(0.85, S(1))
+            size = base_size * self._size_scale
+            base_speed = ((30.0 + 104.0 * depth)
+                          * (0.72 + self._intensity * 0.46))
+            base_spin = self._rng.uniform(-95.0, 95.0) * (0.4 + depth)
+            return {
+                "x": self._rng.uniform(-w * 0.12, w * 1.12),
+                "y": self._rng.uniform(-h, h) if reset else self._rng.uniform(-h * 0.35, -size),
+                "depth": depth,
+                "base_size": base_size,
+                "size": size,
+                "glyph": self._rng.choice(self._snow_symbols),
+                "angle": self._rng.uniform(0.0, 360.0),
+                "base_spin": base_spin,
+                "spin": base_spin * self._spin_speed,
+                "base_speed": base_speed,
+                "speed": base_speed * self._fall_speed,
+                "phase": self._rng.uniform(0.0, 6.283),
+            }
         length = ((5.0 + 18.0 * depth + 8.0 * self._intensity)
                   * self._length_scale * max(0.85, S(1)))
-        speed = (220.0 + 520.0 * depth) * (0.75 + self._intensity * 0.55)
+        base_speed = ((220.0 + 520.0 * depth)
+                      * (0.75 + self._intensity * 0.55))
         return {
             "x": self._rng.uniform(-w * 0.15, w * 1.15),
             "y": self._rng.uniform(-h, h) if reset else self._rng.uniform(-h * 0.45, -length),
             "depth": depth,
             "len": length,
-            "speed": speed,
+            "base_speed": base_speed,
+            "speed": base_speed * self._fall_speed,
             "phase": self._rng.uniform(0.0, 6.283),
         }
 
@@ -521,6 +602,22 @@ class _RainLayer(QWidget):
         self._sync_drop_count()
         w, h = max(1, self.width()), max(1, self.height())
         angle = math.radians(self._direction)
+        if self._effect in ("snow", "custom"):
+            wind = math.tan(angle) * 76.0 * (0.45 + self._intensity * 0.55)
+            for d in self._drops:
+                depth = d["depth"]
+                d["phase"] += dt * (0.9 + depth * 1.4)
+                d["angle"] = (d.get("angle", 0.0)
+                              + d.get("spin", 0.0) * dt) % 360.0
+                wobble = math.sin(d["phase"]) * (8.0 + 20.0 * depth)
+                d["x"] += (wind * (0.35 + depth * 0.85) + wobble) * dt
+                d["y"] += d["speed"] * dt
+                size = d.get("size", 2.0)
+                if d["y"] - size > h or d["x"] < -w * 0.22 or d["x"] > w * 1.22:
+                    d.update(self._new_drop(reset=False))
+                    d["x"] = self._rng.uniform(-w * 0.12, w * 1.12)
+            self.update()
+            return
         wind = math.tan(angle) * 430.0 * (0.35 + self._intensity * 0.65)
         for d in self._drops:
             depth = d["depth"]
@@ -549,13 +646,39 @@ class _RainLayer(QWidget):
         self._sync_drop_count()
 
     def showEvent(self, _):
-        if bool(SETTINGS.get("rain_enabled", False)) and self._intensity > 0.001:
+        if (bool(SETTINGS.get("weather_enabled", False))
+                and self._intensity > 0.001):
             self._last = time.monotonic()
             if not self._timer.isActive():
                 self._timer.start()
 
     def hideEvent(self, _):
         self._timer.stop()
+
+    def _snow_glyph_pixmap(self, glyph: str, px: float) -> QPixmap:
+        dpr = max(1.0, self.devicePixelRatioF())
+        px_i = max(7, min(30, round(px)))
+        dpr_i = max(1, round(dpr * 100))
+        key = (glyph, px_i, dpr_i)
+        pm = self._snow_cache.get(key)
+        if pm is not None:
+            return pm
+        side = max(1, round(px_i * 1.45 * dpr))
+        pm = QPixmap(side, side)
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        aa(p)
+        p.setFont(QFont("Segoe UI Symbol", px_i, QFont.DemiBold))
+        p.setPen(QColor(242, 248, 255, 230))
+        logical = side / dpr
+        p.drawText(QRectF(0, 0, logical, logical),
+                   Qt.AlignCenter, glyph)
+        p.end()
+        if len(self._snow_cache) > 96:
+            self._snow_cache.clear()
+        self._snow_cache[key] = pm
+        return pm
 
     def paintEvent(self, _):
         if self._intensity <= 0.0005 or self._fade <= 0.001:
@@ -568,6 +691,27 @@ class _RainLayer(QWidget):
         clip.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
                             radius, radius)
         p.setClipPath(clip)
+        if self._effect in ("snow", "custom"):
+            for d in self._drops:
+                depth = d["depth"]
+                alpha = round((48 + depth * 106)
+                              * (0.38 + self._intensity * 0.66))
+                if alpha <= 2:
+                    continue
+                size = max(0.5, float(d.get("size", 2.0)))
+                glyph_px = max(7.0, min(28.0, size * 4.2))
+                pm = self._snow_glyph_pixmap(str(d.get("glyph", "❄")),
+                                             glyph_px)
+                dpr = max(1.0, pm.devicePixelRatioF())
+                pw, ph = pm.width() / dpr, pm.height() / dpr
+                p.save()
+                p.translate(d["x"], d["y"])
+                p.rotate(float(d.get("angle", 0.0)))
+                p.setOpacity(self._fade * min(1.0, alpha / 210.0))
+                p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                p.drawPixmap(QPointF(-pw / 2.0, -ph / 2.0), pm)
+                p.restore()
+            return
         for d in self._drops:
             depth = d["depth"]
             alpha = round((26 + depth * 92) * (0.42 + self._intensity * 0.72))
@@ -595,6 +739,171 @@ class _RainLayer(QWidget):
             p.drawLine(QPointF(s["x"], s["y"]),
                        QPointF(s["x"] - s["vx"] * 0.045,
                                s["y"] - 2.6 * t))
+
+
+class _LightningLayer(QWidget):
+    """短暫閃光與分支閃電，獨立於雨雪設定。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
+        self._rng = random.Random()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._last = time.monotonic()
+        self._flash = 0.0
+        self._life = 0.16
+        self._age = 0.0
+        self._wait = 1.0
+        self._size = 1.0
+        self._intensity = 0.0
+        self._thickness = 1.0
+        self._duration = 0.18
+        self._duration_random = False
+        self._flash_peak = 0.0
+        self._bolts: list[list[QPointF]] = []
+        self.hide()
+        self.apply_settings()
+
+    def apply_settings(self):
+        self._size = max(
+            0.3, min(2.0, float(SETTINGS.get("lightning_size", 1.0))))
+        self._thickness = max(
+            0.4, min(3.0, float(SETTINGS.get("lightning_thickness", 1.0))))
+        old_intensity = self._intensity
+        self._intensity = max(
+            0.0, min(1.0, float(SETTINGS.get("lightning_intensity", 0.55))))
+        self._duration = max(
+            0.05, min(1.5, float(SETTINGS.get("lightning_duration", 0.18))))
+        self._duration_random = bool(
+            SETTINGS.get("lightning_duration_random", False))
+        active = (bool(SETTINGS.get("lightning_enabled", False))
+                  and self._intensity > 0.001)
+        self.apply_fps()
+        if active:
+            self.show()
+            self._last = time.monotonic()
+            if abs(old_intensity - self._intensity) > 0.01 and self._flash <= 0.001:
+                self._wait = self._next_wait()
+            if not self._timer.isActive():
+                self._wait = self._next_wait()
+                self._timer.start()
+        else:
+            self._timer.stop()
+            self._flash = 0.0
+            self._bolts.clear()
+            self.hide()
+        self.update()
+
+    def apply_fps(self):
+        fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
+        self._timer.setInterval(max(8, round(1000 / fps)))
+
+    def _next_wait(self) -> float:
+        chance = 0.045 + self._intensity ** 2.25
+        return self._rng.uniform(1.2, 4.8) / chance
+
+    def _strike(self):
+        w, h = max(1.0, float(self.width())), max(1.0, float(self.height()))
+        start = QPointF(self._rng.uniform(w * 0.14, w * 0.86),
+                        -max(2.0, h * 0.03))
+        end_y = h + max(2.0, h * 0.04)
+        length = end_y - start.y()
+        segments = max(5, round(6 + 6 * self._size))
+        pts = [start]
+        x = start.x()
+        y = start.y()
+        drift = self._rng.uniform(-0.18, 0.18) * w * self._size
+        bend = self._rng.uniform(-0.16, 0.16) * w * self._size
+        for i in range(1, segments + 1):
+            t = i / segments
+            y = start.y() + length * t
+            x += (drift / segments
+                  + bend * (0.5 - abs(t - 0.5)) / max(1, segments)
+                  + self._rng.uniform(-w, w) * 0.030 * self._size)
+            x = max(w * 0.04, min(w * 0.96, x))
+            pts.append(QPointF(x, y))
+        bolts = [pts]
+        branch_count = max(1, round(1 + 4 * self._size * self._intensity))
+        for _ in range(branch_count):
+            base_idx = self._rng.randrange(1, max(2, len(pts) - 1))
+            base = pts[base_idx]
+            side = -1 if self._rng.random() < 0.5 else 1
+            blen = length * self._rng.uniform(0.10, 0.26) * self._size
+            bpts = [QPointF(base)]
+            bx, by = base.x(), base.y()
+            steps = self._rng.randrange(2, 5)
+            for i in range(1, steps + 1):
+                bx += side * blen / steps + self._rng.uniform(-8, 8) * self._size
+                by += blen * 0.35 / steps + self._rng.uniform(0, 9) * self._size
+                bpts.append(QPointF(bx, by))
+            bolts.append(bpts)
+        self._bolts = bolts
+        self._life = (self._duration * self._rng.uniform(0.65, 1.50)
+                      if self._duration_random else self._duration)
+        self._age = 0.0
+        self._flash_peak = 0.45 + 0.55 * self._intensity
+        self._flash = self._flash_peak
+        self._wait = self._next_wait()
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = min(0.06, max(0.006, now - self._last))
+        self._last = now
+        if self._flash > 0.001:
+            self._age += dt
+            t = max(0.0, min(1.0, self._age / max(0.03, self._life)))
+            tail = (1.0 - t)
+            flicker = 0.92 + 0.08 * math.sin(t * math.pi * 7.0)
+            self._flash = max(0.0, self._flash_peak * tail * tail * flicker)
+            if self._flash <= 0.001:
+                self._bolts.clear()
+            self.update()
+            return
+        self._wait -= dt
+        if self._wait <= 0.0:
+            self._strike()
+            self.update()
+
+    def showEvent(self, _):
+        if bool(SETTINGS.get("lightning_enabled", False)):
+            self._last = time.monotonic()
+            if not self._timer.isActive():
+                self._timer.start()
+
+    def hideEvent(self, _):
+        self._timer.stop()
+
+    def paintEvent(self, _):
+        if self._flash <= 0.001:
+            return
+        p = QPainter(self)
+        aa(p)
+        radius = Sf(SETTINGS.get("radius", 15))
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
+                            radius, radius)
+        p.setClipPath(clip)
+        flash = self._flash * (0.45 + self._intensity * 0.75)
+        p.fillRect(self.rect(), QColor(210, 228, 255, round(42 * flash)))
+        for i, pts in enumerate(self._bolts):
+            if len(pts) < 2:
+                continue
+            path = QPainterPath(pts[0])
+            for point in pts[1:]:
+                path.lineTo(point)
+            main = i == 0
+            width = (1.15 if main else 0.72) * self._size * self._thickness
+            p.setPen(QPen(QColor(138, 185, 255, round(145 * flash)),
+                          width + 2.2 * self._thickness, Qt.SolidLine, Qt.RoundCap,
+                          Qt.RoundJoin))
+            p.drawPath(path)
+            p.setPen(QPen(QColor(255, 255, 255, round(238 * flash)),
+                          width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
 
 
 class _ControlSlideOverlay(QWidget):
@@ -941,9 +1250,10 @@ class Card(QWidget):
     def _build(self):
         W = self._W
 
-        self.rain = _RainLayer(self)
+        self.rain = _WeatherLayer(self)
         self.rain.setGeometry(0, 0, self._W, self._H)
-        self.rain.lower()
+        self.lightning = _LightningLayer(self)
+        self.lightning.setGeometry(0, 0, self._W, self._H)
 
         # 封面
         art_x = S(12 if self._compact else 16)
@@ -2258,11 +2568,15 @@ class Card(QWidget):
         self.title.apply_fps()
         self.artist.apply_fps()
         self.rain.apply_fps()
+        self.lightning.apply_fps()
         self.apply_fps_overlay()
         self._sync_bg_parallax_timer()
 
     def apply_rain_settings(self):
         self.rain.apply_settings()
+
+    def apply_lightning_settings(self):
+        self.lightning.apply_settings()
 
     def apply_marquee_setting(self):
         enabled = bool(SETTINGS.get("marquee_enabled", True))
@@ -3106,10 +3420,18 @@ class PlayerWindow(QWidget):
                      "background_image_parallax_strength"):
             self.card.invalidate_bg()
             self.card._sync_bg_parallax_timer()
-        elif key in ("rain_enabled", "rain_intensity",
-                     "rain_length", "rain_thickness",
-                     "rain_direction"):
+        elif key == "weather_effect":
             self.card.apply_rain_settings()
+            if self._panel is not None:
+                self._panel.sync_weather_controls()
+        elif (key in ("weather_enabled", "rain_enabled")
+              or key.startswith("rain_") or key.startswith("snow_")):
+            self.card.apply_rain_settings()
+        elif key in ("lightning_enabled", "lightning_size",
+                     "lightning_thickness",
+                     "lightning_intensity", "lightning_duration",
+                     "lightning_duration_random"):
+            self.card.apply_lightning_settings()
         elif key in ("radius", "bg_opacity", "brightness",
                      "background_image_brightness", "antialias"):
             self.card.invalidate_bg()

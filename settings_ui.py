@@ -19,7 +19,8 @@ from style import (AUTO_THEME_MODES, BACKGROUND_IMAGE_MODES, CARD_PRESETS,
                    GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
                    GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_MODES,
                    SEEK_STYLES, SETTINGS,
-                   SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES, Anim, aa,
+                   SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES,
+                   WEATHER_EFFECTS, Anim, aa,
                    adur, all_themes, anim_on, blend, icon_font,
                    is_safe_ui_font, safe_font_family, soft_shadow,
                    theme_color, theme_gradient, theme_label, tr, ui_font)
@@ -136,6 +137,10 @@ def auto_theme_options():
 
 def background_image_mode_options():
     return [(k, tr(f"bg_image_{k}")) for k, _ in BACKGROUND_IMAGE_MODES]
+
+
+def weather_effect_options():
+    return [(k, tr(f"weather_{k}")) for k, _ in WEATHER_EFFECTS]
 
 
 def art_mode_options():
@@ -325,6 +330,13 @@ class PanelSlider(QWidget):
 
     def value(self) -> float:
         return self._val
+
+    def set_value(self, value: float, animate: bool = False):
+        value = self._quantize(value)
+        self._val = value
+        self._va.stop()
+        self._disp = value
+        self.update()
 
     def _track_w(self) -> float:
         return self.width() - panel_f(52.0) - panel_f(self.PAD)  # 右側留給數值
@@ -3671,6 +3683,7 @@ class SettingsPanel(QWidget):
         self._geo_from_size = QSize()
         self._geo_to_size = QSize()
         self._build_body()
+        QTimer.singleShot(0, lambda: self.sync_weather_controls(animate=False))
 
     def _build_body(self, expanded: bool | None = None,
                     resize_window: bool = True):
@@ -3825,6 +3838,7 @@ class SettingsPanel(QWidget):
 
         def row(label_key, control, stretch=True, top=False):
             host = QWidget()
+            control._row_host = host
             host.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             h = QHBoxLayout()
             host.setLayout(h)
@@ -3849,6 +3863,7 @@ class SettingsPanel(QWidget):
             row_h = max(lab.sizeHint().height(), control.height(),
                         control.sizeHint().height())
             host.setFixedHeight(max(1, row_h))
+            host._full_h = max(1, row_h)
             if top and hasattr(control, "size_changed"):
                 control.size_changed.connect(
                     lambda host=host, control=control:
@@ -3900,12 +3915,17 @@ class SettingsPanel(QWidget):
                     SETTINGS.get("background_image_parallax_strength", 1.0) * 100,
                     fmt=lambda v: f"{v:.0f}%",
                     accent=self._accent))
-            self.tg_rain_enabled = row("rain_enabled",
-                Toggle(bool(SETTINGS.get("rain_enabled", False)),
+            weather = SETTINGS.get("weather_effect", "rain")
+            if weather not in ("rain", "snow", "custom"):
+                weather = "rain"
+            self.sg_weather_effect = row("weather_effect", Segmented(
+                weather_effect_options(), weather, accent=self._accent))
+            self.tg_weather_enabled = row("weather_enabled",
+                Toggle(bool(SETTINGS.get("weather_enabled", False)),
                        accent=self._accent),
                 stretch=False)
-            self.sl_rain_intensity = row("rain_intensity", PanelSlider(
-                0, 100, SETTINGS.get("rain_intensity", 0.55) * 100,
+            self.sl_weather_intensity = row("weather_intensity", PanelSlider(
+                0, 100, SETTINGS.get(f"{weather}_intensity", 0.55) * 100,
                 fmt=lambda v: f"{v:.1f}%" if v < 10 else f"{v:.0f}%",
                 step=0.1, accent=self._accent))
             self.sl_rain_length = row("rain_length", PanelSlider(
@@ -3917,6 +3937,71 @@ class SettingsPanel(QWidget):
             self.sl_rain_direction = row("rain_direction", PanelSlider(
                 -55, 55, SETTINGS.get("rain_direction", 18.0),
                 fmt=lambda v: f"{v:+.0f}°", accent=self._accent))
+            self.sl_rain_fall_speed = row("rain_fall_speed", PanelSlider(
+                25, 250, SETTINGS.get("rain_fall_speed", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_snow_size = row("snow_size", PanelSlider(
+                45, 220, SETTINGS.get("snow_size", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_snow_spin_speed = row("snow_spin_speed", PanelSlider(
+                0, 300, SETTINGS.get("snow_spin_speed", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_snow_fall_speed = row("snow_fall_speed", PanelSlider(
+                25, 250, SETTINGS.get("snow_fall_speed", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_custom_size = row("custom_size", PanelSlider(
+                45, 220, SETTINGS.get("custom_size", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_custom_spin_speed = row("custom_spin_speed", PanelSlider(
+                0, 300, SETTINGS.get("custom_spin_speed", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_custom_fall_speed = row("custom_fall_speed", PanelSlider(
+                25, 250, SETTINGS.get("custom_fall_speed", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.ed_custom_symbols = QLineEdit(
+                str(SETTINGS.get("custom_symbols", "❄,❅,❆")))
+            self.ed_custom_symbols.setPlaceholderText("❄,❅,❆")
+            self.ed_custom_symbols.setFixedHeight(panel_px(30))
+            self.ed_custom_symbols.setStyleSheet(
+                "QLineEdit { background: rgba(255,255,255,16);"
+                " border: 1px solid rgba(255,255,255,30);"
+                " border-radius: 8px; padding: 0 10px;"
+                " color: rgba(255,255,255,225); }"
+                "QLineEdit:focus { border-color: rgba(255,255,255,76); }")
+            self.ed_custom_symbols.setFont(panel_font(11))
+            self.sl_custom_symbols = row(
+                "custom_symbols", self.ed_custom_symbols)
+            self.sync_weather_controls(adjust=False)
+            self.tg_lightning_enabled = row("lightning_enabled",
+                Toggle(bool(SETTINGS.get("lightning_enabled", False)),
+                       accent=self._accent),
+                stretch=False)
+            self.sl_lightning_size = row("lightning_size", PanelSlider(
+                30, 200, SETTINGS.get("lightning_size", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_lightning_thickness = row(
+                "lightning_thickness",
+                PanelSlider(40, 300,
+                            SETTINGS.get("lightning_thickness", 1.0) * 100,
+                            fmt=lambda v: f"{v:.0f}%",
+                            accent=self._accent))
+            self.sl_lightning_intensity = row(
+                "lightning_intensity",
+                PanelSlider(0, 250,
+                            SETTINGS.get("lightning_intensity", 0.55) * 100,
+                            fmt=lambda v: f"{v:.0f}%",
+                            accent=self._accent))
+            self.sl_lightning_duration = row(
+                "lightning_duration",
+                PanelSlider(5, 150,
+                            SETTINGS.get("lightning_duration", 0.18) * 100,
+                            fmt=lambda v: f"{v / 100.0:.2f}s",
+                            step=1, accent=self._accent))
+            self.tg_lightning_duration_random = row(
+                "lightning_duration_random",
+                Toggle(bool(SETTINGS.get("lightning_duration_random", False)),
+                       accent=self._accent),
+                stretch=False)
             self.sg_auto_theme = row("auto_theme", Segmented(
                 auto_theme_options(), SETTINGS["auto_theme"],
                 accent=self._accent))
@@ -4258,16 +4343,55 @@ class SettingsPanel(QWidget):
         self.sl_bg_image_parallax_strength.changed.connect(
             lambda v: self.setting_changed.emit(
                 "background_image_parallax_strength", v / 100.0))
-        self.tg_rain_enabled.changed.connect(
-            lambda v: self.setting_changed.emit("rain_enabled", v))
-        self.sl_rain_intensity.changed.connect(
-            lambda v: self.setting_changed.emit("rain_intensity", v / 100.0))
+        self.sg_weather_effect.changed.connect(
+            lambda v: self.setting_changed.emit("weather_effect", v))
+        self.tg_weather_enabled.changed.connect(
+            lambda v: self.setting_changed.emit("weather_enabled", v))
+        self.sl_weather_intensity.changed.connect(
+            lambda v: self.setting_changed.emit(
+                f"{SETTINGS.get('weather_effect', 'rain')}_intensity",
+                v / 100.0))
         self.sl_rain_length.changed.connect(
             lambda v: self.setting_changed.emit("rain_length", v / 100.0))
         self.sl_rain_thickness.changed.connect(
             lambda v: self.setting_changed.emit("rain_thickness", v / 100.0))
         self.sl_rain_direction.changed.connect(
             lambda v: self.setting_changed.emit("rain_direction", v))
+        self.sl_rain_fall_speed.changed.connect(
+            lambda v: self.setting_changed.emit("rain_fall_speed", v / 100.0))
+        self.sl_snow_size.changed.connect(
+            lambda v: self.setting_changed.emit("snow_size", v / 100.0))
+        self.sl_snow_spin_speed.changed.connect(
+            lambda v: self.setting_changed.emit("snow_spin_speed", v / 100.0))
+        self.sl_snow_fall_speed.changed.connect(
+            lambda v: self.setting_changed.emit("snow_fall_speed", v / 100.0))
+        self.sl_custom_size.changed.connect(
+            lambda v: self.setting_changed.emit("custom_size", v / 100.0))
+        self.sl_custom_spin_speed.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "custom_spin_speed", v / 100.0))
+        self.sl_custom_fall_speed.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "custom_fall_speed", v / 100.0))
+        self.ed_custom_symbols.editingFinished.connect(
+            lambda: self.setting_changed.emit(
+                "custom_symbols", self.ed_custom_symbols.text()))
+        self.tg_lightning_enabled.changed.connect(
+            lambda v: self.setting_changed.emit("lightning_enabled", v))
+        self.sl_lightning_size.changed.connect(
+            lambda v: self.setting_changed.emit("lightning_size", v / 100.0))
+        self.sl_lightning_thickness.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "lightning_thickness", v / 100.0))
+        self.sl_lightning_intensity.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "lightning_intensity", v / 100.0))
+        self.sl_lightning_duration.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "lightning_duration", v / 100.0))
+        self.tg_lightning_duration_random.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "lightning_duration_random", v))
         self.sg_art_mode.changed.connect(
             lambda v: self.setting_changed.emit("art_mode", v))
         self.tg_show_tonearm.changed.connect(
@@ -5429,6 +5553,8 @@ class SettingsPanel(QWidget):
                                        SETTINGS["auto_theme"])
         self.sg_bg_image_mode.set_options(
             background_image_mode_options(), SETTINGS["background_image_mode"])
+        self.sg_weather_effect.set_options(
+            weather_effect_options(), SETTINGS["weather_effect"])
         self.sg_source.set_options(source_options(), SETTINGS["source"])
         self.sg_panel_type.set_options(settings_panel_type_options(),
                                        SETTINGS["settings_panel_type"])
@@ -5629,8 +5755,16 @@ class SettingsPanel(QWidget):
         controls = (self.sl_opacity, self.sl_brightness,
                     self.sl_bg_image_brightness,
                     self.sl_bg_image_parallax_strength,
-                    self.sl_rain_intensity, self.sl_rain_length,
-                    self.sl_rain_thickness, self.sl_rain_direction,
+                    self.sl_weather_intensity,
+                    self.sl_rain_length, self.sl_rain_thickness,
+                    self.sl_rain_direction, self.sl_rain_fall_speed,
+                    self.sl_snow_size, self.sl_snow_spin_speed,
+                    self.sl_snow_fall_speed,
+                    self.sl_custom_size, self.sl_custom_spin_speed,
+                    self.sl_custom_fall_speed,
+                    self.sl_lightning_size, self.sl_lightning_thickness,
+                    self.sl_lightning_intensity,
+                    self.sl_lightning_duration,
                     self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
                     self.sl_title_size, self.sl_artist_size,
@@ -5652,6 +5786,7 @@ class SettingsPanel(QWidget):
                     self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
                     self.sg_progress_time, self.sg_thumb, self.sg_panel_type,
                     self.sg_panel_category, self.sg_bg_image_mode,
+                    self.sg_weather_effect,
                     self.sg_source, self.sg_startup_show,
                     self.sg_ctl, self.sg_card_preset,
                     self.sg_art_mode, self.sg_cover_shape,
@@ -5663,7 +5798,8 @@ class SettingsPanel(QWidget):
                     self.cp_seek_thumb_color, self.cp_seek_track_color,
                     self.tg_startup, self.tg_aa, self.tg_src,
                     self.tg_bg_image_parallax,
-                    self.tg_rain_enabled,
+                    self.tg_weather_enabled, self.tg_lightning_enabled,
+                    self.tg_lightning_duration_random,
                     self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
                     self.tg_topbar_hover, self.tg_show_fps,
                     self.tg_anim_enabled, self.tg_show_cover,
@@ -5672,6 +5808,119 @@ class SettingsPanel(QWidget):
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
                     self.tg_btn_repeat)
         return tuple(w for w in controls if w is not None)
+
+    def sync_weather_controls(self, adjust: bool = True,
+                              animate: bool = True):
+        weather = SETTINGS.get("weather_effect", "rain")
+        if weather not in ("rain", "snow", "custom"):
+            weather = "rain"
+        if hasattr(self, "sl_weather_intensity"):
+            self.sl_weather_intensity.set_value(
+                SETTINGS.get(f"{weather}_intensity", 0.55) * 100)
+            self.sl_rain_length.set_value(
+                SETTINGS.get("rain_length", 1.0) * 100)
+            self.sl_rain_thickness.set_value(
+                SETTINGS.get("rain_thickness", 1.0) * 100)
+            self.sl_rain_direction.set_value(
+                SETTINGS.get("rain_direction", 18.0))
+            self.sl_rain_fall_speed.set_value(
+                SETTINGS.get("rain_fall_speed", 1.0) * 100)
+            self.sl_snow_size.set_value(
+                SETTINGS.get("snow_size", 1.0) * 100)
+            self.sl_snow_spin_speed.set_value(
+                SETTINGS.get("snow_spin_speed", 1.0) * 100)
+            self.sl_snow_fall_speed.set_value(
+                SETTINGS.get("snow_fall_speed", 1.0) * 100)
+            self.sl_custom_size.set_value(
+                SETTINGS.get("custom_size", 1.0) * 100)
+            self.sl_custom_spin_speed.set_value(
+                SETTINGS.get("custom_spin_speed", 1.0) * 100)
+            self.sl_custom_fall_speed.set_value(
+                SETTINGS.get("custom_fall_speed", 1.0) * 100)
+            if self.ed_custom_symbols.text() != SETTINGS.get(
+                    "custom_symbols", "❄,❅,❆"):
+                self.ed_custom_symbols.setText(
+                    str(SETTINGS.get("custom_symbols", "❄,❅,❆")))
+            rain = weather == "rain"
+            snow = weather == "snow"
+            custom = weather == "custom"
+            for control in (self.sl_rain_length, self.sl_rain_thickness,
+                            self.sl_rain_direction,
+                            self.sl_rain_fall_speed):
+                self._set_weather_row_visible(control, rain, adjust and animate)
+            for control in (self.sl_snow_size, self.sl_snow_spin_speed,
+                            self.sl_snow_fall_speed):
+                self._set_weather_row_visible(control, snow,
+                                              adjust and animate)
+            for control in (self.sl_custom_size, self.sl_custom_spin_speed,
+                            self.sl_custom_fall_speed,
+                            self.ed_custom_symbols):
+                self._set_weather_row_visible(control, custom,
+                                              adjust and animate)
+            if adjust and self._body is not None:
+                self._apply_body_geometry(animate=animate)
+
+    def _set_weather_row_visible(self, control: QWidget, visible: bool,
+                                 animate: bool):
+        host = getattr(control, "_row_host", control.parentWidget())
+        if host is None:
+            return
+        full_h = max(1, int(getattr(host, "_full_h",
+                                    host.sizeHint().height() or host.height())))
+        target_h = full_h if visible else 0
+        cur_h = host.height() if host.isVisible() else 0
+        if not animate or not anim_on():
+            anim = getattr(host, "_weather_anim", None)
+            if anim is not None:
+                anim.stop()
+            host.setFixedHeight(target_h)
+            host.setVisible(visible)
+            eff = host.graphicsEffect()
+            if isinstance(eff, QGraphicsOpacityEffect):
+                eff.setOpacity(1.0)
+            return
+        if host.isVisible() == visible and abs(cur_h - target_h) < 1:
+            return
+        host.setVisible(True)
+        eff = host.graphicsEffect()
+        if not isinstance(eff, QGraphicsOpacityEffect):
+            eff = QGraphicsOpacityEffect(host)
+            host.setGraphicsEffect(eff)
+        anim = getattr(host, "_weather_anim", None)
+        if anim is None:
+            anim = Anim(host)
+            host._weather_anim = anim
+
+            def on_value(value, host=host, eff=eff, full_h=full_h):
+                h = max(0, round(float(value)))
+                host.setFixedHeight(h)
+                eff.setOpacity(max(0.0, min(1.0, h / max(1.0, full_h))))
+                if self._body is not None:
+                    self._apply_body_geometry(animate=False)
+
+            anim.valueChanged.connect(on_value)
+        old_done = getattr(host, "_weather_done_cb", None)
+        if old_done is not None:
+            try:
+                anim.finished.disconnect(old_done)
+            except (TypeError, RuntimeError):
+                pass
+
+        def on_done(host=host, visible=visible, target_h=target_h, eff=eff):
+            host.setFixedHeight(target_h)
+            host.setVisible(visible)
+            eff.setOpacity(1.0)
+            if self._body is not None:
+                self._apply_body_geometry(animate=False)
+
+        anim.finished.connect(on_done)
+        host._weather_done_cb = on_done
+        anim.stop()
+        anim.setStartValue(float(cur_h))
+        anim.setEndValue(float(target_h))
+        anim.setDuration(adur(190, 110))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
 
     def _repaint_controls(self):
         for w in self._controls():
