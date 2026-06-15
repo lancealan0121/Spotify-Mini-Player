@@ -331,6 +331,11 @@ class ArtView(QWidget):
         self._audio = 0.0
         self._audio_ma = Anim(self)
         self._audio_ma.valueChanged.connect(self._on_audio_mode)
+        self._audio_morph = 0.0
+        self._audio_fade_reverse = False
+        self._audio_morph_a = Anim(self)
+        self._audio_morph_a.valueChanged.connect(self._on_audio_morph)
+        self._audio_morph_a.finished.connect(self._audio_morph_done)
         self._playing = False
         self._arm = 0.0
         self._arm_target = 0.0
@@ -357,9 +362,11 @@ class ArtView(QWidget):
         self._spin_timer.setInterval(fps_ms())
         self._spin_timer.timeout.connect(self._spin_tick)
         self._audio_phase = 0.0
+        self._audio_ring_phase = 0.0
         self._audio_energy = 0.0
         self._audio_peak_prev = 0.0
         self._audio_bands = [0.0, 0.0, 0.0]
+        self._audio_spectrum: list[float] | None = None
         self._audio_level_provider = None
         self._audio_last = time.monotonic()
         self._audio_timer = QTimer(self)
@@ -521,6 +528,14 @@ class ArtView(QWidget):
         self._sync_audio()
         self.update()
 
+    def _on_audio_morph(self, v):
+        self._audio_morph = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def _audio_morph_done(self):
+        self._audio_fade_reverse = False
+        self.update()
+
     def _on_arm(self, v):
         self._arm = float(v)
         self.update()
@@ -628,14 +643,38 @@ class ArtView(QWidget):
     def _audio_target_energy(self) -> float:
         if self._mode == "audio" and self._audio_level_provider is not None:
             try:
-                peak = self._audio_level_provider()
+                levels = self._audio_level_provider()
             except Exception:
-                peak = None
-            if peak is not None:
-                peak = max(0.0, min(1.0, float(peak)))
+                levels = None
+            if isinstance(levels, (list, tuple)) and levels:
+                sensitivity = max(0.2, min(3.0, float(
+                    SETTINGS.get("audio_feedback_sensitivity", 1.0))))
+                vals = [
+                    max(0.0, min(1.0, float(v) * sensitivity))
+                    for v in levels
+                ]
+                self._audio_spectrum = vals
+                n = len(vals)
+                lo = max(1, n // 5)
+                hi = max(lo + 1, n * 3 // 5)
+                low = sum(vals[:lo]) / lo
+                mid = sum(vals[lo:hi]) / max(1, hi - lo)
+                high = sum(vals[hi:]) / max(1, n - hi)
+                self._audio_bands = [low, mid, high]
+                return max(vals)
+            if levels is not None:
+                sensitivity = max(0.2, min(3.0, float(
+                    SETTINGS.get("audio_feedback_sensitivity", 1.0))))
+                peak = levels
+                peak = max(0.0, min(1.0, float(peak) * sensitivity))
                 if peak <= 0.002:
                     return 0.0
+                self._audio_spectrum = None
                 return min(1.0, (peak * 3.1) ** 0.56)
+        if (self._mode == "audio"
+                or (self._audio_morph <= 0.001
+                    and not self._audio_fade_reverse)):
+            self._audio_spectrum = None
         return 1.0 if (self._playing and anim_on()) else 0.0
 
     def _sync_audio(self):
@@ -644,10 +683,13 @@ class ArtView(QWidget):
                    and anim_on())
         if self._mode == "audio":
             active = visible
+        elif self._mode == "pulse":
+            active = visible
         else:
             active = (visible
                       and (self._playing or self._audio_energy > 0.01
-                           or self._audio_ma.state() == Anim.Running))
+                           or self._audio_ma.state() == Anim.Running
+                           or self._audio_morph_a.state() == Anim.Running))
         if active:
             if not self._audio_timer.isActive():
                 self._audio_last = time.monotonic()
@@ -662,7 +704,7 @@ class ArtView(QWidget):
         target = self._audio_target_energy()
         transient = max(0.0, target - self._audio_peak_prev)
         self._audio_peak_prev = target
-        if self._mode == "audio":
+        if self._mode == "audio" and self._audio_spectrum is None:
             targets = (
                 min(1.0, (target * 1.35) ** 0.86),
                 min(1.0, (target * 1.85) ** 0.72),
@@ -676,7 +718,7 @@ class ArtView(QWidget):
                 if abs(cur - band_target) < 0.006:
                     cur = band_target
                 self._audio_bands[idx] = cur
-        else:
+        elif self._mode != "audio":
             wave = 0.5 + 0.5 * math.sin(self._audio_phase * 1.8)
             self._audio_bands = [
                 0.78 + 0.22 * wave,
@@ -690,6 +732,9 @@ class ArtView(QWidget):
         speed = (4.4 if self._mode == "audio" else 2.3) * float(
             SETTINGS.get("seek_wave_speed", 1.0))
         self._audio_phase = (self._audio_phase + dt * speed) % (math.tau * 128.0)
+        ring_speed = 0.42 * float(SETTINGS.get("seek_wave_speed", 1.0))
+        self._audio_ring_phase = (
+            self._audio_ring_phase + dt * ring_speed) % math.tau
         self.update()
         if (self._mode != "audio" and not self._playing
                 and self._audio_energy <= 0.01):
@@ -739,15 +784,21 @@ class ArtView(QWidget):
     def set_mode(self, mode: str, animate: bool = True):
         mode = (mode if mode in ("cover", "vinyl", "pulse", "audio")
                 else "cover")
+        old_mode = self._mode
         self._mode = mode
         vinyl_target = 1.0 if mode == "vinyl" else 0.0
         audio_target = 1.0 if mode in ("pulse", "audio") else 0.0
+        morph_target = 1.0 if mode == "audio" else 0.0
+        reverse_fade = old_mode == "audio" and mode == "pulse"
         self._ma.stop()
         self._audio_ma.stop()
+        self._audio_morph_a.stop()
+        self._audio_fade_reverse = False
         ms = adur(360, 190)
         if not animate or not anim_on() or ms <= 0:
             self._vinyl = vinyl_target
             self._audio = audio_target
+            self._audio_morph = morph_target
             self._sync_spin()
             self._sync_audio()
             self.update()
@@ -762,6 +813,12 @@ class ArtView(QWidget):
         self._audio_ma.setDuration(ms)
         self._audio_ma.setEasingCurve(QEasingCurve.OutCubic)
         self._audio_ma.start()
+        self._audio_morph_a.setStartValue(self._audio_morph)
+        self._audio_morph_a.setEndValue(morph_target)
+        self._audio_morph_a.setDuration(ms)
+        self._audio_morph_a.setEasingCurve(QEasingCurve.OutCubic)
+        self._audio_fade_reverse = reverse_fade
+        self._audio_morph_a.start()
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -1237,11 +1294,17 @@ class ArtView(QWidget):
         c = r.center()
         rad = min(r.width(), r.height()) / 2.0
         meter_mode = self._mode == "audio"
-        cover_rad = rad * (0.68 if meter_mode else 0.78)
-        gap = rad * (0.085 if meter_mode else 0.065)
+        cover_rad = rad * 0.78
+        gap = rad * 0.065
         base_rad = cover_rad + gap
-        max_h = max(5.0, self.pad * (0.92 if meter_mode else 0.58))
-        bars = 72 if meter_mode else 48
+        max_h = max(5.0, self.pad * 0.58)
+        spectrum = self._audio_spectrum if (
+            meter_mode or self._audio_morph > 0.001
+            or self._audio_fade_reverse
+            ) else None
+        morph = self._audio_morph if spectrum else 0.0
+        morphing = self._audio_morph_a.state() == Anim.Running
+        bars = 64 if (meter_mode or morph > 0.001 or morphing) else 48
         thickness = max(0.4, min(2.5, float(
             SETTINGS.get("audio_feedback_thickness", 1.0))))
         energy = max(0.0, min(1.0, self._audio_energy))
@@ -1250,57 +1313,122 @@ class ArtView(QWidget):
         idle = 0.16
         phase = self._audio_phase
 
-        def angle_dist(a: float, b: float) -> float:
-            return abs((a - b + math.pi) % math.tau - math.pi)
+        def spectrum_index_for_slot(slot: int, slot_count: int) -> int:
+            if not spectrum:
+                return 0
+            return max(0, min(len(spectrum) - 1,
+                              round(slot * (len(spectrum) - 1)
+                                    / max(1, slot_count - 1))))
 
         p.save()
         p.setOpacity(alpha)
         p.setPen(Qt.NoPen)
         halo = QColor(self._accent)
-        halo.setAlpha(round((22 if meter_mode else 34)
-                            + (76 if meter_mode else 44) * energy))
+        halo.setAlpha(round(34 + 44 * energy))
         p.setBrush(halo)
-        halo_r = cover_rad + gap + max_h * (
-            (0.58 if meter_mode else 0.42) + 0.20 * energy)
-        p.drawEllipse(c, halo_r, halo_r)
+        halo_path = QPainterPath()
+        halo_steps = 96 if (meter_mode or self._mode == "pulse") else max(64, bars)
+        halo_base = cover_rad + gap + max_h * 0.40
+        halo_amp = max_h * (0.10 + 0.30 * energy)
+        for j in range(halo_steps):
+            aa0 = (-math.pi / 2.0 + self._audio_ring_phase
+                   + math.tau * j / halo_steps)
+            wave0 = 0.5 + 0.5 * math.sin(phase * 2.0 + j * 0.71)
+            pulse0 = 0.5 + 0.5 * math.sin(phase * 3.1 + j * 1.17)
+            beat0 = 0.5 + 0.5 * math.sin(phase * 1.2 - j * 0.33)
+            pulse_val = 0.50 * wave0 + 0.32 * pulse0 + 0.18 * beat0
+            if spectrum:
+                idx = spectrum_index_for_slot(j, halo_steps)
+                spec_val = max(0.0, min(1.0, float(spectrum[idx])))
+                val = pulse_val + (spec_val - pulse_val) * morph
+            else:
+                val = pulse_val
+            rr = halo_base + halo_amp * val
+            pt = QPointF(c.x() + math.cos(aa0) * rr,
+                         c.y() + math.sin(aa0) * rr)
+            if j == 0:
+                halo_path.moveTo(pt)
+            else:
+                halo_path.lineTo(pt)
+        halo_path.closeSubpath()
+        p.drawPath(halo_path)
 
+        reverse_bars = bool(spectrum and self._audio_fade_reverse)
+        if reverse_bars and morph < 0.999:
+            p.save()
+            p.setOpacity(p.opacity() * max(0.0, min(1.0, 1.0 - morph)))
+            pulse_bars = 48
+            for i in range(pulse_bars):
+                a = -math.pi / 2.0 + math.tau * i / pulse_bars
+                wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
+                pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
+                beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
+                mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
+                h = max_h * (idle + energy * (0.25 + 0.75 * mix))
+                if not self._playing and energy <= 0.02:
+                    h = max_h * (0.14 + 0.10 * mix)
+                col = QColor(self._accent).lighter(122 + round(40 * mix))
+                col.setAlpha(round(95 + 120 * energy))
+                if i % 4 == 0:
+                    col = QColor(255, 255, 255, round(88 + 92 * energy))
+                pen_w = max(1.0, rad * (0.018 + 0.010 * mix) * thickness)
+                inner = base_rad
+                outer = base_rad + h
+                x = math.cos(a)
+                y = math.sin(a)
+                p.setPen(QPen(col, pen_w, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(QPointF(c.x() + x * inner, c.y() + y * inner),
+                           QPointF(c.x() + x * outer, c.y() + y * outer))
+            p.restore()
+
+        if reverse_bars:
+            p.save()
+            p.setOpacity(p.opacity() * max(0.0, min(1.0, morph)))
         for i in range(bars):
             a = -math.pi / 2.0 + math.tau * i / bars
             wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
             pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
             beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
-            if meter_mode:
-                drift = 0.13 * math.sin(phase * 0.31)
-                aa0 = a + drift
-                low_w = 0.30 + 0.92 * math.exp(
-                    -(angle_dist(aa0, math.pi / 2.0) / 1.48) ** 2)
-                mid_w = 0.42 + 0.50 * (
-                    math.exp(-(angle_dist(aa0, 0.0) / 1.34) ** 2)
-                    + math.exp(-(angle_dist(aa0, math.pi) / 1.34) ** 2))
-                high_w = 0.26 + 0.86 * math.exp(
-                    -(angle_dist(aa0, -math.pi / 2.0) / 1.36) ** 2)
-                total_w = max(0.001, low_w + mid_w + high_w)
-                low_t = low_w / total_w
-                mid_t = mid_w / total_w
-                high_t = high_w / total_w
-                band = (self._audio_bands[0] * low_t
-                        + self._audio_bands[1] * mid_t
-                        + self._audio_bands[2] * high_t)
-                flicker = (0.78 + 0.22 * wave) * low_t
-                flicker += (0.66 + 0.34 * beat) * mid_t
-                flicker += (0.52 + 0.48 * pulse) * high_t
-                band = min(1.0, band + energy * 0.10 * wave)
-                h = max_h * (0.05 + energy * 0.08
-                             + band * (0.30 + 0.70 * flicker))
-                low_col = QColor(self._accent).darker(112)
-                mid_col = QColor(self._accent).lighter(150)
-                high_col = QColor(255, 255, 255)
-                col = blend(low_col, mid_col,
-                            max(0.0, min(1.0, mid_t + high_t * 0.22)))
-                col = blend(col, high_col, max(0.0, min(1.0, high_t * 0.52)))
+            if spectrum:
+                spec_idx = spectrum_index_for_slot(i, bars)
+                freq_t = spec_idx / max(1, len(spectrum) - 1)
+                band = max(0.0, min(1.0, float(spectrum[spec_idx])))
+                high_t = max(0.0, min(1.0, (freq_t - 0.84) / 0.16))
+                high_boost = 1.0 + 0.08 * high_t * high_t * (3.0 - 2.0 * high_t)
+                band = max(0.0, min(1.0, band * high_boost))
+                low_t = max(0.0, min(1.0, 1.0 - freq_t / 0.39))
+                low_reduce = 1.0 - 0.20 * low_t * low_t * (3.0 - 2.0 * low_t)
+                band = max(0.0, min(1.0, band * low_reduce))
+                avg = max(0.0, min(1.0, energy))
+                band = max(0.0, min(1.0, avg + (band - avg) * 1.18))
+                floor = avg * (0.18 + 0.08 * math.sin(phase * 1.4 + i * 0.37) ** 2)
+                band = max(0.0, min(1.0, floor + band * 0.86))
+                mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
+                pulse_h = max_h * (idle + energy * (0.25 + 0.75 * mix))
+                if not self._playing and energy <= 0.02:
+                    pulse_h = max_h * (0.14 + 0.10 * mix)
+                fft_h = max_h * (0.025 + band * 0.975)
+                if reverse_bars:
+                    h = fft_h
+                    visual = band
+                else:
+                    h = pulse_h + (fft_h - pulse_h) * morph
+                    visual = band * morph + mix * (1.0 - morph)
+                col = QColor(self._accent).lighter(122 + round(40 * visual))
+                col.setAlpha(round(95 + 120 * max(energy, visual)))
+                if i % 4 == 0:
+                    col = QColor(255, 255, 255,
+                                 round(88 + 92 * max(energy, visual)))
+                pen_w = max(
+                    1.0, rad * (0.018 + 0.010 * visual) * thickness)
+            elif meter_mode:
+                band = energy
+                h = max_h * (0.04 + band * 0.58)
+                freq_t = i / max(1, bars - 1)
+                col = blend(QColor(96, 32, 255), QColor(255, 60, 140), freq_t)
                 col.setAlpha(round(50 + 205 * max(energy, band)))
                 pen_w = max(
-                    1.0, rad * (0.012 + 0.018 * band) * thickness)
+                    1.0, rad * 0.010 * thickness)
             else:
                 mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
                 h = max_h * (idle + energy * (0.25 + 0.75 * mix))
@@ -1319,6 +1447,8 @@ class ArtView(QWidget):
             end = QPointF(c.x() + x * outer, c.y() + y * outer)
             p.setPen(QPen(col, pen_w, Qt.SolidLine, Qt.RoundCap))
             p.drawLine(start, end)
+        if reverse_bars:
+            p.restore()
 
         cover_rect = QRectF(c.x() - cover_rad, c.y() - cover_rad,
                             cover_rad * 2.0, cover_rad * 2.0)

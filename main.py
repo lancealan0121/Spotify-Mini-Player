@@ -43,7 +43,7 @@ from style import (ART_SIZE, CARD_H, CARD_W, GLYPH_CLOSE, GLYPH_GLOBE,
                    install_qt_message_filter, load_settings, save_settings,
                    optional_setting_color, safe_font_family, soft_shadow, source_info,
                    theme_color, theme_gradient, tr, ui_font)
-from volume import AppMasterAudioMeter, AppVolume
+from volume import AppMasterAudioMeter, AppVolume, SystemSpectrumAnalyzer
 from widgets import (ArtView, IconButton, LaunchButton, MarqueeLabel,
                      PlayButton, SeekBar)
 
@@ -3197,6 +3197,7 @@ class PlayerWindow(QWidget):
         self._vol_pop: VolumePopup | None = None   # 保持參照避免被 GC 回收
         self._volume = AppVolume()
         self._audio_meter = AppMasterAudioMeter()
+        self._spectrum = SystemSpectrumAnalyzer()
         self._app_id = "spotify"
         self._vol_checked_at = 0.0   # 滾輪調音量的 session 列舉節流
         self._vol_ok = False
@@ -3580,7 +3581,7 @@ class PlayerWindow(QWidget):
             self.card.set_cover_enabled(bool(value), animate=True)
         elif key == "art_mode":
             self.card.art.set_mode(str(value), animate=True)
-        elif key == "audio_feedback_thickness":
+        elif key in ("audio_feedback_thickness", "audio_feedback_sensitivity"):
             self.card.art.update()
         elif key in ("cover_shape", "cover_radius_strength"):
             self.card.apply_cover_shape(animate=True)
@@ -4021,9 +4022,16 @@ class PlayerWindow(QWidget):
         muted = self._volume.get_mute() if self._vol_ok else False
         return val, muted
 
-    def _read_audio_peak(self) -> float | None:
+    def _read_audio_peak(self):
         if self.demo:
-            return random.uniform(0.02, 0.85)
+            phase = time.monotonic() * 3.0
+            return [
+                max(0.0, min(1.0, 0.35 + 0.32 * math.sin(phase + i * 0.31)))
+                for i in range(64)
+            ]
+        bars = self._spectrum.bars()
+        if bars is not None:
+            return bars
         now = time.monotonic()
         stale = now - self._audio_meter_checked_at > 5.0
         if stale or not self._audio_meter_ok:
@@ -4402,6 +4410,7 @@ class PlayerWindow(QWidget):
         self._set_art(img)
 
     def closeEvent(self, e):
+        self._spectrum.stop()
         self._unregister_hotkey()
         self._save_cfg()
         e.accept()
@@ -4450,6 +4459,7 @@ def main():
     win._single_server = server    # 保持參照，監聽跟著視窗活著
     app.aboutToQuit.connect(win._save_cfg)
     app.aboutToQuit.connect(win._unregister_hotkey)
+    app.aboutToQuit.connect(win._spectrum.stop)
     app.aboutToQuit.connect(_release_timer_resolution)
     if not startup_wait:
         fade_in(win, slide=14)

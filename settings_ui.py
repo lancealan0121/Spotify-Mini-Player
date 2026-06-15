@@ -3728,8 +3728,13 @@ class SettingsPanel(QWidget):
         lay.setSpacing(panel_px(10))
         lay.setAlignment(Qt.AlignTop)
 
-        # 標題列
-        head_box = QWidget(body)
+        # 標題列 + 常駐搜尋列
+        header_box = QWidget(body)
+        header_lay = QVBoxLayout(header_box)
+        header_lay.setContentsMargins(0, 0, 0, panel_px(8))
+        header_lay.setSpacing(panel_px(8))
+
+        head_box = QWidget(header_box)
         head = QHBoxLayout(head_box)
         head.setContentsMargins(panel_px(20), panel_px(14),
                                 panel_px(20), 0)
@@ -3745,9 +3750,13 @@ class SettingsPanel(QWidget):
         self._btn_close = btn_close
         btn_close.clicked.connect(self.animated_close)
         head.addWidget(btn_close)
-        body.set_fixed_header(head_box)
+        header_lay.addWidget(head_box)
 
-        self.search = QLineEdit()
+        search_box = QWidget(header_box)
+        search_lay = QVBoxLayout(search_box)
+        search_lay.setContentsMargins(panel_px(20), 0, panel_px(20), 0)
+        search_lay.setSpacing(0)
+        self.search = QLineEdit(search_box)
         self.search.setFixedHeight(panel_px(30))
         self.search.setPlaceholderText(tr("search_settings"))
         self.search.setStyleSheet(
@@ -3758,7 +3767,9 @@ class SettingsPanel(QWidget):
             f" font: {panel_px(12)}px 'Segoe UI'; }}"
             "QLineEdit:focus { border-color: rgba(255,255,255,76); }"
             "QLineEdit::placeholder { color: rgba(255,255,255,95); }")
-        lay.addWidget(self.search)
+        search_lay.addWidget(self.search)
+        header_lay.addWidget(search_box)
+        body.set_fixed_header(header_box)
 
         if categorized:
             self.sg_panel_category = Segmented(
@@ -4244,6 +4255,10 @@ class SettingsPanel(QWidget):
             "audio_feedback_thickness",
             PanelSlider(40, 250, SETTINGS["audio_feedback_thickness"] * 100,
                         fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_audio_feedback_sensitivity = adv_row(
+            "audio_feedback_sensitivity",
+            PanelSlider(20, 300, SETTINGS["audio_feedback_sensitivity"] * 100,
+                        fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.tg_show_vinyl_center = adv_toggle(
             "show_vinyl_center", "show_vinyl_center")
         self.sl_vinyl_center_size = adv_row("vinyl_center_size", PanelSlider(
@@ -4454,6 +4469,9 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("art_vinyl_size", v / 100.0))
         self.sl_audio_feedback_thickness.changed.connect(
             lambda v: self.setting_changed.emit("audio_feedback_thickness",
+                                                v / 100.0))
+        self.sl_audio_feedback_sensitivity.changed.connect(
+            lambda v: self.setting_changed.emit("audio_feedback_sensitivity",
                                                 v / 100.0))
         self.sl_vinyl_center_size.changed.connect(
             lambda v: self.setting_changed.emit("vinyl_center_size", v / 100.0))
@@ -5811,6 +5829,7 @@ class SettingsPanel(QWidget):
                     self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
                     self.sl_art_cover_size, self.sl_art_vinyl_size,
                     self.sl_audio_feedback_thickness,
+                    self.sl_audio_feedback_sensitivity,
                     self.sl_vinyl_center_size,
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,

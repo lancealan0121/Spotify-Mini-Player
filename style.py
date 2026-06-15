@@ -91,6 +91,7 @@ DEFAULTS = {
     "art_cover_size": 0.9245844436826636,
     "art_vinyl_size": 0.9983334355091419,
     "audio_feedback_thickness": 1.0,
+    "audio_feedback_sensitivity": 1.0,
     "show_vinyl_center": True,
     "vinyl_center_size": 1.0,
     "show_tonearm": True,
@@ -263,6 +264,7 @@ _I18N = {
         "art_cover_size": "封面圖大小",
         "art_vinyl_size": "黑膠大小",
         "audio_feedback_thickness": "反饋線條粗細",
+        "audio_feedback_sensitivity": "反饋偵測強度",
         "show_vinyl_center": "中心黑圈",
         "vinyl_center_size": "中心圖片大小",
         "show_tonearm": "顯示唱針",
@@ -497,6 +499,7 @@ _I18N = {
         "art_cover_size": "カバーサイズ",
         "art_vinyl_size": "レコードサイズ",
         "audio_feedback_thickness": "反応ライン太さ",
+        "audio_feedback_sensitivity": "反応感度",
         "show_vinyl_center": "中央黒リング",
         "vinyl_center_size": "中央画像サイズ",
         "show_tonearm": "針を表示",
@@ -730,6 +733,7 @@ _I18N = {
         "art_cover_size": "Cover Size",
         "art_vinyl_size": "Vinyl Size",
         "audio_feedback_thickness": "Feedback Line Width",
+        "audio_feedback_sensitivity": "Feedback Sensitivity",
         "show_vinyl_center": "Center Ring",
         "vinyl_center_size": "Center Image Size",
         "show_tonearm": "Show Tonearm",
@@ -1304,6 +1308,8 @@ def load_settings():
         1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0))))
     SETTINGS["audio_feedback_thickness"] = min(
         2.5, max(0.4, float(SETTINGS.get("audio_feedback_thickness", 1.0))))
+    SETTINGS["audio_feedback_sensitivity"] = min(
+        3.0, max(0.2, float(SETTINGS.get("audio_feedback_sensitivity", 1.0))))
     SETTINGS["show_vinyl_center"] = bool(
         SETTINGS.get("show_vinyl_center", True))
     SETTINGS["vinyl_center_size"] = min(

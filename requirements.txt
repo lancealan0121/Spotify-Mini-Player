@@ -1,4 +1,6 @@
 PySide6
+numpy
+sounddevice
 winrt-runtime
 winrt-Windows.Media
 winrt-Windows.Media.Control
