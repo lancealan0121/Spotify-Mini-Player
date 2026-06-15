@@ -775,7 +775,7 @@ class _LightningLayer(QWidget):
             0.4, min(3.0, float(SETTINGS.get("lightning_thickness", 1.0))))
         old_intensity = self._intensity
         self._intensity = max(
-            0.0, min(1.0, float(SETTINGS.get("lightning_intensity", 0.55))))
+            0.0, min(2.5, float(SETTINGS.get("lightning_intensity", 0.55))))
         self._duration = max(
             0.05, min(1.5, float(SETTINGS.get("lightning_duration", 0.18))))
         self._duration_random = bool(
@@ -888,7 +888,8 @@ class _LightningLayer(QWidget):
                             radius, radius)
         p.setClipPath(clip)
         flash = self._flash * (0.45 + self._intensity * 0.75)
-        p.fillRect(self.rect(), QColor(210, 228, 255, round(42 * flash)))
+        flash_alpha = max(0, min(230, round(42 * flash)))
+        p.fillRect(self.rect(), QColor(210, 228, 255, flash_alpha))
         for i, pts in enumerate(self._bolts):
             if len(pts) < 2:
                 continue
@@ -897,11 +898,13 @@ class _LightningLayer(QWidget):
                 path.lineTo(point)
             main = i == 0
             width = (1.15 if main else 0.72) * self._size * self._thickness
-            p.setPen(QPen(QColor(138, 185, 255, round(145 * flash)),
+            glow_alpha = max(0, min(255, round(145 * flash)))
+            core_alpha = max(0, min(255, round(238 * flash)))
+            p.setPen(QPen(QColor(138, 185, 255, glow_alpha),
                           width + 2.2 * self._thickness, Qt.SolidLine, Qt.RoundCap,
                           Qt.RoundJoin))
             p.drawPath(path)
-            p.setPen(QPen(QColor(255, 255, 255, round(238 * flash)),
+            p.setPen(QPen(QColor(255, 255, 255, core_alpha),
                           width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             p.drawPath(path)
 
@@ -3425,7 +3428,8 @@ class PlayerWindow(QWidget):
             if self._panel is not None:
                 self._panel.sync_weather_controls()
         elif (key in ("weather_enabled", "rain_enabled")
-              or key.startswith("rain_") or key.startswith("snow_")):
+              or key.startswith("rain_") or key.startswith("snow_")
+              or key.startswith("custom_")):
             self.card.apply_rain_settings()
         elif key in ("lightning_enabled", "lightning_size",
                      "lightning_thickness",

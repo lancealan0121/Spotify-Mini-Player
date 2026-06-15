@@ -5886,19 +5886,19 @@ class SettingsPanel(QWidget):
         if not isinstance(eff, QGraphicsOpacityEffect):
             eff = QGraphicsOpacityEffect(host)
             host.setGraphicsEffect(eff)
-        anim = getattr(host, "_weather_anim", None)
+        if not visible:
+            host.hide()
+            eff.setOpacity(1.0)
+            return
+        host.setFixedHeight(full_h)
+        host.show()
+        eff.setOpacity(0.0 if not was_visible else cur_opacity)
         if anim is None:
             anim = Anim(host)
             host._weather_anim = anim
-
-            def on_value(value, host=host, eff=eff, full_h=full_h):
-                h = max(0, round(float(value)))
-                host.setFixedHeight(h)
-                eff.setOpacity(max(0.0, min(1.0, h / max(1.0, full_h))))
-                if self._body is not None:
-                    self._apply_body_geometry(animate=False)
-
-            anim.valueChanged.connect(on_value)
+            anim.valueChanged.connect(
+                lambda value, eff=eff:
+                    eff.setOpacity(max(0.0, min(1.0, float(value)))))
         old_done = getattr(host, "_weather_done_cb", None)
         if old_done is not None:
             try:
@@ -5906,19 +5906,16 @@ class SettingsPanel(QWidget):
             except (TypeError, RuntimeError):
                 pass
 
-        def on_done(host=host, visible=visible, target_h=target_h, eff=eff):
-            host.setFixedHeight(target_h)
-            host.setVisible(visible)
+        def on_done(host=host, full_h=full_h, eff=eff):
+            host.setFixedHeight(full_h)
+            host.show()
             eff.setOpacity(1.0)
-            if self._body is not None:
-                self._apply_body_geometry(animate=False)
 
         anim.finished.connect(on_done)
         host._weather_done_cb = on_done
-        anim.stop()
-        anim.setStartValue(float(cur_h))
-        anim.setEndValue(float(target_h))
-        anim.setDuration(adur(190, 110))
+        anim.setStartValue(float(eff.opacity()))
+        anim.setEndValue(1.0)
+        anim.setDuration(adur(160, 90))
         anim.setEasingCurve(QEasingCurve.OutCubic)
         anim.start()
 
