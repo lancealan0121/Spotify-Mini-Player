@@ -5868,21 +5868,21 @@ class SettingsPanel(QWidget):
         full_h = max(1, int(getattr(host, "_full_h",
                                     host.sizeHint().height() or host.height())))
         target_h = full_h if visible else 0
-        cur_h = host.height() if host.isVisible() else 0
+        was_visible = host.isVisible()
+        eff = host.graphicsEffect()
+        cur_opacity = eff.opacity() if isinstance(
+            eff, QGraphicsOpacityEffect) else 1.0
+        anim = getattr(host, "_weather_anim", None)
+        if anim is not None:
+            anim.stop()
         if not animate or not anim_on():
-            anim = getattr(host, "_weather_anim", None)
-            if anim is not None:
-                anim.stop()
             host.setFixedHeight(target_h)
             host.setVisible(visible)
-            eff = host.graphicsEffect()
             if isinstance(eff, QGraphicsOpacityEffect):
                 eff.setOpacity(1.0)
             return
-        if host.isVisible() == visible and abs(cur_h - target_h) < 1:
+        if was_visible == visible and cur_opacity >= 0.999:
             return
-        host.setVisible(True)
-        eff = host.graphicsEffect()
         if not isinstance(eff, QGraphicsOpacityEffect):
             eff = QGraphicsOpacityEffect(host)
             host.setGraphicsEffect(eff)
