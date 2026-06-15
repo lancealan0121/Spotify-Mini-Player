@@ -129,6 +129,9 @@ DEFAULTS = {
     "background_image_parallax_strength": 1.0,  # 0.0 ~ 2.0
     "rain_enabled": False,   # 飄雨效果
     "rain_intensity": 0.55,   # 0.0 ~ 1.0，雨量強度
+    "rain_length": 1.0,      # 0.05 ~ 1.6，雨線長度
+    "rain_thickness": 1.0,   # 0.3 ~ 2.6，雨線粗細
+    "rain_direction": 18.0,  # -55 ~ 55，雨線飄移角度（度）
     "font_color": "",           # 曲名 / 作者文字顏色，空字串 = 預設
     "source_text_color": "",    # 左上來源文字顏色，空字串 = 預設
     "topbar_icon_color": "",    # 右上工具列圖示顏色，空字串 = 預設
@@ -289,6 +292,9 @@ _I18N = {
         "background_image_parallax_strength": "視差強度",
         "rain_enabled": "飄雨效果",
         "rain_intensity": "雨量強度",
+        "rain_length": "雨長度",
+        "rain_thickness": "雨粗細",
+        "rain_direction": "雨方向",
         "bg_image_cover": "填滿",
         "bg_image_contain": "完整",
         "bg_image_stretch": "拉伸",
@@ -491,6 +497,9 @@ _I18N = {
         "background_image_parallax_strength": "視差の強さ",
         "rain_enabled": "雨エフェクト",
         "rain_intensity": "雨の強さ",
+        "rain_length": "雨の長さ",
+        "rain_thickness": "雨の太さ",
+        "rain_direction": "雨の向き",
         "bg_image_cover": "カバー",
         "bg_image_contain": "全体",
         "bg_image_stretch": "伸縮",
@@ -693,6 +702,9 @@ _I18N = {
         "background_image_parallax_strength": "Parallax Strength",
         "rain_enabled": "Rain",
         "rain_intensity": "Rain Intensity",
+        "rain_length": "Rain Length",
+        "rain_thickness": "Rain Thickness",
+        "rain_direction": "Rain Direction",
         "bg_image_cover": "Cover",
         "bg_image_contain": "Fit",
         "bg_image_stretch": "Stretch",
@@ -1099,6 +1111,12 @@ def load_settings():
     SETTINGS["rain_enabled"] = bool(SETTINGS.get("rain_enabled", False))
     SETTINGS["rain_intensity"] = min(1.0, max(
         0.0, float(SETTINGS.get("rain_intensity", 0.55))))
+    SETTINGS["rain_length"] = min(1.6, max(
+        0.05, float(SETTINGS.get("rain_length", 1.0))))
+    SETTINGS["rain_thickness"] = min(2.6, max(
+        0.3, float(SETTINGS.get("rain_thickness", 1.0))))
+    SETTINGS["rain_direction"] = min(55.0, max(
+        -55.0, float(SETTINGS.get("rain_direction", 18.0))))
     for key in COLOR_SETTING_KEYS:
         raw = str(SETTINGS.get(key, "") or "").strip()
         c = QColor(raw) if raw else QColor()

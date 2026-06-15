@@ -12,6 +12,7 @@
     --shot <path>   啟動 1.5 秒後截圖存檔並退出（面板開啟時加存 *_panel）
 """
 import ctypes
+import math
 import os
 import random
 import subprocess
@@ -394,13 +395,28 @@ class _RainLayer(QWidget):
         self._timer.timeout.connect(self._tick)
         self._last = time.monotonic()
         self._intensity = 0.0
+        self._length_scale = 1.0
+        self._thickness_scale = 1.0
+        self._direction = 18.0
+        self._fade = 0.0
+        self._active_target = False
+        self._fade_anim = Anim(self)
+        self._fade_anim.valueChanged.connect(self._on_fade)
+        self._fade_anim.finished.connect(self._fade_done)
         self.hide()
         self.apply_settings()
 
     def apply_settings(self):
         self._intensity = max(
             0.0, min(1.0, float(SETTINGS.get("rain_intensity", 0.55))))
-        active = bool(SETTINGS.get("rain_enabled", False)) and self._intensity > 0.001
+        self._length_scale = max(
+            0.05, min(1.6, float(SETTINGS.get("rain_length", 1.0))))
+        self._thickness_scale = max(
+            0.3, min(2.6, float(SETTINGS.get("rain_thickness", 1.0))))
+        self._direction = max(
+            -55.0, min(55.0, float(SETTINGS.get("rain_direction", 18.0))))
+        active = bool(SETTINGS.get("rain_enabled", False)) and self._intensity > 0.0005
+        self._active_target = active
         self.apply_fps()
         if active:
             self._sync_drop_count()
@@ -408,25 +424,60 @@ class _RainLayer(QWidget):
             self._last = time.monotonic()
             if not self._timer.isActive():
                 self._timer.start()
+            self._animate_fade(1.0)
         else:
+            self._animate_fade(0.0)
+        self.update()
+
+    def _on_fade(self, value):
+        self._fade = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _fade_done(self):
+        self._fade = 1.0 if self._active_target else 0.0
+        if not self._active_target:
             self._timer.stop()
             self.hide()
         self.update()
+
+    def _animate_fade(self, target: float):
+        target = max(0.0, min(1.0, float(target)))
+        if not anim_on():
+            self._fade_anim.stop()
+            self._fade = target
+            self._fade_done()
+            return
+        if abs(self._fade - target) < 0.001:
+            if target > 0.0:
+                self.show()
+            else:
+                self._fade_done()
+            return
+        self._fade_anim.stop()
+        self._fade_anim.setStartValue(self._fade)
+        self._fade_anim.setEndValue(target)
+        self._fade_anim.setDuration(adur(420, 260))
+        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_anim.start()
 
     def apply_fps(self):
         fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
         self._timer.setInterval(max(8, round(1000 / fps)))
 
     def _target_count(self) -> int:
+        if self._intensity <= 0.0005:
+            return 0
         area = max(1, self.width() * self.height())
         area_scale = max(0.6, area / float(CARD_W * CARD_H))
+        density = self._intensity ** 1.55
         return max(1, min(260, round(
-            (10 + 118 * self._intensity) * area_scale)))
+            (1 + 130 * density) * area_scale)))
 
     def _new_drop(self, reset: bool = False) -> dict:
         w, h = max(1, self.width()), max(1, self.height())
         depth = self._rng.random() ** 0.45
-        length = (5.0 + 18.0 * depth + 8.0 * self._intensity) * max(0.85, S(1))
+        length = ((5.0 + 18.0 * depth + 8.0 * self._intensity)
+                  * self._length_scale * max(0.85, S(1)))
         speed = (220.0 + 520.0 * depth) * (0.75 + self._intensity * 0.55)
         return {
             "x": self._rng.uniform(-w * 0.15, w * 1.15),
@@ -445,7 +496,8 @@ class _RainLayer(QWidget):
             del self._drops[target:]
 
     def _add_splash(self, x: float):
-        if self._intensity < 0.18 or self._rng.random() > 0.42 + self._intensity * 0.35:
+        if (self._intensity < 0.18 or self._fade < 0.25
+                or self._rng.random() > 0.42 + self._intensity * 0.35):
             return
         y = self.height() - self._rng.uniform(3.0, max(4.0, self.height() * 0.13))
         for _ in range(2 + int(self._rng.random() * 3)):
@@ -468,7 +520,8 @@ class _RainLayer(QWidget):
             return
         self._sync_drop_count()
         w, h = max(1, self.width()), max(1, self.height())
-        wind = (46.0 + 92.0 * self._intensity)
+        angle = math.radians(self._direction)
+        wind = math.tan(angle) * 430.0 * (0.35 + self._intensity * 0.65)
         for d in self._drops:
             depth = d["depth"]
             sway = 12.0 * self._intensity * (0.25 + depth)
@@ -505,10 +558,11 @@ class _RainLayer(QWidget):
         self._timer.stop()
 
     def paintEvent(self, _):
-        if self._intensity <= 0.001:
+        if self._intensity <= 0.0005 or self._fade <= 0.001:
             return
         p = QPainter(self)
         aa(p)
+        p.setOpacity(self._fade)
         radius = Sf(SETTINGS.get("radius", 15))
         clip = QPainterPath()
         clip.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
@@ -520,22 +574,24 @@ class _RainLayer(QWidget):
             if alpha <= 2:
                 continue
             length = d["len"]
-            drift = length * (0.25 + 0.18 * self._intensity)
+            drift = math.tan(math.radians(self._direction)) * length
             col = QColor(214, 232, 255, min(150, alpha))
-            pen = QPen(col, 0.45 + depth * 1.15)
+            width = (0.45 + depth * 1.15) * self._thickness_scale
+            pen = QPen(col, width)
             pen.setCapStyle(Qt.RoundCap)
             p.setPen(pen)
             p.drawLine(QPointF(d["x"], d["y"]),
                        QPointF(d["x"] - drift, d["y"] - length))
             if depth > 0.62:
                 p.setPen(QPen(QColor(255, 255, 255, min(70, alpha // 2)),
-                              0.45))
+                              max(0.25, 0.45 * self._thickness_scale)))
                 p.drawLine(QPointF(d["x"] + 0.8, d["y"] - length * 0.1),
                            QPointF(d["x"] - drift * 0.42,
                                    d["y"] - length * 0.62))
         for s in self._splashes:
             t = max(0.0, min(1.0, s["life"] / s["max"]))
-            p.setPen(QPen(QColor(225, 240, 255, round(72 * t)), 0.75))
+            p.setPen(QPen(QColor(225, 240, 255, round(72 * t)),
+                          max(0.3, 0.75 * self._thickness_scale)))
             p.drawLine(QPointF(s["x"], s["y"]),
                        QPointF(s["x"] - s["vx"] * 0.045,
                                s["y"] - 2.6 * t))
@@ -3050,7 +3106,9 @@ class PlayerWindow(QWidget):
                      "background_image_parallax_strength"):
             self.card.invalidate_bg()
             self.card._sync_bg_parallax_timer()
-        elif key in ("rain_enabled", "rain_intensity"):
+        elif key in ("rain_enabled", "rain_intensity",
+                     "rain_length", "rain_thickness",
+                     "rain_direction"):
             self.card.apply_rain_settings()
         elif key in ("radius", "bg_opacity", "brightness",
                      "background_image_brightness", "antialias"):

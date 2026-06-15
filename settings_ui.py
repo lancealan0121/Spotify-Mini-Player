@@ -3906,7 +3906,17 @@ class SettingsPanel(QWidget):
                 stretch=False)
             self.sl_rain_intensity = row("rain_intensity", PanelSlider(
                 0, 100, SETTINGS.get("rain_intensity", 0.55) * 100,
+                fmt=lambda v: f"{v:.1f}%" if v < 10 else f"{v:.0f}%",
+                step=0.1, accent=self._accent))
+            self.sl_rain_length = row("rain_length", PanelSlider(
+                5, 160, SETTINGS.get("rain_length", 1.0) * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_rain_thickness = row("rain_thickness", PanelSlider(
+                30, 260, SETTINGS.get("rain_thickness", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_rain_direction = row("rain_direction", PanelSlider(
+                -55, 55, SETTINGS.get("rain_direction", 18.0),
+                fmt=lambda v: f"{v:+.0f}°", accent=self._accent))
             self.sg_auto_theme = row("auto_theme", Segmented(
                 auto_theme_options(), SETTINGS["auto_theme"],
                 accent=self._accent))
@@ -4252,6 +4262,12 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("rain_enabled", v))
         self.sl_rain_intensity.changed.connect(
             lambda v: self.setting_changed.emit("rain_intensity", v / 100.0))
+        self.sl_rain_length.changed.connect(
+            lambda v: self.setting_changed.emit("rain_length", v / 100.0))
+        self.sl_rain_thickness.changed.connect(
+            lambda v: self.setting_changed.emit("rain_thickness", v / 100.0))
+        self.sl_rain_direction.changed.connect(
+            lambda v: self.setting_changed.emit("rain_direction", v))
         self.sg_art_mode.changed.connect(
             lambda v: self.setting_changed.emit("art_mode", v))
         self.tg_show_tonearm.changed.connect(
@@ -5613,7 +5629,9 @@ class SettingsPanel(QWidget):
         controls = (self.sl_opacity, self.sl_brightness,
                     self.sl_bg_image_brightness,
                     self.sl_bg_image_parallax_strength,
-                    self.sl_rain_intensity, self.sl_scale,
+                    self.sl_rain_intensity, self.sl_rain_length,
+                    self.sl_rain_thickness, self.sl_rain_direction,
+                    self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
                     self.sl_title_size, self.sl_artist_size,
                     self.sl_title_x, self.sl_title_y,
