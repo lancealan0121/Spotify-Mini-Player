@@ -3463,9 +3463,11 @@ class PlayerWindow(QWidget):
         bg_old = None
         bg_can_animate = False
         if key in ("background_image", "background_image_mode") and self.card is not None:
+            current_bg_image = SETTINGS.get("background_image", "")
             target_bg_image = (value if key == "background_image"
-                               else SETTINGS.get("background_image", ""))
-            bg_can_animate = bool(str(target_bg_image or "").strip())
+                               else current_bg_image)
+            bg_can_animate = bool(str(current_bg_image or "").strip()
+                                  or str(target_bg_image or "").strip())
             if bg_can_animate:
                 bg_old = QPixmap(self.card._bg_pixmap())
         if key == "font":
