@@ -2984,10 +2984,18 @@ class _ScrollablePanelBody(_PanelBody):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.content = QWidget(self)
+        self.viewport = QWidget(self)
+        self.viewport.setAttribute(Qt.WA_TranslucentBackground)
+        self.viewport.setMouseTracking(True)
+        self.content = QWidget(self.viewport)
         self.content.setAttribute(Qt.WA_TranslucentBackground)
         self.content.setMouseTracking(True)
         self.content.installEventFilter(self)
+        self._header_widget: QWidget | None = None
+        self._footer_widget: QWidget | None = None
+        self._header_h = 0
+        self._footer_h = 0
+        self._viewport_h = 0
         self._offset = 0.0
         self._target_offset = 0.0
         self._content_h = 0
@@ -3001,16 +3009,59 @@ class _ScrollablePanelBody(_PanelBody):
         self._scroll_ha.valueChanged.connect(self._on_scrollbar_hover)
         self.setMouseTracking(True)
 
+    def set_fixed_header(self, widget: QWidget | None):
+        self._header_widget = widget
+        if widget is not None:
+            widget.setParent(self)
+            widget.setMouseTracking(True)
+            widget.show()
+
+    def set_fixed_footer(self, widget: QWidget | None):
+        self._footer_widget = widget
+        if widget is not None:
+            widget.setParent(self)
+            widget.setMouseTracking(True)
+            widget.show()
+
+    def _fixed_height_for_width(self, widget: QWidget | None,
+                                width: int) -> int:
+        if widget is None:
+            return 0
+        widget.setFixedWidth(max(1, int(width)))
+        lay = widget.layout()
+        if lay is not None:
+            lay.activate()
+        return max(1, widget.sizeHint().height())
+
     def content_height_for_width(self, width: int) -> int:
         self.content.setFixedWidth(max(1, int(width)))
         lay = self.content.layout()
         if lay is not None:
             lay.activate()
-        return max(1, self.content.sizeHint().height() + panel_px(2))
+        header_h = self._fixed_height_for_width(self._header_widget, width)
+        footer_h = self._fixed_height_for_width(self._footer_widget, width)
+        content_h = max(1, self.content.sizeHint().height() + panel_px(2))
+        return max(1, header_h + content_h + footer_h)
 
     def set_viewport(self, width: int, height: int, content_h: int):
-        self._content_h = max(1, int(content_h))
-        self.content.resize(max(1, int(width)), max(int(height), self._content_h))
+        width = max(1, int(width))
+        height = max(1, int(height))
+        self._header_h = self._fixed_height_for_width(
+            self._header_widget, width)
+        self._footer_h = self._fixed_height_for_width(
+            self._footer_widget, width)
+        self._viewport_h = max(1, height - self._header_h - self._footer_h)
+        self._content_h = max(
+            1, int(content_h) - self._header_h - self._footer_h)
+        if self._header_widget is not None:
+            self._header_widget.setGeometry(0, 0, width, self._header_h)
+            self._header_widget.raise_()
+        if self._footer_widget is not None:
+            self._footer_widget.setGeometry(
+                0, height - self._footer_h, width, self._footer_h)
+            self._footer_widget.raise_()
+        self.viewport.setGeometry(0, self._header_h, width, self._viewport_h)
+        self.content.resize(width, max(self._viewport_h, self._content_h))
         lay = self.content.layout()
         if lay is not None:
             lay.activate()
@@ -3019,7 +3070,7 @@ class _ScrollablePanelBody(_PanelBody):
         self._place_content()
 
     def _max_offset(self) -> float:
-        return max(0.0, float(self._content_h - self.height()))
+        return max(0.0, float(self._content_h - self._viewport_h))
 
     def _clamp(self, value: float) -> float:
         return max(0.0, min(self._max_offset(), float(value)))
@@ -3027,7 +3078,7 @@ class _ScrollablePanelBody(_PanelBody):
     def _scrollbar_geometry(self):
         if self._max_offset() <= 1:
             return None
-        rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        rect = QRectF(self.viewport.geometry()).adjusted(0.5, 0.5, -0.5, -0.5)
         track_h = rect.height() - panel_f(24)
         if track_h <= 0:
             return None
@@ -3129,10 +3180,13 @@ class _ScrollablePanelBody(_PanelBody):
     def _content_event_pos(self, event) -> QPointF:
         pos = event.position()
         cp = self.content.pos()
-        return QPointF(pos.x() + cp.x(), pos.y() + cp.y())
+        vp = self.viewport.pos()
+        return QPointF(pos.x() + cp.x() + vp.x(),
+                       pos.y() + cp.y() + vp.y())
 
     def _place_content(self):
         self.content.move(0, -round(self._offset))
+        self.viewport.update()
         self.update()
 
     def set_scroll_offset(self, value: float):
@@ -3603,6 +3657,9 @@ class SettingsPanel(QWidget):
         self._theme_row_from = 0
         self._theme_row_to = 0
         self._section_resize_anchor: QPoint | None = None
+        self._section_frame_lock_size: QSize | None = None
+        self._section_frame_lock_body_h = 0
+        self._section_frame_lock_content_h = 0
         self._advanced_anim = Anim(self)
         self._advanced_anim.valueChanged.connect(self._on_advanced_anim)
         self._advanced_anim.finished.connect(self._advanced_anim_done)
@@ -3623,6 +3680,10 @@ class SettingsPanel(QWidget):
         self._section_labels = []
         self._search_rows = []
         self._section_groups = []
+        self._section_wrappers = {}
+        self._section_gap_layouts = {}
+        self._section_target_gaps = {}
+        self._section_anim_full_heights = {}
         self._section_collapsed = getattr(self, "_section_collapsed", {})
         self._section_anims = {}
         self._section_anim_containers = {}
@@ -3644,13 +3705,17 @@ class SettingsPanel(QWidget):
             self._panel_category = "section_general"
         self.sg_panel_category = None
         lay = QVBoxLayout(body.content)
-        lay.setContentsMargins(panel_px(20), panel_px(14),
-                               panel_px(20), panel_px(18))
+        lay.setContentsMargins(panel_px(20), panel_px(10),
+                               panel_px(20), panel_px(10))
         lay.setSpacing(panel_px(10))
         lay.setAlignment(Qt.AlignTop)
 
         # 標題列
-        head = QHBoxLayout()
+        head_box = QWidget(body)
+        head = QHBoxLayout(head_box)
+        head.setContentsMargins(panel_px(20), panel_px(14),
+                                panel_px(20), 0)
+        head.setSpacing(panel_px(8))
         title = QLabel(tr("settings"))
         self._title_label = title
         title.setFont(panel_font(14, QFont.DemiBold))
@@ -3662,7 +3727,7 @@ class SettingsPanel(QWidget):
         self._btn_close = btn_close
         btn_close.clicked.connect(self.animated_close)
         head.addWidget(btn_close)
-        lay.addLayout(head)
+        body.set_fixed_header(head_box)
 
         self.search = QLineEdit()
         self.search.setFixedHeight(panel_px(30))
@@ -3707,12 +3772,24 @@ class SettingsPanel(QWidget):
                 layout = full_layouts[label_key]
             group_id = f"{label_key}:{len(self._section_groups)}"
             collapsed = bool(self._section_collapsed.get(group_id, False))
+            section_gap = layout.spacing()
+            if section_gap < 0:
+                section_gap = panel_px(10)
+            section_box = QWidget()
+            section_box.setSizePolicy(QSizePolicy.Preferred,
+                                      QSizePolicy.Fixed)
+            section_lay = QVBoxLayout(section_box)
+            section_lay.setContentsMargins(0, 0, 0, 0)
+            section_lay.setSpacing(0 if collapsed else section_gap)
+            section_lay.setAlignment(Qt.AlignTop)
+            layout.addWidget(section_box)
+
             lab = SectionLabel(tr(label_key), collapsed)
             self._section_labels.append((label_key, lab))
             lab.setFont(panel_font(14, QFont.DemiBold))
             lab.setStyleSheet("color: rgba(255,255,255,225);")
             lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            layout.addWidget(lab)
+            section_lay.addWidget(lab)
             group = QWidget()
             group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
             group_lay = QVBoxLayout(group)
@@ -3722,10 +3799,13 @@ class SettingsPanel(QWidget):
             if collapsed:
                 group.setFixedHeight(0)
                 group.hide()
-            layout.addWidget(group)
+            section_lay.addWidget(group)
             current_layout = group_lay
             current_section = []
             current_section_key = label_key
+            self._section_wrappers[group_id] = section_box
+            self._section_gap_layouts[group_id] = section_lay
+            self._section_target_gaps[group_id] = section_gap
             self._section_groups.append(
                 (label_key, lab, current_section, group_id, group))
             lab.clicked.connect(
@@ -3803,6 +3883,30 @@ class SettingsPanel(QWidget):
             self.sg_bg_image_mode = row("background_image_mode", Segmented(
                 background_image_mode_options(),
                 SETTINGS["background_image_mode"], accent=self._accent))
+            self.sl_bg_image_brightness = row(
+                "background_image_brightness",
+                PanelSlider(35, 165,
+                            SETTINGS["background_image_brightness"] * 100,
+                            fmt=lambda v: f"{v:.0f}%",
+                            accent=self._accent))
+            self.tg_bg_image_parallax = row("background_image_parallax",
+                Toggle(bool(SETTINGS.get("background_image_parallax", False)),
+                       accent=self._accent),
+                stretch=False)
+            self.sl_bg_image_parallax_strength = row(
+                "background_image_parallax_strength",
+                PanelSlider(
+                    0, 200,
+                    SETTINGS.get("background_image_parallax_strength", 1.0) * 100,
+                    fmt=lambda v: f"{v:.0f}%",
+                    accent=self._accent))
+            self.tg_rain_enabled = row("rain_enabled",
+                Toggle(bool(SETTINGS.get("rain_enabled", False)),
+                       accent=self._accent),
+                stretch=False)
+            self.sl_rain_intensity = row("rain_intensity", PanelSlider(
+                0, 100, SETTINGS.get("rain_intensity", 0.55) * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
             self.sg_auto_theme = row("auto_theme", Segmented(
                 auto_theme_options(), SETTINGS["auto_theme"],
                 accent=self._accent))
@@ -3932,7 +4036,7 @@ class SettingsPanel(QWidget):
             adv = lay
         else:
             adv = QVBoxLayout(self.advanced_box.content)
-            adv.setContentsMargins(panel_px(20), panel_px(14),
+            adv.setContentsMargins(panel_px(20), panel_px(10),
                                    panel_px(20), panel_px(18))
             adv.setSpacing(panel_px(8))
             adv.setAlignment(Qt.AlignTop)
@@ -3955,7 +4059,10 @@ class SettingsPanel(QWidget):
         if not single_panel:
             self.btn_advanced.clicked.connect(toggle_advanced)
 
-            adv_head = QHBoxLayout()
+            adv_head_box = QWidget(self.advanced_box)
+            adv_head = QHBoxLayout(adv_head_box)
+            adv_head.setContentsMargins(panel_px(20), panel_px(14),
+                                        panel_px(20), 0)
             adv_head.setSpacing(panel_px(8))
             self._advanced_title_label = QLabel(tr("advanced"))
             self._advanced_title_label.setFont(panel_font(13, QFont.DemiBold))
@@ -3967,7 +4074,7 @@ class SettingsPanel(QWidget):
                 GLYPH_CLOSE, panel_px(10), panel_px(24), fx="spin")
             self.btn_advanced_close.clicked.connect(close_advanced)
             adv_head.addWidget(self.btn_advanced_close)
-            adv.addLayout(adv_head)
+            self.advanced_box.set_fixed_header(adv_head_box)
         else:
             self._advanced_title_label = QLabel(tr("advanced"), self)
             self._advanced_title_label.hide()
@@ -4022,6 +4129,11 @@ class SettingsPanel(QWidget):
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.sl_art_vinyl_size = adv_row("art_vinyl_size", PanelSlider(
             70, 135, SETTINGS["art_vinyl_size"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.tg_show_vinyl_center = adv_toggle(
+            "show_vinyl_center", "show_vinyl_center")
+        self.sl_vinyl_center_size = adv_row("vinyl_center_size", PanelSlider(
+            40, 140, SETTINGS["vinyl_center_size"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
         self.tg_cover_border = adv_toggle("cover_border", "cover_border")
         self.sl_cover_border_width = adv_row("cover_border_width", PanelSlider(
@@ -4101,7 +4213,10 @@ class SettingsPanel(QWidget):
             self._advanced_eff.setOpacity(
                 0.0 if single_panel else (1.0 if self._advanced_open else 0.0))
 
-        foot = QHBoxLayout()
+        foot_box = QWidget(body)
+        foot = QHBoxLayout(foot_box)
+        foot.setContentsMargins(panel_px(20), panel_px(10),
+                                panel_px(20), panel_px(18))
         foot.setSpacing(panel_px(8))
         self.btn_reset = PanelButton(tr("reset_settings"), accent=self._accent)
         if single_panel:
@@ -4110,7 +4225,7 @@ class SettingsPanel(QWidget):
         else:
             foot.addWidget(self.btn_advanced, 1)
         foot.addWidget(self.btn_reset)
-        lay.addLayout(foot)
+        body.set_fixed_footer(foot_box)
 
         self.sw_theme.changed.connect(
             lambda v: self.setting_changed.emit("theme", v))
@@ -4124,6 +4239,19 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("background_image", v))
         self.sg_bg_image_mode.changed.connect(
             lambda v: self.setting_changed.emit("background_image_mode", v))
+        self.sl_bg_image_brightness.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "background_image_brightness", v / 100.0))
+        self.tg_bg_image_parallax.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "background_image_parallax", v))
+        self.sl_bg_image_parallax_strength.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "background_image_parallax_strength", v / 100.0))
+        self.tg_rain_enabled.changed.connect(
+            lambda v: self.setting_changed.emit("rain_enabled", v))
+        self.sl_rain_intensity.changed.connect(
+            lambda v: self.setting_changed.emit("rain_intensity", v / 100.0))
         self.sg_art_mode.changed.connect(
             lambda v: self.setting_changed.emit("art_mode", v))
         self.tg_show_tonearm.changed.connect(
@@ -4160,6 +4288,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("art_cover_size", v / 100.0))
         self.sl_art_vinyl_size.changed.connect(
             lambda v: self.setting_changed.emit("art_vinyl_size", v / 100.0))
+        self.sl_vinyl_center_size.changed.connect(
+            lambda v: self.setting_changed.emit("vinyl_center_size", v / 100.0))
         self.tg_show_cover.changed.connect(
             lambda v: self.setting_changed.emit("show_cover", v))
         self.sl_cover_blur.changed.connect(
@@ -4257,9 +4387,8 @@ class SettingsPanel(QWidget):
 
         self._body = body
         self._theme_row_h = self.sw_theme.height()
-        # 色票列展開/收合 → 面板高度跟著伸縮。直接跟手（animate=False）：
-        # 否則每幀 _relayout 都重啟 geo 動畫、視窗高度卡住不長，body 卻同步
-        # 長高，footer（重設按鈕）會被擠出視窗外被裁
+        # 色票列展開/收合 → 面板高度跟著伸縮。固定 header/footer 後統一走
+        # relayout，避免舊的局部高度算法讓固定按鈕與內容互相拉扯。
         self.sw_theme.size_changed.connect(self._on_theme_size_changed)
         self._apply_search(self.search.text(), relayout=False)
         return self._apply_body_geometry(resize_window=resize_window)
@@ -4427,73 +4556,11 @@ class SettingsPanel(QWidget):
         old_row_h = self._theme_row_h or new_row_h
         delta = new_row_h - old_row_h
         self._theme_row_h = new_row_h
-        resizing_theme = self.sw_theme._ea.state() == Anim.Running
-        if resizing_theme and self._theme_resize_anchor is None:
-            self._theme_resize_anchor = QPoint(self.pos())
-            self._theme_row_from = old_row_h
-            self._theme_row_to = self.sw_theme.row_h() * self.sw_theme._rows()
-            self._theme_scroll_from = getattr(self._body, "_offset", 0.0)
         if abs(delta) < 1:
-            if not resizing_theme:
-                self._theme_resize_anchor = None
-                self._theme_scroll_from = self._theme_scroll_to = 0.0
-                self._theme_row_from = self._theme_row_to = 0
             self.sw_theme.update()
             return
-
-        panel_type = SETTINGS.get("settings_panel_type", "normal")
-        adv_visible = (panel_type == "normal"
-                       and self.advanced_box is not None
-                       and (self._advanced_open or self._advanced_hiding))
-        if panel_type == "full" or adv_visible:
-            self._relayout(animate=False)
-            return
-
-        pm = panel_margin()
-        geo = self._screen_geometry_for(
-            self.pos(), QSize(self.width(), max(1, self.height() + delta)))
-        max_body_h = max(panel_px(160), geo.height() - pm * 2)
-        body_geo = self._body.geometry()
         self._sync_section_container_heights()
-        content_h = self._panel_content_height(self._body, body_geo.width())
-        body_h = min(content_h, max_body_h)
-        if resizing_theme:
-            final_content_h = max(
-                1, content_h + self._theme_row_to - new_row_h)
-            final_body_h = min(final_content_h, max_body_h)
-            final_max_offset = max(0.0, float(final_content_h - final_body_h))
-            self._theme_scroll_to = min(self._theme_scroll_from,
-                                        final_max_offset)
-        self._body.setGeometry(body_geo.x(), body_geo.y(),
-                               body_geo.width(), body_h)
-        self._set_panel_viewport(self._body, body_geo.width(),
-                                 body_h, content_h)
-        if resizing_theme:
-            span = self._theme_row_to - self._theme_row_from
-            if span:
-                t = (new_row_h - self._theme_row_from) / span
-                t = max(0.0, min(1.0, float(t)))
-            else:
-                t = 1.0
-            off = (self._theme_scroll_from
-                   + (self._theme_scroll_to - self._theme_scroll_from) * t)
-            self._body.set_scroll_offset(off)
-        else:
-            t = 1.0
-            off = getattr(self._body, "_offset", 0.0)
-        target_size = QSize(self.width(), body_h + pm * 2)
-        if resizing_theme and self._theme_resize_anchor is not None:
-            self._geo_anim.stop()
-            target_pos = self._bounded_window_pos(
-                self._theme_resize_anchor, target_size)
-            if self.size() != target_size:
-                self.setFixedSize(target_size)
-            if self.pos() != target_pos:
-                self.move(target_pos)
-        else:
-            if self._theme_resize_anchor is not None:
-                self._theme_resize_anchor = None
-            self._set_window_geometry(self.pos(), target_size, animate=False)
+        self._relayout(animate=False)
         self.update()
 
     def _screen_geometry_for(self, pos: QPoint, size: QSize):
@@ -4715,6 +4782,26 @@ class SettingsPanel(QWidget):
             hint = container.sizeHint().height()
         return max(0, hint)
 
+    def _section_gap(self, group_id: str) -> int:
+        return int(self._section_target_gaps.get(group_id, panel_px(10)))
+
+    def _set_section_gap(self, group_id: str, value: float):
+        lay = self._section_gap_layouts.get(group_id)
+        if lay is None:
+            return
+        gap = max(0, round(float(value)))
+        if lay.spacing() != gap:
+            lay.setSpacing(gap)
+            wrapper = self._section_wrappers.get(group_id)
+            if wrapper is not None:
+                wrapper.updateGeometry()
+
+    def _set_section_gap_for_height(self, group_id: str, height: float):
+        full_h = max(1.0, float(self._section_anim_full_heights.get(
+            group_id, 1.0)))
+        ratio = max(0.0, min(1.0, float(height) / full_h))
+        self._set_section_gap(group_id, self._section_gap(group_id) * ratio)
+
     def _sync_section_container_heights(self):
         for _, _, _, group_id, container in self._section_groups:
             if group_id in self._section_animating or not container.isVisible():
@@ -4723,11 +4810,91 @@ class SettingsPanel(QWidget):
             if container.height() != h:
                 container.setFixedHeight(h)
 
+    def _section_frame_lock_enabled(self) -> bool:
+        return (SETTINGS.get("settings_panel_type", "normal") == "normal"
+                and self.advanced_box is not None
+                and not self._advanced_open
+                and not self._advanced_hiding)
+
+    def _clear_section_frame_lock(self):
+        self._section_frame_lock_size = None
+        self._section_frame_lock_body_h = 0
+        self._section_frame_lock_content_h = 0
+
+    def _begin_section_frame_lock(self, group_id: str,
+                                  start: float, end: float):
+        self._clear_section_frame_lock()
+        if not self._section_frame_lock_enabled() or self._body is None:
+            return
+        if end <= start:
+            return
+        container = self._section_anim_containers.get(group_id)
+        if container is None:
+            return
+        body_geo = self._body.geometry()
+        body_w = max(1, body_geo.width())
+        lay = self._section_gap_layouts.get(group_id)
+
+        # 展開時先把捲動內容層固定到最終尺寸。動畫每幀只改 section
+        # clip 高度，不再重算整個面板高度，避免上方控制項在透明視窗中重繪抖動。
+        self._set_section_gap(group_id, self._section_gap(group_id))
+        container.setFixedHeight(max(0, round(float(end))))
+        target_content_h = self._panel_content_height(self._body, body_w)
+        container.setFixedHeight(max(0, round(float(start))))
+        self._set_section_gap_for_height(group_id, start)
+        content_lay = self._panel_layout(self._body)
+        if content_lay is not None:
+            content_lay.activate()
+
+        pm = panel_margin()
+        geo = self._screen_geometry_for(
+            self.pos(), QSize(self.width(), target_content_h + pm * 2))
+        max_inner_h = max(panel_px(160), geo.height() - pm * 2)
+        lock_h = max(self.height(), min(target_content_h, max_inner_h) + pm * 2)
+        lock_size = QSize(self.width(), max(1, lock_h))
+        body_h = max(1, lock_size.height() - pm * 2)
+        target_pos = self._bounded_window_pos(self.pos(), lock_size)
+        if self.size() != lock_size:
+            self.setFixedSize(lock_size)
+        if self.pos() != target_pos:
+            self.move(target_pos)
+        self._body.setGeometry(body_geo.x(), body_geo.y(), body_w, body_h)
+        self._set_panel_viewport(self._body, body_w, body_h, target_content_h)
+        self._section_frame_lock_size = lock_size
+        self._section_frame_lock_body_h = body_h
+        self._section_frame_lock_content_h = target_content_h
+
     def _relayout_section_frame(self):
         if self._section_resize_anchor is None:
             self._relayout(animate=False)
             return
         self._geo_anim.stop()
+        lock_size = self._section_frame_lock_size
+        if lock_size is not None and self._body is not None:
+            target_pos = self._bounded_window_pos(
+                self._section_resize_anchor, lock_size)
+            if self.size() != lock_size:
+                self.setFixedSize(lock_size)
+            if self.pos() != target_pos:
+                self.move(target_pos)
+            g = self._body.geometry()
+            body_h = max(1, self._section_frame_lock_body_h or g.height())
+            content_h = max(
+                1, self._section_frame_lock_content_h
+                or getattr(self._body, "_content_h", body_h))
+            if g.height() != body_h:
+                self._body.setGeometry(g.x(), g.y(), g.width(), body_h)
+            if (getattr(self._body, "_viewport_h", 0)
+                    != body_h - getattr(self._body, "_header_h", 0)
+                    - getattr(self._body, "_footer_h", 0)):
+                self._set_panel_viewport(self._body, g.width(),
+                                         body_h, content_h)
+            lay = self._panel_layout(self._body)
+            if lay is not None:
+                lay.activate()
+            self._body.viewport.update()
+            self.update()
+            return
         final = self._apply_body_geometry(resize_window=False, animate=False)
         target_pos = self._bounded_window_pos(
             self._section_resize_anchor, final)
@@ -4745,6 +4912,7 @@ class SettingsPanel(QWidget):
         container.setFixedHeight(h)
         if h > 0 and not container.isVisible():
             container.show()
+        self._set_section_gap_for_height(group_id, h)
         self._relayout_section_frame()
 
     def _on_section_anim(self, group_id: str, value):
@@ -4755,16 +4923,21 @@ class SettingsPanel(QWidget):
         container = self._section_anim_containers.get(group_id)
         self._section_animating.discard(group_id)
         if container is None:
+            self._clear_section_frame_lock()
             return
+        self._clear_section_frame_lock()
         if collapsed:
+            self._set_section_gap(group_id, 0)
             container.setFixedHeight(0)
             container.hide()
             self._apply_search(self.search.text(), relayout=False)
             self._relayout_section_frame()
         else:
+            self._set_section_gap(group_id, self._section_gap(group_id))
             container.setFixedHeight(self._section_content_height(container))
             container.show()
             self._relayout_section_frame()
+        self._section_anim_full_heights.pop(group_id, None)
         self._section_resize_anchor = None
 
     def _animate_section(self, group_id: str, container: QWidget,
@@ -4776,6 +4949,7 @@ class SettingsPanel(QWidget):
         self._section_anim_targets[group_id] = bool(collapsed)
         if getattr(self, "search", None) is not None and self.search.text().strip():
             self._section_animating.discard(group_id)
+            self._clear_section_frame_lock()
             container.setMinimumHeight(0)
             container.setMaximumHeight(16777215)
             self._apply_search(self.search.text(), relayout=False)
@@ -4791,6 +4965,7 @@ class SettingsPanel(QWidget):
         self._apply_search(self.search.text(), relayout=False)
         full_h = (self._section_content_height(container)
                   if should_animate or not collapsed else 0)
+        self._section_anim_full_heights[group_id] = max(1, full_h)
         start = container.height() if container.isVisible() else 0
         if collapsed and start <= 0:
             start = full_h
@@ -4798,12 +4973,16 @@ class SettingsPanel(QWidget):
         if not should_animate:
             self._stop_window_geometry_at_current()
             if collapsed:
+                self._set_section_gap(group_id, 0)
                 container.setFixedHeight(0)
                 container.hide()
             else:
+                self._set_section_gap(group_id, self._section_gap(group_id))
                 container.setFixedHeight(full_h)
                 container.show()
             self._section_resize_anchor = None
+            self._clear_section_frame_lock()
+            self._section_anim_full_heights.pop(group_id, None)
             self._relayout(animate=False)
             return
         if anim is None:
@@ -4815,6 +4994,7 @@ class SettingsPanel(QWidget):
             self._section_anims[group_id] = anim
         self._stop_window_geometry_at_current()
         self._section_resize_anchor = QPoint(self.pos())
+        self._begin_section_frame_lock(group_id, start, end)
         anim.setStartValue(start)
         anim.setEndValue(end)
         anim.setDuration(ms)
@@ -4853,6 +5033,7 @@ class SettingsPanel(QWidget):
             section_visible = category_match and (not query or any_match)
             show_content = section_visible and (query or not collapsed
                                                 or animating)
+            wrapper = self._section_wrappers.get(group_id)
             for w in children:
                 w.setMinimumHeight(0)
                 w.setMaximumHeight(16777215)
@@ -4862,12 +5043,16 @@ class SettingsPanel(QWidget):
                 if show_content and not container.isVisible():
                     container.show()
             elif show_content:
+                self._set_section_gap(group_id, self._section_gap(group_id))
                 container.setMinimumHeight(0)
                 container.setMaximumHeight(16777215)
                 container.show()
             else:
+                self._set_section_gap(group_id, 0)
                 container.setFixedHeight(0)
                 container.hide()
+            if wrapper is not None:
+                wrapper.setVisible(section_visible)
             if full_mode:
                 full_box_visible[section_key] = (
                     full_box_visible.get(section_key, False)
@@ -5425,7 +5610,10 @@ class SettingsPanel(QWidget):
         self.repaint()
 
     def _controls(self):
-        controls = (self.sl_opacity, self.sl_brightness, self.sl_scale,
+        controls = (self.sl_opacity, self.sl_brightness,
+                    self.sl_bg_image_brightness,
+                    self.sl_bg_image_parallax_strength,
+                    self.sl_rain_intensity, self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
                     self.sl_title_size, self.sl_artist_size,
                     self.sl_title_x, self.sl_title_y,
@@ -5440,6 +5628,7 @@ class SettingsPanel(QWidget):
                     self.sl_control_button_spacing,
                     self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
                     self.sl_art_cover_size, self.sl_art_vinyl_size,
+                    self.sl_vinyl_center_size,
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,
                     self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
@@ -5455,11 +5644,13 @@ class SettingsPanel(QWidget):
                     self.cp_topbar_icon_color, self.cp_seek_fill_color,
                     self.cp_seek_thumb_color, self.cp_seek_track_color,
                     self.tg_startup, self.tg_aa, self.tg_src,
+                    self.tg_bg_image_parallax,
+                    self.tg_rain_enabled,
                     self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
                     self.tg_topbar_hover, self.tg_show_fps,
                     self.tg_anim_enabled, self.tg_show_cover,
-                    self.tg_show_tonearm, self.tg_cover_border,
-                    self.tg_marquee,
+                    self.tg_show_tonearm, self.tg_show_vinyl_center,
+                    self.tg_cover_border, self.tg_marquee,
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
                     self.tg_btn_repeat)
         return tuple(w for w in controls if w is not None)

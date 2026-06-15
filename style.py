@@ -90,6 +90,8 @@ DEFAULTS = {
     "art_mode": "cover",    # cover / vinyl，封面區顯示模式
     "art_cover_size": 0.9245844436826636,
     "art_vinyl_size": 0.9983334355091419,
+    "show_vinyl_center": True,
+    "vinyl_center_size": 1.0,
     "show_tonearm": True,
     "tonearm_speed": 0.7711820866029643,
     "vinyl_spin_speed": 1.0,
@@ -122,6 +124,11 @@ DEFAULTS = {
     "custom_grad": ["#1db954", "#3d9be9"],   # 自訂漸層主題的兩端色
     "background_image": "",     # 自訂卡片背景圖片路徑
     "background_image_mode": "cover",  # cover / contain / stretch / tile
+    "background_image_brightness": 1.0,  # 0.35 ~ 1.65，自訂背景圖亮度
+    "background_image_parallax": False,  # 自訂背景圖滑鼠視差
+    "background_image_parallax_strength": 1.0,  # 0.0 ~ 2.0
+    "rain_enabled": False,   # 飄雨效果
+    "rain_intensity": 0.55,   # 0.0 ~ 1.0，雨量強度
     "font_color": "",           # 曲名 / 作者文字顏色，空字串 = 預設
     "source_text_color": "",    # 左上來源文字顏色，空字串 = 預設
     "topbar_icon_color": "",    # 右上工具列圖示顏色，空字串 = 預設
@@ -225,6 +232,8 @@ _I18N = {
         "art_vinyl": "黑膠",
         "art_cover_size": "封面圖大小",
         "art_vinyl_size": "黑膠大小",
+        "show_vinyl_center": "中心黑圈",
+        "vinyl_center_size": "中心圖片大小",
         "show_tonearm": "顯示唱針",
         "tonearm_speed": "唱針速度",
         "vinyl_spin_speed": "黑膠轉速",
@@ -275,6 +284,11 @@ _I18N = {
         "number_color": "數字顏色",
         "background_image": "背景圖",
         "background_image_mode": "圖片填滿",
+        "background_image_brightness": "圖片亮度",
+        "background_image_parallax": "背景視差",
+        "background_image_parallax_strength": "視差強度",
+        "rain_enabled": "飄雨效果",
+        "rain_intensity": "雨量強度",
         "bg_image_cover": "填滿",
         "bg_image_contain": "完整",
         "bg_image_stretch": "拉伸",
@@ -421,6 +435,8 @@ _I18N = {
         "art_vinyl": "レコード",
         "art_cover_size": "カバーサイズ",
         "art_vinyl_size": "レコードサイズ",
+        "show_vinyl_center": "中央黒リング",
+        "vinyl_center_size": "中央画像サイズ",
         "show_tonearm": "針を表示",
         "tonearm_speed": "針の速度",
         "vinyl_spin_speed": "回転速度",
@@ -470,6 +486,11 @@ _I18N = {
         "number_color": "数字色",
         "background_image": "背景画像",
         "background_image_mode": "画像表示",
+        "background_image_brightness": "画像の明るさ",
+        "background_image_parallax": "背景視差",
+        "background_image_parallax_strength": "視差の強さ",
+        "rain_enabled": "雨エフェクト",
+        "rain_intensity": "雨の強さ",
         "bg_image_cover": "カバー",
         "bg_image_contain": "全体",
         "bg_image_stretch": "伸縮",
@@ -616,6 +637,8 @@ _I18N = {
         "art_vinyl": "Vinyl",
         "art_cover_size": "Cover Size",
         "art_vinyl_size": "Vinyl Size",
+        "show_vinyl_center": "Center Ring",
+        "vinyl_center_size": "Center Image Size",
         "show_tonearm": "Show Tonearm",
         "tonearm_speed": "Tonearm Speed",
         "vinyl_spin_speed": "Vinyl Speed",
@@ -665,6 +688,11 @@ _I18N = {
         "number_color": "Number Color",
         "background_image": "Background",
         "background_image_mode": "Image Fill",
+        "background_image_brightness": "Image Brightness",
+        "background_image_parallax": "Parallax",
+        "background_image_parallax_strength": "Parallax Strength",
+        "rain_enabled": "Rain",
+        "rain_intensity": "Rain Intensity",
         "bg_image_cover": "Cover",
         "bg_image_contain": "Fit",
         "bg_image_stretch": "Stretch",
@@ -1062,6 +1090,15 @@ def load_settings():
     if SETTINGS.get("background_image_mode") not in [
             k for k, _ in BACKGROUND_IMAGE_MODES]:
         SETTINGS["background_image_mode"] = "cover"
+    SETTINGS["background_image_brightness"] = min(1.65, max(0.35, float(
+        SETTINGS.get("background_image_brightness", 1.0))))
+    SETTINGS["background_image_parallax"] = bool(
+        SETTINGS.get("background_image_parallax", False))
+    SETTINGS["background_image_parallax_strength"] = min(2.0, max(
+        0.0, float(SETTINGS.get("background_image_parallax_strength", 1.0))))
+    SETTINGS["rain_enabled"] = bool(SETTINGS.get("rain_enabled", False))
+    SETTINGS["rain_intensity"] = min(1.0, max(
+        0.0, float(SETTINGS.get("rain_intensity", 0.55))))
     for key in COLOR_SETTING_KEYS:
         raw = str(SETTINGS.get(key, "") or "").strip()
         c = QColor(raw) if raw else QColor()
@@ -1082,6 +1119,10 @@ def load_settings():
         1.4, max(0.6, float(SETTINGS.get("art_cover_size", 1.0))))
     SETTINGS["art_vinyl_size"] = min(
         1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0))))
+    SETTINGS["show_vinyl_center"] = bool(
+        SETTINGS.get("show_vinyl_center", True))
+    SETTINGS["vinyl_center_size"] = min(
+        1.4, max(0.4, float(SETTINGS.get("vinyl_center_size", 1.0))))
     SETTINGS["show_tonearm"] = bool(SETTINGS.get("show_tonearm", True))
     SETTINGS["tonearm_speed"] = min(
         2.5, max(0.4, float(SETTINGS.get("tonearm_speed", 1.0))))

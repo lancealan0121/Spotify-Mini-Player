@@ -13,6 +13,7 @@
 """
 import ctypes
 import os
+import random
 import subprocess
 import sys
 import time
@@ -22,7 +23,7 @@ from ctypes import wintypes
 
 from PySide6.QtCore import (QEvent, QEasingCurve, QPoint, QPointF, QRectF,
                             QSizeF, Qt, QTimer, Signal)
-from PySide6.QtGui import (QColor, QFont, QIcon, QImage, QLinearGradient,
+from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QLinearGradient,
                            QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel,
@@ -341,6 +342,7 @@ class _SourceLogo(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
+        self.setMouseTracking(True)
         self._spotify = bool(spotify)
         self._color = QColor(255, 255, 255, 170)
 
@@ -374,6 +376,169 @@ class _SourceLogo(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(SPOTIFY_GREEN))
             p.drawEllipse(r)
+
+
+class _RainLayer(QWidget):
+    """卡片背景上的輕量雨層：斜向雨線、深度速度差、底部濺落。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
+        self._rng = random.Random()
+        self._drops: list[dict] = []
+        self._splashes: list[dict] = []
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._last = time.monotonic()
+        self._intensity = 0.0
+        self.hide()
+        self.apply_settings()
+
+    def apply_settings(self):
+        self._intensity = max(
+            0.0, min(1.0, float(SETTINGS.get("rain_intensity", 0.55))))
+        active = bool(SETTINGS.get("rain_enabled", False)) and self._intensity > 0.001
+        self.apply_fps()
+        if active:
+            self._sync_drop_count()
+            self.show()
+            self._last = time.monotonic()
+            if not self._timer.isActive():
+                self._timer.start()
+        else:
+            self._timer.stop()
+            self.hide()
+        self.update()
+
+    def apply_fps(self):
+        fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
+        self._timer.setInterval(max(8, round(1000 / fps)))
+
+    def _target_count(self) -> int:
+        area = max(1, self.width() * self.height())
+        area_scale = max(0.6, area / float(CARD_W * CARD_H))
+        return max(1, min(260, round(
+            (10 + 118 * self._intensity) * area_scale)))
+
+    def _new_drop(self, reset: bool = False) -> dict:
+        w, h = max(1, self.width()), max(1, self.height())
+        depth = self._rng.random() ** 0.45
+        length = (5.0 + 18.0 * depth + 8.0 * self._intensity) * max(0.85, S(1))
+        speed = (220.0 + 520.0 * depth) * (0.75 + self._intensity * 0.55)
+        return {
+            "x": self._rng.uniform(-w * 0.15, w * 1.15),
+            "y": self._rng.uniform(-h, h) if reset else self._rng.uniform(-h * 0.45, -length),
+            "depth": depth,
+            "len": length,
+            "speed": speed,
+            "phase": self._rng.uniform(0.0, 6.283),
+        }
+
+    def _sync_drop_count(self):
+        target = self._target_count()
+        while len(self._drops) < target:
+            self._drops.append(self._new_drop(reset=True))
+        if len(self._drops) > target:
+            del self._drops[target:]
+
+    def _add_splash(self, x: float):
+        if self._intensity < 0.18 or self._rng.random() > 0.42 + self._intensity * 0.35:
+            return
+        y = self.height() - self._rng.uniform(3.0, max(4.0, self.height() * 0.13))
+        for _ in range(2 + int(self._rng.random() * 3)):
+            self._splashes.append({
+                "x": x + self._rng.uniform(-2.0, 2.0),
+                "y": y,
+                "vx": self._rng.uniform(-24.0, 24.0),
+                "vy": self._rng.uniform(-34.0, -12.0),
+                "life": self._rng.uniform(0.16, 0.28),
+                "max": 0.28,
+            })
+        if len(self._splashes) > 48:
+            del self._splashes[:-48]
+
+    def _tick(self):
+        now = time.monotonic()
+        dt = min(0.05, max(0.006, now - self._last))
+        self._last = now
+        if not self.isVisible():
+            return
+        self._sync_drop_count()
+        w, h = max(1, self.width()), max(1, self.height())
+        wind = (46.0 + 92.0 * self._intensity)
+        for d in self._drops:
+            depth = d["depth"]
+            sway = 12.0 * self._intensity * (0.25 + depth)
+            d["phase"] += dt * (1.1 + depth)
+            d["x"] += (wind * (0.35 + depth * 0.9)
+                       + sway * self._rng.uniform(-0.18, 0.18)) * dt
+            d["y"] += d["speed"] * dt
+            if d["y"] - d["len"] > h or d["x"] > w + d["len"] * 2.4:
+                self._add_splash(d["x"])
+                d.update(self._new_drop(reset=False))
+                d["x"] = self._rng.uniform(-w * 0.25, w * 1.02)
+        alive = []
+        for s in self._splashes:
+            s["life"] -= dt
+            if s["life"] <= 0.0:
+                continue
+            s["x"] += s["vx"] * dt
+            s["y"] += s["vy"] * dt
+            s["vy"] += 190.0 * dt
+            alive.append(s)
+        self._splashes = alive
+        self.update()
+
+    def resizeEvent(self, _):
+        self._sync_drop_count()
+
+    def showEvent(self, _):
+        if bool(SETTINGS.get("rain_enabled", False)) and self._intensity > 0.001:
+            self._last = time.monotonic()
+            if not self._timer.isActive():
+                self._timer.start()
+
+    def hideEvent(self, _):
+        self._timer.stop()
+
+    def paintEvent(self, _):
+        if self._intensity <= 0.001:
+            return
+        p = QPainter(self)
+        aa(p)
+        radius = Sf(SETTINGS.get("radius", 15))
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
+                            radius, radius)
+        p.setClipPath(clip)
+        for d in self._drops:
+            depth = d["depth"]
+            alpha = round((26 + depth * 92) * (0.42 + self._intensity * 0.72))
+            if alpha <= 2:
+                continue
+            length = d["len"]
+            drift = length * (0.25 + 0.18 * self._intensity)
+            col = QColor(214, 232, 255, min(150, alpha))
+            pen = QPen(col, 0.45 + depth * 1.15)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(d["x"], d["y"]),
+                       QPointF(d["x"] - drift, d["y"] - length))
+            if depth > 0.62:
+                p.setPen(QPen(QColor(255, 255, 255, min(70, alpha // 2)),
+                              0.45))
+                p.drawLine(QPointF(d["x"] + 0.8, d["y"] - length * 0.1),
+                           QPointF(d["x"] - drift * 0.42,
+                                   d["y"] - length * 0.62))
+        for s in self._splashes:
+            t = max(0.0, min(1.0, s["life"] / s["max"]))
+            p.setPen(QPen(QColor(225, 240, 255, round(72 * t)), 0.75))
+            p.drawLine(QPointF(s["x"], s["y"]),
+                       QPointF(s["x"] - s["vx"] * 0.045,
+                               s["y"] - 2.6 * t))
 
 
 class _ControlSlideOverlay(QWidget):
@@ -499,6 +664,26 @@ class Card(QWidget):
         self._bg: QPixmap | None = None      # 背景快取（漸層很貴，只畫一次）
         self._bg_image_path = ""
         self._bg_image: QImage | None = None
+        self._bg_parallax = QPointF(0.0, 0.0)
+        self._bg_parallax_from = QPointF(0.0, 0.0)
+        self._bg_parallax_to = QPointF(0.0, 0.0)
+        self._bg_parallax_anim = Anim(self)
+        self._bg_parallax_anim.valueChanged.connect(self._on_bg_parallax)
+        self._bg_parallax_factor = 0.0
+        self._bg_parallax_factor_from = 0.0
+        self._bg_parallax_factor_to = 0.0
+        self._bg_parallax_factor_anim = Anim(self)
+        self._bg_parallax_factor_anim.valueChanged.connect(
+            self._on_bg_parallax_factor)
+        self._bg_parallax_strength = float(SETTINGS.get(
+            "background_image_parallax_strength", 1.0))
+        self._bg_parallax_strength_to = self._bg_parallax_strength
+        self._bg_parallax_strength_anim = Anim(self)
+        self._bg_parallax_strength_anim.valueChanged.connect(
+            self._on_bg_parallax_strength)
+        self._bg_parallax_timer = QTimer(self)
+        self._bg_parallax_timer.timeout.connect(
+            self._update_bg_parallax_from_cursor)
         self._empty_state = True
         self._src_spotify = True
         self._src_label = "SPOTIFY"
@@ -575,6 +760,14 @@ class Card(QWidget):
         self._bg_fade_anim.valueChanged.connect(self._on_bg_fade)
         self._bg_fade_anim.finished.connect(self._bg_fade_done)
         self._build()
+        self._bg_parallax_timer.setInterval(max(8, round(1000 / max(
+            24, int(SETTINGS.get("fps", 60))))))
+        self._bg_parallax_factor = (
+            1.0 if self._bg_parallax_config_enabled() else 0.0)
+        self._bg_parallax_factor_to = self._bg_parallax_factor
+        self._bg_parallax_strength = min(2.0, max(0.0, float(
+            SETTINGS.get("background_image_parallax_strength", 1.0))))
+        self._bg_parallax_strength_to = self._bg_parallax_strength
         # 子元件建立時 accent 都是預設綠；初始主題色直接灌一次，
         # 否則 refresh_accent 看到目標色相同會早退，固定/漸層主題
         # 重啟後控制元件會停在預設綠
@@ -691,6 +884,10 @@ class Card(QWidget):
 
     def _build(self):
         W = self._W
+
+        self.rain = _RainLayer(self)
+        self.rain.setGeometry(0, 0, self._W, self._H)
+        self.rain.lower()
 
         # 封面
         art_x = S(12 if self._compact else 16)
@@ -1749,6 +1946,133 @@ class Card(QWidget):
         self._bg = None
         self.update()
 
+    def _bg_parallax_config_enabled(self) -> bool:
+        return (bool(SETTINGS.get("background_image_parallax", False))
+                and float(SETTINGS.get(
+                    "background_image_parallax_strength", 1.0)) > 0.001
+                and self._custom_bg_image() is not None)
+
+    def _bg_parallax_drawing_enabled(self) -> bool:
+        return (self._custom_bg_image() is not None
+                and self._bg_parallax_factor > 0.001)
+
+    def _bg_parallax_shift(self) -> tuple[float, float, float]:
+        if not self._bg_parallax_drawing_enabled():
+            return 0.0, 0.0, 0.0
+        strength = min(2.0, max(0.0, float(self._bg_parallax_strength)))
+        max_shift = min(self._W, self._H) * 0.045 * strength
+        max_shift *= self._bg_parallax_factor
+        dx = -self._bg_parallax.x() * max_shift
+        dy = -self._bg_parallax.y() * max_shift
+        return dx, dy, max_shift + 2.0 * self._bg_parallax_factor
+
+    def _on_bg_parallax_factor(self, value):
+        self._bg_parallax_factor = max(0.0, min(1.0, float(value)))
+        self.invalidate_bg()
+
+    def _on_bg_parallax_strength(self, value):
+        self._bg_parallax_strength = max(0.0, min(2.0, float(value)))
+        if self._bg_parallax_factor > 0.001:
+            self.invalidate_bg()
+
+    def _animate_bg_parallax_factor(self, target: float,
+                                    animate: bool = True):
+        target = max(0.0, min(1.0, float(target)))
+        if abs(target - self._bg_parallax_factor_to) < 0.001:
+            return
+        self._bg_parallax_factor_to = target
+        self._bg_parallax_factor_anim.stop()
+        ms = adur(260, 150)
+        if (not animate or not anim_on() or ms <= 0
+                or not self.isVisible()):
+            self._on_bg_parallax_factor(target)
+            return
+        self._bg_parallax_factor_anim.setStartValue(self._bg_parallax_factor)
+        self._bg_parallax_factor_anim.setEndValue(target)
+        self._bg_parallax_factor_anim.setDuration(ms)
+        self._bg_parallax_factor_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._bg_parallax_factor_anim.start()
+
+    def _animate_bg_parallax_strength(self, target: float,
+                                      animate: bool = True):
+        target = max(0.0, min(2.0, float(target)))
+        if abs(target - self._bg_parallax_strength_to) < 0.001:
+            return
+        self._bg_parallax_strength_to = target
+        self._bg_parallax_strength_anim.stop()
+        ms = adur(220, 130)
+        if (not animate or not anim_on() or ms <= 0
+                or not self.isVisible()):
+            self._on_bg_parallax_strength(target)
+            return
+        self._bg_parallax_strength_anim.setStartValue(
+            self._bg_parallax_strength)
+        self._bg_parallax_strength_anim.setEndValue(target)
+        self._bg_parallax_strength_anim.setDuration(ms)
+        self._bg_parallax_strength_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._bg_parallax_strength_anim.start()
+
+    def _on_bg_parallax(self, value):
+        t = max(0.0, min(1.0, float(value)))
+        x = (self._bg_parallax_from.x()
+             + (self._bg_parallax_to.x() - self._bg_parallax_from.x()) * t)
+        y = (self._bg_parallax_from.y()
+             + (self._bg_parallax_to.y() - self._bg_parallax_from.y()) * t)
+        self._bg_parallax = QPointF(x, y)
+        if self._bg_parallax_drawing_enabled():
+            self.invalidate_bg()
+
+    def _set_bg_parallax(self, value: QPointF, force: bool = False):
+        x = max(-1.0, min(1.0, float(value.x())))
+        y = max(-1.0, min(1.0, float(value.y())))
+        x = round(x, 3)
+        y = round(y, 3)
+        target = QPointF(x, y)
+        if (not force and abs(x - self._bg_parallax_to.x()) < 0.01
+                and abs(y - self._bg_parallax_to.y()) < 0.01):
+            return
+        self._bg_parallax_to = target
+        self._bg_parallax_anim.stop()
+        if force or not anim_on() or not self.isVisible():
+            self._bg_parallax = QPointF(target)
+            if self._bg_parallax_drawing_enabled():
+                self.invalidate_bg()
+            return
+        self._bg_parallax_from = QPointF(self._bg_parallax)
+        self._bg_parallax_anim.setStartValue(0.0)
+        self._bg_parallax_anim.setEndValue(1.0)
+        self._bg_parallax_anim.setDuration(adur(720, 480))
+        self._bg_parallax_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._bg_parallax_anim.start()
+
+    def _update_bg_parallax_from_cursor(self):
+        if not self._bg_parallax_config_enabled():
+            self._bg_parallax_timer.stop()
+            return
+        pos = self.mapFromGlobal(QCursor.pos())
+        if not self.rect().contains(pos):
+            return
+        cx = self._W / 2.0
+        cy = self._H / 2.0
+        self._set_bg_parallax(QPointF(
+            (pos.x() - cx) / max(1.0, cx),
+            (pos.y() - cy) / max(1.0, cy)))
+
+    def _sync_bg_parallax_timer(self):
+        self._bg_parallax_timer.setInterval(max(8, round(1000 / max(
+            24, int(SETTINGS.get("fps", 60))))))
+        self._animate_bg_parallax_strength(float(SETTINGS.get(
+            "background_image_parallax_strength", 1.0)))
+        self._animate_bg_parallax_factor(
+            1.0 if self._bg_parallax_config_enabled() else 0.0)
+        if self._bg_parallax_config_enabled() and self.underMouse():
+            if not self._bg_parallax_timer.isActive():
+                self._bg_parallax_timer.start()
+            self._update_bg_parallax_from_cursor()
+        else:
+            self._bg_parallax_timer.stop()
+            self._set_bg_parallax(QPointF(0.0, 0.0))
+
     def _on_bg_fade(self, value):
         self._bg_fade_t = max(0.0, min(1.0, float(value)))
         self.update()
@@ -1877,7 +2201,12 @@ class Card(QWidget):
         self.seek.apply_fps()
         self.title.apply_fps()
         self.artist.apply_fps()
+        self.rain.apply_fps()
         self.apply_fps_overlay()
+        self._sync_bg_parallax_timer()
+
+    def apply_rain_settings(self):
+        self.rain.apply_settings()
 
     def apply_marquee_setting(self):
         enabled = bool(SETTINGS.get("marquee_enabled", True))
@@ -1964,17 +2293,25 @@ class Card(QWidget):
         p.setOpacity(max(0.0, min(1.0, opacity)))
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         target = QRectF(0, 0, self._W, self._H)
+        drawn_rect = QRectF(target)
+        dx, dy, extra = self._bg_parallax_shift()
+        draw_target = target.adjusted(-extra, -extra, extra, extra)
+        draw_target.translate(dx, dy)
         if mode == "tile":
-            p.drawTiledPixmap(target, QPixmap.fromImage(img), QPointF(0, 0))
+            p.drawTiledPixmap(target, QPixmap.fromImage(img),
+                              QPointF(dx, dy))
         elif mode == "stretch":
-            p.drawImage(target, img, QRectF(0, 0, iw, ih))
+            drawn_rect = QRectF(draw_target)
+            p.drawImage(draw_target, img, QRectF(0, 0, iw, ih))
         elif mode == "contain":
-            scale = min(self._W / iw, self._H / ih)
+            scale = min(draw_target.width() / iw, draw_target.height() / ih)
             tw, th = iw * scale, ih * scale
-            tr = QRectF((self._W - tw) / 2.0, (self._H - th) / 2.0, tw, th)
+            tr = QRectF(draw_target.center().x() - tw / 2.0,
+                        draw_target.center().y() - th / 2.0, tw, th)
+            drawn_rect = QRectF(tr)
             p.drawImage(tr, img, QRectF(0, 0, iw, ih))
         else:
-            target_ratio = self._W / max(1, self._H)
+            target_ratio = draw_target.width() / max(1.0, draw_target.height())
             src_ratio = iw / max(1, ih)
             if src_ratio > target_ratio:
                 sw = ih * target_ratio
@@ -1984,7 +2321,20 @@ class Card(QWidget):
                 sh = iw / target_ratio
                 sy = (ih - sh) / 2.0
                 src = QRectF(0, sy, iw, sh)
-            p.drawImage(target, img, src)
+            drawn_rect = QRectF(draw_target)
+            p.drawImage(draw_target, img, src)
+        brightness = min(1.65, max(0.35, float(
+            SETTINGS.get("background_image_brightness", 1.0))))
+        if brightness < 0.999 or brightness > 1.001:
+            p.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+            if brightness < 0.999:
+                p.fillRect(drawn_rect, QColor(
+                    0, 0, 0, round(255 * (1.0 - brightness))))
+            else:
+                p.fillRect(drawn_rect, QColor(
+                    255, 255, 255,
+                    round(255 * ((brightness - 1.0) / brightness))))
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.restore()
         return True
 
@@ -2092,6 +2442,8 @@ class Card(QWidget):
                               - self.window().frameGeometry().topLeft())
 
     def mouseMoveEvent(self, e):
+        if self._bg_parallax_timer.isActive():
+            self._update_bg_parallax_from_cursor()
         if self._drag_off is not None and e.buttons() & Qt.LeftButton:
             self.window().move(e.globalPosition().toPoint() - self._drag_off)
 
@@ -2107,11 +2459,14 @@ class Card(QWidget):
         e.accept()
 
     def enterEvent(self, e):
+        self._sync_bg_parallax_timer()
         self._sync_controls_hover(True)
         self._sync_topbar_hover(True)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
+        self._bg_parallax_timer.stop()
+        self._set_bg_parallax(QPointF(0.0, 0.0))
         self._sync_controls_hover(False)
         self._sync_topbar_hover(False)
         super().leaveEvent(e)
@@ -2690,7 +3045,15 @@ class PlayerWindow(QWidget):
                 self._panel.set_accent(self.card.accent(), force=True)
         elif key in ("background_image", "background_image_mode"):
             self.card.transition_background(bg_old, animate=bg_can_animate)
-        elif key in ("radius", "bg_opacity", "brightness", "antialias"):
+            self.card._sync_bg_parallax_timer()
+        elif key in ("background_image_parallax",
+                     "background_image_parallax_strength"):
+            self.card.invalidate_bg()
+            self.card._sync_bg_parallax_timer()
+        elif key in ("rain_enabled", "rain_intensity"):
+            self.card.apply_rain_settings()
+        elif key in ("radius", "bg_opacity", "brightness",
+                     "background_image_brightness", "antialias"):
             self.card.invalidate_bg()
             self.update()                # 陰影貼圖依圓角快取，重畫視窗
         elif key in ("font_color", "source_text_color",
@@ -2753,6 +3116,8 @@ class PlayerWindow(QWidget):
             self.card.art.apply_motion_settings()
         elif key == "show_tonearm":
             self.card.art.set_tonearm_visible(bool(value), animate=True)
+        elif key in ("show_vinyl_center", "vinyl_center_size"):
+            self.card.art.apply_vinyl_center_settings(animate=True)
         elif key in ("cover_border", "cover_border_width",
                      "cover_border_opacity"):
             self.card.apply_cover_border(animate=True)

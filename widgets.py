@@ -337,6 +337,14 @@ class ArtView(QWidget):
         self._tonearm_target = self._tonearm_op
         self._tonearm_oa = Anim(self)
         self._tonearm_oa.valueChanged.connect(self._on_tonearm_op)
+        self._vinyl_center_hole_op = (
+            1.0 if SETTINGS.get("show_vinyl_center", True) else 0.0)
+        self._vinyl_center_size = self._vinyl_center_size_setting()
+        self._vinyl_center_hole_oa = Anim(self)
+        self._vinyl_center_hole_oa.valueChanged.connect(
+            self._on_vinyl_center_hole_op)
+        self._vinyl_center_sa = Anim(self)
+        self._vinyl_center_sa.valueChanged.connect(self._on_vinyl_center_size)
         self._spin = 0.0
         self._spin_speed = 0.0
         self._spin_cooldown = 0.0
@@ -499,6 +507,19 @@ class ArtView(QWidget):
         self._tonearm_op = max(0.0, min(1.0, float(v)))
         self.update()
 
+    @staticmethod
+    def _vinyl_center_size_setting() -> float:
+        return max(0.4, min(1.4, float(
+            SETTINGS.get("vinyl_center_size", 1.0))))
+
+    def _on_vinyl_center_hole_op(self, v):
+        self._vinyl_center_hole_op = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def _on_vinyl_center_size(self, v):
+        self._vinyl_center_size = max(0.4, min(1.4, float(v)))
+        self.update()
+
     def set_tonearm_visible(self, visible: bool, animate: bool = True):
         target = 1.0 if visible else 0.0
         self._tonearm_target = target
@@ -517,6 +538,38 @@ class ArtView(QWidget):
         self._tonearm_oa.setDuration(ms)
         self._tonearm_oa.setEasingCurve(QEasingCurve.OutCubic)
         self._tonearm_oa.start()
+
+    def apply_vinyl_center_settings(self, animate: bool = True):
+        target_op = 1.0 if SETTINGS.get("show_vinyl_center", True) else 0.0
+        target_size = self._vinyl_center_size_setting()
+        can_animate = animate and anim_on() and self.isVisible()
+
+        if abs(target_op - self._vinyl_center_hole_op) >= 0.001:
+            self._vinyl_center_hole_oa.stop()
+            ms = adur(
+                190 if target_op > self._vinyl_center_hole_op else 150, 90)
+            if not can_animate or ms <= 0:
+                self._vinyl_center_hole_op = target_op
+            else:
+                self._vinyl_center_hole_oa.setStartValue(
+                    self._vinyl_center_hole_op)
+                self._vinyl_center_hole_oa.setEndValue(target_op)
+                self._vinyl_center_hole_oa.setDuration(ms)
+                self._vinyl_center_hole_oa.setEasingCurve(QEasingCurve.OutCubic)
+                self._vinyl_center_hole_oa.start()
+
+        if abs(target_size - self._vinyl_center_size) >= 0.001:
+            self._vinyl_center_sa.stop()
+            ms = adur(220, 120)
+            if not can_animate or ms <= 0:
+                self._vinyl_center_size = target_size
+            else:
+                self._vinyl_center_sa.setStartValue(self._vinyl_center_size)
+                self._vinyl_center_sa.setEndValue(target_size)
+                self._vinyl_center_sa.setDuration(ms)
+                self._vinyl_center_sa.setEasingCurve(QEasingCurve.OutCubic)
+                self._vinyl_center_sa.start()
+        self.update()
 
     def _spin_tick(self):
         now = time.monotonic()
@@ -729,7 +782,8 @@ class ArtView(QWidget):
         p.restore()
 
     def _draw_label_pixmap(self, p: QPainter, rect: QRectF, alpha: float,
-                           pm: QPixmap | None = None):
+                           pm: QPixmap | None = None,
+                           fallback_to_current: bool = True):
         if alpha <= 0.01:
             return
         p.save()
@@ -737,11 +791,11 @@ class ArtView(QWidget):
         path = QPainterPath()
         path.addEllipse(rect)
         p.setClipPath(path)
-        if pm is None:
+        if pm is None and fallback_to_current:
             pm = self._pm
         if pm is not None:
             p.drawPixmap(rect, pm, QRectF(pm.rect()))
-        else:
+        elif fallback_to_current:
             p.fillPath(path, QColor(255, 255, 255, 28))
             p.setClipping(False)
             p.setFont(icon_font(round(rect.width() * 0.42)))
@@ -861,25 +915,45 @@ class ArtView(QWidget):
         p.rotate(self._spin)
         p.translate(-c)
         p.setPen(Qt.NoPen)
+        center_scale = self._vinyl_center_size
+        label_rad = rad * 0.54 * center_scale
+        cur_label = self._paint_pixmap(self._pm, self._pm_blur)
+        old_label = self._paint_pixmap(self._old, self._old_blur)
+        disk_rad = min(rad * 0.82, label_rad + rad * 0.09)
         p.setBrush(QColor(3, 3, 7, 245))
-        p.drawEllipse(c, rad * 0.63, rad * 0.63)
-        label = QRectF(c.x() - rad * 0.54, c.y() - rad * 0.54,
-                       rad * 1.08, rad * 1.08)
+        p.drawEllipse(c, disk_rad, disk_rad)
+
+        label = QRectF(c.x() - label_rad, c.y() - label_rad,
+                       label_rad * 2.0, label_rad * 2.0)
         if self._t < 1.0:
             self._draw_label_pixmap(
-                p, label, alpha * (1.0 - self._t),
-                self._paint_pixmap(self._old, self._old_blur))
+                p, label, alpha * (1.0 - self._t), old_label,
+                fallback_to_current=False)
             self._draw_label_pixmap(
-                p, label, alpha * self._t,
-                self._paint_pixmap(self._pm, self._pm_blur))
+                p, label, alpha * self._t, cur_label,
+                fallback_to_current=False)
         else:
             self._draw_label_pixmap(
-                p, label, alpha,
-                self._paint_pixmap(self._pm, self._pm_blur))
+                p, label, alpha, cur_label)
+
+        ring_rad = min(rad * 0.85, label_rad + rad * 0.03)
         p.setClipping(False)
         p.setPen(QPen(QColor(0, 0, 0, 185), max(2.0, rad * 0.035)))
         p.setBrush(Qt.NoBrush)
-        p.drawEllipse(c, rad * 0.57, rad * 0.57)
+        p.drawEllipse(c, ring_rad, ring_rad)
+
+        if self._vinyl_center_hole_op > 0.001:
+            hole_rad = max(2.0, rad * 0.065)
+            p.save()
+            p.setOpacity(p.opacity() * self._vinyl_center_hole_op)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(3, 3, 7, 245))
+            p.drawEllipse(c, hole_rad, hole_rad)
+            p.setPen(QPen(QColor(255, 255, 255, 32),
+                          max(0.8, rad * 0.010)))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(c, hole_rad * 1.26, hole_rad * 1.26)
+            p.restore()
         p.restore()
 
         p.restore()
@@ -2045,9 +2119,12 @@ class SeekBar(QWidget):
         wave_amp = float(SETTINGS.get("seek_wave_amp", 1.0))
         amp = h * self.WAVE_AMP * wave_amp * self._amp
         k = 2 * math.pi / max(26.0, h * 1.9)
+        min_y = bar_h * 0.60
+        max_y = h - bar_h * 0.60
 
         def wy(x: float) -> float:
-            return cy + math.sin(x * k - self._phase) * amp
+            y = cy + math.sin(x * k - self._phase) * amp
+            return max(min_y, min(max_y, y))
 
         def wave_path(x0: float, x1: float) -> QPainterPath:
             path = QPainterPath()
@@ -2146,7 +2223,7 @@ class SeekBar(QWidget):
         gray = self._track_color()
 
         wave_y = cy
-        wavy = self._amp > 0.001
+        wavy = style == "wave" and self._amp > 0.001
         if wavy:
             self._paint_wave_antialiased(p, float(w), h, pad, tw, cy,
                                          bar_h, ratio, fill_w, grad, gray,
