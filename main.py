@@ -404,6 +404,9 @@ class _WeatherLayer(QWidget):
         self._direction = 18.0
         self._snow_symbols = ("❄", "❅", "❆")
         self._snow_cache: dict[tuple[str, int, int], QPixmap] = {}
+        self._custom_image_path = ""
+        self._custom_image: QImage | None = None
+        self._custom_image_cache: dict[tuple[str, int, int], QPixmap] = {}
         self._fade = 0.0
         self._active_target = False
         self._fade_anim = Anim(self)
@@ -435,6 +438,7 @@ class _WeatherLayer(QWidget):
                 0.25, min(2.5, float(SETTINGS.get(
                     f"{prefix}_fall_speed", 1.0))))
             if self._effect == "custom":
+                self._load_custom_image()
                 raw_symbols = str(
                     SETTINGS.get("custom_symbols", "❄,❅,❆") or "")
                 symbols = tuple(s.strip()[:4] for s in raw_symbols.split(",")
@@ -655,6 +659,36 @@ class _WeatherLayer(QWidget):
     def hideEvent(self, _):
         self._timer.stop()
 
+    def _load_custom_image(self) -> QImage | None:
+        path = str(SETTINGS.get("custom_image", "") or "").strip()
+        if path != self._custom_image_path:
+            self._custom_image_path = path
+            self._custom_image_cache.clear()
+            self._custom_image = QImage(path) if path else None
+        if self._custom_image is None or self._custom_image.isNull():
+            return None
+        return self._custom_image
+
+    def _custom_image_pixmap(self, px: float) -> QPixmap | None:
+        img = self._load_custom_image()
+        if img is None:
+            return None
+        dpr = max(1.0, self.devicePixelRatioF())
+        px_i = max(6, min(42, round(px)))
+        dpr_i = max(1, round(dpr * 100))
+        key = (self._custom_image_path, px_i, dpr_i)
+        pm = self._custom_image_cache.get(key)
+        if pm is not None:
+            return pm
+        side = max(1, round(px_i * dpr))
+        pm = QPixmap.fromImage(img).scaled(
+            side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pm.setDevicePixelRatio(dpr)
+        if len(self._custom_image_cache) > 48:
+            self._custom_image_cache.clear()
+        self._custom_image_cache[key] = pm
+        return pm
+
     def _snow_glyph_pixmap(self, glyph: str, px: float) -> QPixmap:
         dpr = max(1.0, self.devicePixelRatioF())
         px_i = max(7, min(30, round(px)))
@@ -699,9 +733,15 @@ class _WeatherLayer(QWidget):
                 if alpha <= 2:
                     continue
                 size = max(0.5, float(d.get("size", 2.0)))
-                glyph_px = max(7.0, min(28.0, size * 4.2))
-                pm = self._snow_glyph_pixmap(str(d.get("glyph", "❄")),
-                                             glyph_px)
+                if self._effect == "custom":
+                    pm = self._custom_image_pixmap(
+                        max(7.0, min(36.0, size * 5.2)))
+                else:
+                    pm = None
+                if pm is None:
+                    glyph_px = max(7.0, min(28.0, size * 4.2))
+                    pm = self._snow_glyph_pixmap(str(d.get("glyph", "❄")),
+                                                 glyph_px)
                 dpr = max(1.0, pm.devicePixelRatioF())
                 pw, ph = pm.width() / dpr, pm.height() / dpr
                 p.save()
@@ -1050,8 +1090,10 @@ class Card(QWidget):
         self._bg_parallax_strength_anim.valueChanged.connect(
             self._on_bg_parallax_strength)
         self._bg_parallax_timer = QTimer(self)
+        self._bg_parallax_timer.setTimerType(Qt.CoarseTimer)
         self._bg_parallax_timer.timeout.connect(
             self._update_bg_parallax_from_cursor)
+        self._bg_parallax_drag_suspended = False
         self._empty_state = True
         self._src_spotify = True
         self._src_label = "SPOTIFY"
@@ -1128,8 +1170,7 @@ class Card(QWidget):
         self._bg_fade_anim.valueChanged.connect(self._on_bg_fade)
         self._bg_fade_anim.finished.connect(self._bg_fade_done)
         self._build()
-        self._bg_parallax_timer.setInterval(max(8, round(1000 / max(
-            24, int(SETTINGS.get("fps", 60))))))
+        self._bg_parallax_timer.setInterval(self._bg_parallax_interval())
         self._bg_parallax_factor = (
             1.0 if self._bg_parallax_config_enabled() else 0.0)
         self._bg_parallax_factor_to = self._bg_parallax_factor
@@ -1839,7 +1880,7 @@ class Card(QWidget):
 
     def _animate_info_focus(self, target: float, animate: bool = True):
         self._info_anim.stop()
-        ms = adur(260, 150)
+        ms = adur(650, 375)
         if not animate or not anim_on() or ms <= 0 or not self.isVisible():
             self._on_info_focus(target)
             return
@@ -2325,6 +2366,13 @@ class Card(QWidget):
         return (self._custom_bg_image() is not None
                 and self._bg_parallax_factor > 0.001)
 
+    def _bg_parallax_fps(self) -> int:
+        return max(5, min(60, int(SETTINGS.get(
+            "background_image_parallax_fps", 30))))
+
+    def _bg_parallax_interval(self) -> int:
+        return max(16, round(1000 / self._bg_parallax_fps()))
+
     def _bg_parallax_shift(self) -> tuple[float, float, float]:
         if not self._bg_parallax_drawing_enabled():
             return 0.0, 0.0, 0.0
@@ -2369,7 +2417,7 @@ class Card(QWidget):
             return
         self._bg_parallax_strength_to = target
         self._bg_parallax_strength_anim.stop()
-        ms = adur(220, 130)
+        ms = adur(550, 325)
         if (not animate or not anim_on() or ms <= 0
                 or not self.isVisible()):
             self._on_bg_parallax_strength(target)
@@ -2394,53 +2442,77 @@ class Card(QWidget):
     def _set_bg_parallax(self, value: QPointF, force: bool = False):
         x = max(-1.0, min(1.0, float(value.x())))
         y = max(-1.0, min(1.0, float(value.y())))
-        x = round(x, 3)
-        y = round(y, 3)
+        x = round(x, 2)
+        y = round(y, 2)
         target = QPointF(x, y)
         if (not force and abs(x - self._bg_parallax_to.x()) < 0.01
                 and abs(y - self._bg_parallax_to.y()) < 0.01):
             return
         self._bg_parallax_to = target
         self._bg_parallax_anim.stop()
-        if force or not anim_on() or not self.isVisible():
-            self._bg_parallax = QPointF(target)
-            if self._bg_parallax_drawing_enabled():
-                self.invalidate_bg()
+        if not force:
             return
-        self._bg_parallax_from = QPointF(self._bg_parallax)
-        self._bg_parallax_anim.setStartValue(0.0)
-        self._bg_parallax_anim.setEndValue(1.0)
-        self._bg_parallax_anim.setDuration(adur(720, 480))
-        self._bg_parallax_anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._bg_parallax_anim.start()
+        self._bg_parallax = QPointF(target)
+        if self._bg_parallax_drawing_enabled():
+            self.invalidate_bg()
+
+    def _advance_bg_parallax(self) -> bool:
+        dx = self._bg_parallax_to.x() - self._bg_parallax.x()
+        dy = self._bg_parallax_to.y() - self._bg_parallax.y()
+        if abs(dx) < 0.002 and abs(dy) < 0.002:
+            if (self._bg_parallax.x() != self._bg_parallax_to.x()
+                    or self._bg_parallax.y() != self._bg_parallax_to.y()):
+                self._bg_parallax = QPointF(self._bg_parallax_to)
+                if self._bg_parallax_drawing_enabled():
+                    self.invalidate_bg()
+            return False
+        fps = self._bg_parallax_fps()
+        alpha = max(0.04, min(0.152, 1.0 - math.exp(-1.0 / (fps * 0.275))))
+        self._bg_parallax = QPointF(
+            self._bg_parallax.x() + dx * alpha,
+            self._bg_parallax.y() + dy * alpha)
+        if self._bg_parallax_drawing_enabled():
+            self.invalidate_bg()
+        return True
 
     def _update_bg_parallax_from_cursor(self):
-        if not self._bg_parallax_config_enabled():
+        if (self._bg_parallax_drag_suspended
+                or not self._bg_parallax_config_enabled()):
             self._bg_parallax_timer.stop()
             return
         pos = self.mapFromGlobal(QCursor.pos())
-        if not self.rect().contains(pos):
-            return
-        cx = self._W / 2.0
-        cy = self._H / 2.0
-        self._set_bg_parallax(QPointF(
-            (pos.x() - cx) / max(1.0, cx),
-            (pos.y() - cy) / max(1.0, cy)))
+        inside = self.rect().contains(pos)
+        if inside:
+            cx = self._W / 2.0
+            cy = self._H / 2.0
+            self._set_bg_parallax(QPointF(
+                (pos.x() - cx) / max(1.0, cx),
+                (pos.y() - cy) / max(1.0, cy)))
+        else:
+            self._set_bg_parallax(QPointF(0.0, 0.0))
+        moving = self._advance_bg_parallax()
+        if not inside and not moving:
+            self._bg_parallax_timer.stop()
 
     def _sync_bg_parallax_timer(self):
-        self._bg_parallax_timer.setInterval(max(8, round(1000 / max(
-            24, int(SETTINGS.get("fps", 60))))))
+        self._bg_parallax_timer.setInterval(self._bg_parallax_interval())
         self._animate_bg_parallax_strength(float(SETTINGS.get(
             "background_image_parallax_strength", 1.0)))
         self._animate_bg_parallax_factor(
             1.0 if self._bg_parallax_config_enabled() else 0.0)
-        if self._bg_parallax_config_enabled() and self.underMouse():
+        if (self._bg_parallax_config_enabled() and self.underMouse()
+                and not self._bg_parallax_drag_suspended):
             if not self._bg_parallax_timer.isActive():
                 self._bg_parallax_timer.start()
             self._update_bg_parallax_from_cursor()
         else:
-            self._bg_parallax_timer.stop()
             self._set_bg_parallax(QPointF(0.0, 0.0))
+            if self._bg_parallax_config_enabled():
+                if not self._bg_parallax_timer.isActive():
+                    self._bg_parallax_timer.start()
+            else:
+                self._bg_parallax_timer.stop()
+                self._set_bg_parallax(QPointF(0.0, 0.0), force=True)
 
     def _on_bg_fade(self, value):
         self._bg_fade_t = max(0.0, min(1.0, float(value)))
@@ -2813,16 +2885,19 @@ class Card(QWidget):
         if e.button() == Qt.LeftButton:
             self._drag_off = (e.globalPosition().toPoint()
                               - self.window().frameGeometry().topLeft())
+            if self._bg_parallax_timer.isActive():
+                self._bg_parallax_drag_suspended = True
+                self._bg_parallax_timer.stop()
 
     def mouseMoveEvent(self, e):
-        if self._bg_parallax_timer.isActive():
-            self._update_bg_parallax_from_cursor()
         if self._drag_off is not None and e.buttons() & Qt.LeftButton:
             self.window().move(e.globalPosition().toPoint() - self._drag_off)
 
     def mouseReleaseEvent(self, e):
         if self._drag_off is not None:
             self._drag_off = None
+            self._bg_parallax_drag_suspended = False
+            self._sync_bg_parallax_timer()
             self.drag_finished.emit()
 
     def wheelEvent(self, e):
@@ -2838,8 +2913,15 @@ class Card(QWidget):
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self._bg_parallax_timer.stop()
+        self._bg_parallax_drag_suspended = False
         self._set_bg_parallax(QPointF(0.0, 0.0))
+        if self._bg_parallax_config_enabled():
+            self._bg_parallax_timer.setInterval(self._bg_parallax_interval())
+            if not self._bg_parallax_timer.isActive():
+                self._bg_parallax_timer.start()
+        else:
+            self._bg_parallax_timer.stop()
+            self._set_bg_parallax(QPointF(0.0, 0.0), force=True)
         self._sync_controls_hover(False)
         self._sync_topbar_hover(False)
         super().leaveEvent(e)
@@ -3420,7 +3502,8 @@ class PlayerWindow(QWidget):
             self.card.transition_background(bg_old, animate=bg_can_animate)
             self.card._sync_bg_parallax_timer()
         elif key in ("background_image_parallax",
-                     "background_image_parallax_strength"):
+                     "background_image_parallax_strength",
+                     "background_image_parallax_fps"):
             self.card.invalidate_bg()
             self.card._sync_bg_parallax_timer()
         elif key == "weather_effect":

@@ -1846,10 +1846,12 @@ class _PathDisplay(QWidget):
 class ImagePathPicker(QWidget):
     changed = Signal(str)
 
-    def __init__(self, value: str, accent=None, parent=None):
+    def __init__(self, value: str, accent=None, parent=None,
+                 title_key: str = "background_image"):
         super().__init__(parent)
         self._value = str(value or "")
         self._accent = QColor(accent) if accent else QColor("#1DB954")
+        self._title_key = title_key
         self.setFixedHeight(panel_px(30))
         self.setMinimumWidth(panel_px(210))
         lay = QHBoxLayout(self)
@@ -1891,7 +1893,7 @@ class ImagePathPicker(QWidget):
         if os.path.isfile(start):
             start = os.path.dirname(start)
         path, _ = QFileDialog.getOpenFileName(
-            self, tr("background_image"), start,
+            self, tr(self._title_key), start,
             "Images (*.png *.jpg *.jpeg *.bmp *.webp);;All Files (*)")
         if not path:
             return
@@ -3915,6 +3917,13 @@ class SettingsPanel(QWidget):
                     SETTINGS.get("background_image_parallax_strength", 1.0) * 100,
                     fmt=lambda v: f"{v:.0f}%",
                     accent=self._accent))
+            self.sl_bg_image_parallax_fps = row(
+                "background_image_parallax_fps",
+                PanelSlider(
+                    5, 60,
+                    SETTINGS.get("background_image_parallax_fps", 30),
+                    fmt=lambda v: f"{v:.0f}",
+                    step=1, accent=self._accent))
             weather = SETTINGS.get("weather_effect", "rain")
             if weather not in ("rain", "snow", "custom"):
                 weather = "rain"
@@ -3971,6 +3980,9 @@ class SettingsPanel(QWidget):
             self.ed_custom_symbols.setFont(panel_font(11))
             self.sl_custom_symbols = row(
                 "custom_symbols", self.ed_custom_symbols)
+            self.custom_image = row("custom_image", ImagePathPicker(
+                SETTINGS.get("custom_image", ""), accent=self._accent,
+                title_key="custom_image"))
             self.sync_weather_controls(adjust=False)
             self.tg_lightning_enabled = row("lightning_enabled",
                 Toggle(bool(SETTINGS.get("lightning_enabled", False)),
@@ -4343,6 +4355,9 @@ class SettingsPanel(QWidget):
         self.sl_bg_image_parallax_strength.changed.connect(
             lambda v: self.setting_changed.emit(
                 "background_image_parallax_strength", v / 100.0))
+        self.sl_bg_image_parallax_fps.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "background_image_parallax_fps", int(v)))
         self.sg_weather_effect.changed.connect(
             lambda v: self.setting_changed.emit("weather_effect", v))
         self.tg_weather_enabled.changed.connect(
@@ -4376,6 +4391,8 @@ class SettingsPanel(QWidget):
         self.ed_custom_symbols.editingFinished.connect(
             lambda: self.setting_changed.emit(
                 "custom_symbols", self.ed_custom_symbols.text()))
+        self.custom_image.changed.connect(
+            lambda v: self.setting_changed.emit("custom_image", v))
         self.tg_lightning_enabled.changed.connect(
             lambda v: self.setting_changed.emit("lightning_enabled", v))
         self.sl_lightning_size.changed.connect(
@@ -5586,6 +5603,8 @@ class SettingsPanel(QWidget):
         self.btn_reset.update()
         if hasattr(self, "bg_image"):
             self.bg_image.refresh_language()
+        if hasattr(self, "custom_image"):
+            self.custom_image.refresh_language()
         for w in (getattr(self, "cp_font_color", None),
                   getattr(self, "cp_source_text_color", None),
                   getattr(self, "cp_number_color", None),
@@ -5755,6 +5774,7 @@ class SettingsPanel(QWidget):
         controls = (self.sl_opacity, self.sl_brightness,
                     self.sl_bg_image_brightness,
                     self.sl_bg_image_parallax_strength,
+                    self.sl_bg_image_parallax_fps,
                     self.sl_weather_intensity,
                     self.sl_rain_length, self.sl_rain_thickness,
                     self.sl_rain_direction, self.sl_rain_fall_speed,
@@ -5792,7 +5812,7 @@ class SettingsPanel(QWidget):
                     self.sg_art_mode, self.sg_cover_shape,
                     self.sg_lang, self.btn_advanced, self.btn_reset,
                     self.btn_advanced_close, self.fp_font,
-                    self.bg_image, self.cp_font_color,
+                    self.bg_image, self.custom_image, self.cp_font_color,
                     self.cp_source_text_color, self.cp_number_color,
                     self.cp_topbar_icon_color, self.cp_seek_fill_color,
                     self.cp_seek_thumb_color, self.cp_seek_track_color,
@@ -5841,6 +5861,7 @@ class SettingsPanel(QWidget):
                     "custom_symbols", "❄,❅,❆"):
                 self.ed_custom_symbols.setText(
                     str(SETTINGS.get("custom_symbols", "❄,❅,❆")))
+            self.custom_image.set_value(SETTINGS.get("custom_image", ""))
             rain = weather == "rain"
             snow = weather == "snow"
             custom = weather == "custom"
@@ -5854,7 +5875,7 @@ class SettingsPanel(QWidget):
                                               adjust and animate)
             for control in (self.sl_custom_size, self.sl_custom_spin_speed,
                             self.sl_custom_fall_speed,
-                            self.ed_custom_symbols):
+                            self.ed_custom_symbols, self.custom_image):
                 self._set_weather_row_visible(control, custom,
                                               adjust and animate)
             if adjust and self._body is not None:

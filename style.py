@@ -127,6 +127,7 @@ DEFAULTS = {
     "background_image_brightness": 1.0,  # 0.35 ~ 1.65，自訂背景圖亮度
     "background_image_parallax": False,  # 自訂背景圖滑鼠視差
     "background_image_parallax_strength": 1.0,  # 0.0 ~ 2.0
+    "background_image_parallax_fps": 30,  # 5 ~ 60，視差更新率
     "weather_enabled": False,  # 降水效果總開關
     "weather_effect": "rain",  # rain / snow / custom，目前編輯與顯示的降水類型
     "rain_enabled": False,   # 飄雨效果
@@ -147,6 +148,7 @@ DEFAULTS = {
     "custom_spin_speed": 1.0, # 0.0 ~ 3.0，自訂符號旋轉速度
     "custom_fall_speed": 1.0, # 0.25 ~ 2.5，自訂符號下落速度
     "custom_symbols": "❄,❅,❆", # 逗號分隔的自訂符號
+    "custom_image": "",      # 自訂飄落圖片路徑，空字串 = 使用文字符號
     "lightning_enabled": False,
     "lightning_size": 1.0,       # 0.3 ~ 2.0，閃電尺寸
     "lightning_thickness": 1.0,  # 0.4 ~ 3.0，閃電線條粗細
@@ -312,6 +314,7 @@ _I18N = {
         "background_image_brightness": "圖片亮度",
         "background_image_parallax": "背景視差",
         "background_image_parallax_strength": "視差強度",
+        "background_image_parallax_fps": "視差 FPS",
         "weather_enabled": "降水效果",
         "weather_effect": "降水類型",
         "weather_rain": "雨",
@@ -329,6 +332,7 @@ _I18N = {
         "custom_spin_speed": "旋轉速度",
         "custom_fall_speed": "下落速度",
         "custom_symbols": "自訂符號",
+        "custom_image": "自訂圖片",
         "rain_enabled": "飄雨效果",
         "rain_intensity": "雨量強度",
         "rain_length": "雨長度",
@@ -540,6 +544,7 @@ _I18N = {
         "background_image_brightness": "画像の明るさ",
         "background_image_parallax": "背景視差",
         "background_image_parallax_strength": "視差の強さ",
+        "background_image_parallax_fps": "視差 FPS",
         "weather_enabled": "降水エフェクト",
         "weather_effect": "降水タイプ",
         "weather_rain": "雨",
@@ -557,6 +562,7 @@ _I18N = {
         "custom_spin_speed": "回転速度",
         "custom_fall_speed": "落下速度",
         "custom_symbols": "カスタム記号",
+        "custom_image": "カスタム画像",
         "rain_enabled": "雨エフェクト",
         "rain_intensity": "雨の強さ",
         "rain_length": "雨の長さ",
@@ -768,6 +774,7 @@ _I18N = {
         "background_image_brightness": "Image Brightness",
         "background_image_parallax": "Parallax",
         "background_image_parallax_strength": "Parallax Strength",
+        "background_image_parallax_fps": "Parallax FPS",
         "weather_enabled": "Precipitation",
         "weather_effect": "Precipitation Type",
         "weather_rain": "Rain",
@@ -785,6 +792,7 @@ _I18N = {
         "custom_spin_speed": "Spin Speed",
         "custom_fall_speed": "Fall Speed",
         "custom_symbols": "Custom Symbols",
+        "custom_image": "Custom Image",
         "rain_enabled": "Rain",
         "rain_intensity": "Rain Intensity",
         "rain_length": "Rain Length",
@@ -1199,6 +1207,8 @@ def load_settings():
         SETTINGS.get("background_image_parallax", False))
     SETTINGS["background_image_parallax_strength"] = min(2.0, max(
         0.0, float(SETTINGS.get("background_image_parallax_strength", 1.0))))
+    SETTINGS["background_image_parallax_fps"] = min(60, max(
+        5, int(SETTINGS.get("background_image_parallax_fps", 30))))
     if "weather_enabled" not in data:
         SETTINGS["weather_enabled"] = bool(SETTINGS.get("rain_enabled", False))
     SETTINGS["weather_enabled"] = bool(SETTINGS.get("weather_enabled", False))
@@ -1248,6 +1258,8 @@ def load_settings():
     symbols = [s.strip()[:4] for s in raw_symbols.split(",") if s.strip()]
     SETTINGS["custom_symbols"] = (
         ",".join(symbols[:24]) if symbols else DEFAULTS["custom_symbols"])
+    SETTINGS["custom_image"] = str(
+        SETTINGS.get("custom_image", "") or "").strip()
     SETTINGS["lightning_enabled"] = bool(
         SETTINGS.get("lightning_enabled", False))
     SETTINGS["lightning_size"] = min(2.0, max(
