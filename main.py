@@ -2883,8 +2883,11 @@ class Card(QWidget):
     # ---- 拖曳整個視窗 ----
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
+            win = self.window()
+            if hasattr(win, "_stop_keep_on_screen_anim"):
+                win._stop_keep_on_screen_anim()
             self._drag_off = (e.globalPosition().toPoint()
-                              - self.window().frameGeometry().topLeft())
+                              - win.frameGeometry().topLeft())
             if self._bg_parallax_timer.isActive():
                 self._bg_parallax_drag_suspended = True
                 self._bg_parallax_timer.stop()
@@ -3272,6 +3275,10 @@ class PlayerWindow(QWidget):
         self._shadow_op = 1.0 if SETTINGS.get("shadow", True) else 0.0
         self._shadow_anim = Anim(self)
         self._shadow_anim.valueChanged.connect(self._on_shadow_op)
+        self._keep_pos_anim = Anim(self)
+        self._keep_pos_anim.valueChanged.connect(self._on_keep_pos_anim)
+        self._keep_from_pos = QPoint()
+        self._keep_to_pos = QPoint()
 
         self.card: Card | None = None
         # 系統匣圖示跟著主題色：accent 過渡每幀 emit，去抖後只重畫一次
@@ -3445,7 +3452,9 @@ class PlayerWindow(QWidget):
     # ---- 設定 ----
     def _save_cfg(self):
         self._keep_on_screen()
-        SETTINGS["x"], SETTINGS["y"] = self.x(), self.y()
+        pos = (self._keep_to_pos if self._keep_pos_anim.state() == Anim.Running
+               else self.pos())
+        SETTINGS["x"], SETTINGS["y"] = pos.x(), pos.y()
         SETTINGS["pinned"] = self.card.btn_pin.isChecked()
         save_settings()
 
@@ -3491,6 +3500,11 @@ class PlayerWindow(QWidget):
         elif key == "settings_panel_type":
             if self._panel is not None:
                 self._panel.rebuild_for_panel_type()
+        elif key == "auto_keep_on_screen":
+            if bool(value):
+                self._keep_on_screen()
+                if self._panel is not None and self._panel.isVisible():
+                    self._panel._keep_on_screen()
         elif key in self._hotkey_ids:
             self._register_hotkey(str(value), key)
         elif key == "theme":
@@ -3676,6 +3690,8 @@ class PlayerWindow(QWidget):
         return min(screens, key=dist2).availableGeometry()
 
     def _keep_on_screen(self):
+        if not SETTINGS.get("auto_keep_on_screen", True):
+            return
         geo = self._screen_geometry_for_window()
         if self.width() >= geo.width():
             x = geo.left()
@@ -3688,7 +3704,38 @@ class PlayerWindow(QWidget):
             y = min(max(self.y(), geo.top()),
                     geo.bottom() + 1 - self.height())
         if x != self.x() or y != self.y():
-            self.move(x, y)
+            self._move_to_screen_pos(QPoint(x, y), animate=True)
+
+    def _move_to_screen_pos(self, pos: QPoint, animate: bool = True):
+        if self.pos() == pos:
+            return
+        ms = adur(230, 130)
+        if (not animate or not self.isVisible() or not anim_on()
+                or ms <= 0):
+            self._stop_keep_on_screen_anim()
+            self.move(pos)
+            return
+        if self._keep_pos_anim.state() == Anim.Running:
+            self._stop_keep_on_screen_anim()
+        self._keep_from_pos = QPoint(self.pos())
+        self._keep_to_pos = QPoint(pos)
+        self._keep_pos_anim.setStartValue(0.0)
+        self._keep_pos_anim.setEndValue(1.0)
+        self._keep_pos_anim.setDuration(ms)
+        self._keep_pos_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._keep_pos_anim.start()
+
+    def _on_keep_pos_anim(self, value):
+        t = max(0.0, min(1.0, float(value)))
+        x = round(self._keep_from_pos.x()
+                  + (self._keep_to_pos.x() - self._keep_from_pos.x()) * t)
+        y = round(self._keep_from_pos.y()
+                  + (self._keep_to_pos.y() - self._keep_from_pos.y()) * t)
+        self.move(x, y)
+
+    def _stop_keep_on_screen_anim(self):
+        if self._keep_pos_anim.state() == Anim.Running:
+            self._keep_pos_anim.stop()
 
     # ---- 接線 ----
     def _wire(self):
@@ -3732,6 +3779,7 @@ class PlayerWindow(QWidget):
         def press(e):
             if e.button() != Qt.LeftButton:
                 return
+            self._stop_keep_on_screen_anim()
             gp = e.globalPosition().toPoint()
             self._open_drag = {
                 "widget": widget,

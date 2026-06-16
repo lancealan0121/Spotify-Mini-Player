@@ -1297,7 +1297,7 @@ class ArtView(QWidget):
         cover_rad = rad * 0.78
         gap = rad * 0.065
         base_rad = cover_rad + gap
-        max_h = max(5.0, self.pad * 0.58)
+        max_h = max(5.0, self.pad * 0.95)
         spectrum = self._audio_spectrum if (
             meter_mode or self._audio_morph > 0.001
             or self._audio_fade_reverse
@@ -1394,15 +1394,12 @@ class ArtView(QWidget):
                 freq_t = spec_idx / max(1, len(spectrum) - 1)
                 band = max(0.0, min(1.0, float(spectrum[spec_idx])))
                 high_t = max(0.0, min(1.0, (freq_t - 0.84) / 0.16))
-                high_boost = 1.0 + 0.08 * high_t * high_t * (3.0 - 2.0 * high_t)
+                high_boost = 1.0 + 0.10 * high_t * high_t * (3.0 - 2.0 * high_t)
                 band = max(0.0, min(1.0, band * high_boost))
-                low_t = max(0.0, min(1.0, 1.0 - freq_t / 0.39))
-                low_reduce = 1.0 - 0.20 * low_t * low_t * (3.0 - 2.0 * low_t)
-                band = max(0.0, min(1.0, band * low_reduce))
-                avg = max(0.0, min(1.0, energy))
-                band = max(0.0, min(1.0, avg + (band - avg) * 1.18))
-                floor = avg * (0.18 + 0.08 * math.sin(phase * 1.4 + i * 0.37) ** 2)
-                band = max(0.0, min(1.0, floor + band * 0.86))
+                # 每根 bar 忠實吃自己的頻段值，不再往全域 energy 拉平、
+                # 也不削低音——低/中/高各跳各的，頻段分離才有 Wallpaper
+                # Engine 的層次與重拍衝擊。極小靜態地板避免歸零時看起來斷掉。
+                band = max(0.0, min(1.0, 0.02 + band * 0.98))
                 mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
                 pulse_h = max_h * (idle + energy * (0.25 + 0.75 * mix))
                 if not self._playing and energy <= 0.02:

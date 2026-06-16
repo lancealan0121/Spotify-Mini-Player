@@ -3893,6 +3893,9 @@ class SettingsPanel(QWidget):
             self.sg_panel_type = row("settings_panel_type", Segmented(
                 settings_panel_type_options(), SETTINGS["settings_panel_type"],
                 accent=self._accent))
+            self.tg_auto_keep_on_screen = row("auto_keep_on_screen", Toggle(
+                bool(SETTINGS.get("auto_keep_on_screen", True)),
+                accent=self._accent), stretch=False)
             self.sg_source = row("source", Segmented(
                 source_options(), SETTINGS["source"], accent=self._accent))
             self.tg_startup = row("startup_enabled", Toggle(
@@ -4439,6 +4442,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("source", v))
         self.sg_panel_type.changed.connect(
             lambda v: self.setting_changed.emit("settings_panel_type", v))
+        self.tg_auto_keep_on_screen.changed.connect(
+            lambda v: self.setting_changed.emit("auto_keep_on_screen", v))
         if self.sg_panel_category is not None:
             self.sg_panel_category.changed.connect(self._set_panel_category)
         self.tg_startup.changed.connect(
@@ -4767,6 +4772,8 @@ class SettingsPanel(QWidget):
         return min(screens, key=dist2).availableGeometry()
 
     def _bounded_window_pos(self, pos: QPoint, size: QSize) -> QPoint:
+        if not SETTINGS.get("auto_keep_on_screen", True):
+            return QPoint(pos)
         geo = self._screen_geometry_for(pos, size)
         if size.width() >= geo.width():
             x = geo.left()
@@ -5278,6 +5285,8 @@ class SettingsPanel(QWidget):
         return "right" if right_space >= left_space else "left"
 
     def _keep_on_screen(self):
+        if not SETTINGS.get("auto_keep_on_screen", True):
+            return
         self._set_window_geometry(self.pos(), self.size(), animate=True)
 
     def _toggle_advanced_panel(self, open_: bool):
@@ -5846,7 +5855,8 @@ class SettingsPanel(QWidget):
                     self.cp_source_text_color, self.cp_number_color,
                     self.cp_topbar_icon_color, self.cp_seek_fill_color,
                     self.cp_seek_thumb_color, self.cp_seek_track_color,
-                    self.tg_startup, self.tg_aa, self.tg_src,
+                    self.tg_startup, self.tg_auto_keep_on_screen,
+                    self.tg_aa, self.tg_src,
                     self.tg_bg_image_parallax,
                     self.tg_weather_enabled, self.tg_lightning_enabled,
                     self.tg_lightning_duration_random,
@@ -6097,6 +6107,25 @@ class SettingsPanel(QWidget):
     def open_at(self, pos: QPoint):
         self._set_window_geometry(pos, self.size(), animate=False)
         fade_in(self)
+        QTimer.singleShot(0, self._settle_open_geometry)
+        QTimer.singleShot(80, self._settle_open_geometry)
+
+    def _settle_open_geometry(self):
+        if self._body is None or not self.isVisible():
+            return
+        panels = [self._body]
+        if self.advanced_box is not None:
+            panels.append(self.advanced_box)
+        panels.extend(self._full_boxes)
+        for panel in panels:
+            lay = self._panel_layout(panel)
+            if lay is not None:
+                lay.activate()
+        self._sync_section_container_heights()
+        self._apply_body_geometry(animate=False)
+        self.update()
+        for panel in panels:
+            panel.update()
 
     def animated_close(self):
         fade_out(self, self.hide)

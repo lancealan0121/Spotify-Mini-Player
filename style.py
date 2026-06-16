@@ -67,6 +67,7 @@ DEFAULTS = {
     "scale": 1.7038678271081824,          # 0.8 ~ 3.0
     "settings_scale": 1.199758606299479, # 0.8 ~ 2.0
     "settings_panel_type": "normal",  # normal / categories
+    "auto_keep_on_screen": True,  # 視窗超出螢幕時自動拉回可見範圍
     "radius": 15,           # 6 ~ 28
     "anim": "full",
     "anim_enabled": True,
@@ -242,6 +243,7 @@ _I18N = {
         "settings_panel_type": "設定面板類型",
         "settings_panel_normal": "一般",
         "settings_panel_categories": "分類",
+        "auto_keep_on_screen": "螢幕校準",
         "settings_category": "分類",
         "radius": "圓角",
         "fps": "FPS",
@@ -477,6 +479,7 @@ _I18N = {
         "settings_panel_type": "設定パネル",
         "settings_panel_normal": "通常",
         "settings_panel_categories": "カテゴリ",
+        "auto_keep_on_screen": "画面内に補正",
         "settings_category": "カテゴリ",
         "radius": "角丸",
         "fps": "FPS",
@@ -711,6 +714,7 @@ _I18N = {
         "settings_panel_type": "Panel Type",
         "settings_panel_normal": "Normal",
         "settings_panel_categories": "Categories",
+        "auto_keep_on_screen": "Keep On Screen",
         "settings_category": "Category",
         "radius": "Radius",
         "fps": "FPS",
@@ -1196,6 +1200,8 @@ def load_settings():
     if SETTINGS.get("settings_panel_type") not in [
             k for k, _ in SETTINGS_PANEL_TYPES]:
         SETTINGS["settings_panel_type"] = "normal"
+    SETTINGS["auto_keep_on_screen"] = bool(
+        SETTINGS.get("auto_keep_on_screen", True))
     SETTINGS.pop("settings_full_positions", None)
     SETTINGS["radius"] = min(28, max(6, int(SETTINGS["radius"])))
     SETTINGS["fps"] = min(240, max(24, int(SETTINGS["fps"])))

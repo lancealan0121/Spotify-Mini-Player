@@ -1,4 +1,5 @@
 """應用程式音量控制與系統音訊分析。"""
+import math
 import threading
 import time
 from ctypes import HRESULT, POINTER, c_ubyte, c_uint32, c_uint64, string_at
@@ -212,6 +213,9 @@ class SystemSpectrumAnalyzer:
     SAMPLE_RATE = 44100
     FFT_SIZE = 2048
     BAR_COUNT = 64
+    ATTACK_TAU = 0.035   # bar 竄起時間常數（秒）：小=反應快、衝擊強
+    RELEASE_TAU = 0.22   # bar 回落時間常數（秒）：大=尾巴長、不抖
+    PEAK_TAU = 1.2       # 正規化峰值衰減時間常數（秒）：小=動態跟得緊
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -224,14 +228,21 @@ class SystemSpectrumAnalyzer:
         self._failed = False
         self._device_label = ""
         self._peak = 1.0
+        self._last_bars_t = None
         if _SPECTRUM_OK:
             self._buffer = np.zeros(self.SAMPLE_RATE, dtype=np.float32)
             self._write_pos = 0
             self._window = np.hanning(self.FFT_SIZE).astype(np.float32)
             self._smooth = np.zeros(self.BAR_COUNT, dtype=np.float32)
-            self._edges = np.geomspace(20.0, 20000.0, self.BAR_COUNT + 1)
+            self._edges = np.geomspace(20.0, 16000.0, self.BAR_COUNT + 1)
             self._freqs = np.fft.rfftfreq(self.FFT_SIZE, 1.0 / self.SAMPLE_RATE)
             self._groups = self._build_groups()
+            # 頻率傾斜補償：音樂能量隨頻率遞減（低音遠強於高頻），而全域共用
+            # 峰值正規化會讓中高頻被低音壓到不動。對每段中心頻乘遞增增益把
+            # 高頻拉回可見量級（只增不減，低音 punch 不動）；clamp 防過曝。
+            _fc = np.sqrt(self._edges[:-1] * self._edges[1:])
+            self._tilt = np.clip(
+                (_fc / 1000.0) ** 0.40, 1.0, 2.6).astype(np.float32)
         else:
             self._buffer = None
             self._write_pos = 0
@@ -240,6 +251,7 @@ class SystemSpectrumAnalyzer:
             self._edges = None
             self._freqs = None
             self._groups = []
+            self._tilt = None
 
     @staticmethod
     def available() -> bool:
@@ -496,9 +508,22 @@ class SystemSpectrumAnalyzer:
         raw = np.empty(self.BAR_COUNT, dtype=np.float32)
         for i, idx in enumerate(self._groups):
             raw[i] = float(np.mean(spectrum[idx]))
+        raw *= self._tilt
         raw = np.log1p(raw * 8.0)
+
+        now = time.monotonic()
+        last = self._last_bars_t
+        self._last_bars_t = now
+        dt = 0.016 if last is None else min(0.1, max(1e-4, now - last))
+
         mx = float(raw.max()) if raw.size else 0.0
-        self._peak = max(self._peak * 0.9997, mx, 1e-6)
+        self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), mx, 1e-6)
         norm = np.clip(raw / self._peak, 0.0, 1.0)
-        self._smooth = self._smooth * 0.82 + norm * 0.18
+
+        # attack 快、release 慢的非對稱平滑（時間基準，與 fps 無關）：
+        # bar 隨鼓點瞬間竄起、回落時拖尾巴，做出 Wallpaper Engine 式的彈跳。
+        k_up = 1.0 - math.exp(-dt / self.ATTACK_TAU)
+        k_dn = 1.0 - math.exp(-dt / self.RELEASE_TAU)
+        k = np.where(norm > self._smooth, k_up, k_dn).astype(np.float32)
+        self._smooth += (norm - self._smooth) * k
         return self._smooth.tolist()
