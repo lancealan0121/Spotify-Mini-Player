@@ -250,6 +250,11 @@ class SystemSpectrumAnalyzer:
             _fc = np.sqrt(self._edges[:-1] * self._edges[1:])
             self._tilt = np.clip(
                 (_fc / 1000.0) ** 0.40, 1.0, 2.6).astype(np.float32)
+            # 每個頻帶以「中心頻率對應的小數 bin 位置」取樣，對 rfft 量值做
+            # 線性內插。低頻對數頻帶比 bin 還窄時，最低幾帶不再對到同一個
+            # bin（值相同會讓最左幾根 bar 黏成一塊），內插出各自不同的值。
+            self._band_centers = (
+                _fc / (self.SAMPLE_RATE / self.FFT_SIZE)).astype(np.float32)
         else:
             self._buffer = None
             self._write_pos = 0
@@ -259,6 +264,7 @@ class SystemSpectrumAnalyzer:
             self._freqs = None
             self._groups = []
             self._tilt = None
+            self._band_centers = None
 
     @staticmethod
     def available() -> bool:
@@ -530,9 +536,9 @@ class SystemSpectrumAnalyzer:
                     self._buffer[:pos])).copy()
         samples -= float(np.mean(samples))
         spectrum = np.abs(np.fft.rfft(samples * self._window))
-        raw = np.empty(self.BAR_COUNT, dtype=np.float32)
-        for i, idx in enumerate(self._groups):
-            raw[i] = float(np.mean(spectrum[idx]))
+        # 頻帶中心對小數 bin 做線性內插（向量化），低頻不再黏成同值
+        raw = np.interp(self._band_centers,
+                        np.arange(spectrum.size), spectrum).astype(np.float32)
         raw *= self._tilt
         raw = np.log1p(raw * 8.0)
 

@@ -337,6 +337,12 @@ class ArtView(QWidget):
         self._audio_morph_a = Anim(self)
         self._audio_morph_a.valueChanged.connect(self._on_audio_morph)
         self._audio_morph_a.finished.connect(self._audio_morph_done)
+        # 反饋形狀（ring/bars/blob）切換的交叉淡化過渡
+        self._fb_shape_cur = SETTINGS.get("audio_feedback_shape", "ring")
+        self._fb_shape_prev = self._fb_shape_cur
+        self._fb_shape_t = 1.0
+        self._fb_shape_a = Anim(self)
+        self._fb_shape_a.valueChanged.connect(self._on_fb_shape)
         self._playing = False
         self._arm = 0.0
         self._arm_target = 0.0
@@ -364,6 +370,11 @@ class ArtView(QWidget):
         self._spin_timer.timeout.connect(self._spin_tick)
         self._audio_phase = 0.0
         self._audio_ring_phase = 0.0
+        self._audio_spin = 0.0
+        # 角度 cos/sin 表（依 slot 數快取）：halo/ring/blob 每幀重複用，
+        # 省掉幾百次三角函數呼叫（Python 函式呼叫成本是高 fps 卡頓主因）。
+        self._angle_cache: dict[int, list[tuple[float, float]]] = {}
+        self._cover_pulse = 0.0
         self._audio_energy = 0.0
         self._audio_peak_prev = 0.0
         self._audio_bands = [0.0, 0.0, 0.0]
@@ -536,6 +547,32 @@ class ArtView(QWidget):
     def _audio_morph_done(self):
         self._audio_fade_reverse = False
         self.update()
+
+    def _on_fb_shape(self, v):
+        self._fb_shape_t = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def audio_shape_changed(self):
+        new_shape = SETTINGS.get("audio_feedback_shape", "ring")
+        if new_shape == self._fb_shape_cur and self._fb_shape_t >= 0.999:
+            return
+        self._fb_shape_a.stop()
+        self._fb_shape_prev = self._fb_shape_cur
+        self._fb_shape_cur = new_shape
+        ms = adur(360, 190)
+        if (not anim_on() or ms <= 0 or self._mode != "audio"
+                or not self.isVisible()):
+            self._fb_shape_prev = new_shape
+            self._fb_shape_t = 1.0
+            self.update()
+            return
+        self._fb_shape_t = 0.0
+        self._fb_shape_a.setStartValue(0.0)
+        self._fb_shape_a.setEndValue(1.0)
+        self._fb_shape_a.setDuration(ms)
+        self._fb_shape_a.setEasingCurve(QEasingCurve.OutCubic)
+        self._fb_shape_a.start()
+        self._sync_audio()
 
     def _on_arm(self, v):
         self._arm = float(v)
@@ -736,6 +773,23 @@ class ArtView(QWidget):
         ring_speed = 0.42 * float(SETTINGS.get("seek_wave_speed", 1.0))
         self._audio_ring_phase = (
             self._audio_ring_phase + dt * ring_speed) % math.tau
+        if SETTINGS.get("audio_feedback_spin", False):
+            spin_speed = math.radians(38.0) * float(
+                SETTINGS.get("audio_feedback_spin_speed", 1.0))
+            self._audio_spin = (self._audio_spin + dt * spin_speed) % math.tau
+        # 封面節奏脈動：吃低頻（bass）能量做快起慢落包絡，像心跳隨重拍鼓動。
+        # 減去地板再做 gamma 拉對比——安靜時幾乎不動、重拍才大幅彈出，
+        # 跳動差距明顯而不是整張圖均勻放大。
+        bass_target = 0.0
+        if self._mode == "audio" and self._audio_spectrum:
+            spec = self._audio_spectrum
+            lo = max(1, len(spec) // 8)
+            raw_bass = sum(spec[:lo]) / lo
+            bass_target = max(0.0, min(1.0, (raw_bass - 0.10) / 0.90)) ** 1.4
+        rate = 32.0 if bass_target > self._cover_pulse else 9.0
+        self._cover_pulse += (bass_target - self._cover_pulse) * min(1.0, dt * rate)
+        if self._cover_pulse < 1e-3:
+            self._cover_pulse = 0.0
         self.update()
         if (self._mode != "audio" and not self._playing
                 and self._audio_energy <= 0.01):
@@ -1286,15 +1340,77 @@ class ArtView(QWidget):
             p.drawText(rect, Qt.AlignCenter, GLYPH_NOTE)
         p.restore()
 
+    def _cover_rect_for_shape(self, shape, r, c, rad):
+        if shape == "bars":
+            cover_rad = rad * 0.58
+            cy = c.y() - rad * 0.26
+            return QRectF(c.x() - cover_rad, cy - cover_rad,
+                          cover_rad * 2.0, cover_rad * 2.0)
+        cover_rad = rad * 0.78
+        return QRectF(c.x() - cover_rad, c.y() - cover_rad,
+                      cover_rad * 2.0, cover_rad * 2.0)
+
+    def _angle_table(self, count: int) -> list[tuple[float, float]]:
+        """count 等分圓周（自頂端 -90° 起）的 (cos, sin) 表，依 count 快取。"""
+        count = max(1, int(count))
+        table = self._angle_cache.get(count)
+        if table is None:
+            table = [
+                (math.cos(-math.pi / 2.0 + math.tau * j / count),
+                 math.sin(-math.pi / 2.0 + math.tau * j / count))
+                for j in range(count)
+            ]
+            if len(self._angle_cache) > 8:
+                self._angle_cache.clear()
+            self._angle_cache[count] = table
+        return table
+
     def _draw_audio_feedback(self, p: QPainter, alpha: float,
                              pm: QPixmap | None,
                              old: QPixmap | None):
         if alpha <= 0.01:
             return
+        if (self._mode == "audio" and self._fb_shape_t < 1.0
+                and self._fb_shape_prev != self._fb_shape_cur):
+            t = self._fb_shape_t
+            r = self._visual_rect("cover")
+            c = r.center()
+            rad = min(r.width(), r.height()) / 2.0
+            # 兩形狀的頻譜/長條交叉淡化（各自不畫封面，避免重影）
+            self._draw_audio_feedback_shape(
+                p, alpha * (1.0 - t), pm, old, self._fb_shape_prev,
+                draw_cover=False)
+            self._draw_audio_feedback_shape(
+                p, alpha * t, pm, old, self._fb_shape_cur, draw_cover=False)
+            # 封面只畫一次，矩形於前後形狀之間內插（平滑移動/縮放）
+            ra = self._cover_rect_for_shape(self._fb_shape_prev, r, c, rad)
+            rb = self._cover_rect_for_shape(self._fb_shape_cur, r, c, rad)
+            cover_rect = QRectF(
+                ra.x() + (rb.x() - ra.x()) * t,
+                ra.y() + (rb.y() - ra.y()) * t,
+                ra.width() + (rb.width() - ra.width()) * t,
+                ra.height() + (rb.height() - ra.height()) * t)
+            self._draw_audio_cover_stack(p, alpha, pm, old, cover_rect, rad)
+        else:
+            self._draw_audio_feedback_shape(p, alpha, pm, old, None,
+                                            draw_cover=True)
+
+    def _draw_audio_feedback_shape(self, p, alpha, pm, old,
+                                   shape_override=None, draw_cover=True):
         r = self._visual_rect("cover")
         c = r.center()
         rad = min(r.width(), r.height()) / 2.0
         meter_mode = self._mode == "audio"
+        if shape_override is not None:
+            shape = shape_override
+        else:
+            shape = (SETTINGS.get("audio_feedback_shape", "ring")
+                     if meter_mode else "ring")
+        if shape not in ("ring", "bars", "blob"):
+            shape = "ring"
+        if shape == "bars":
+            self._draw_audio_bars(p, alpha, pm, old, r, c, rad, draw_cover)
+            return
         cover_rad = rad * 0.78
         gap = rad * 0.065
         base_rad = cover_rad + gap
@@ -1304,8 +1420,9 @@ class ArtView(QWidget):
             or self._audio_fade_reverse
             ) else None
         morph = self._audio_morph if spectrum else 0.0
-        morphing = self._audio_morph_a.state() == Anim.Running
-        bars = 64 if (meter_mode or morph > 0.001 or morphing) else 48
+        # 固定 bar 數只看最終模式，不看 morphing——否則切到律動時會先 64
+        # 再掉回 48，視覺上跳一下。
+        bars = 64 if meter_mode else 48
         thickness = max(0.4, min(2.5, float(
             SETTINGS.get("audio_feedback_thickness", 1.0))))
         energy = max(0.0, min(1.0, self._audio_energy))
@@ -1323,44 +1440,78 @@ class ArtView(QWidget):
 
         p.save()
         p.setOpacity(alpha)
+        spin = self._audio_spin_deg()
+        if spin:
+            p.translate(c)
+            p.rotate(spin)
+            p.translate(-c)
         p.setPen(Qt.NoPen)
-        halo = QColor(self._accent)
-        halo.setAlpha(round(34 + 44 * energy))
-        p.setBrush(halo)
-        halo_path = QPainterPath()
-        halo_steps = 96 if (meter_mode or self._mode == "pulse") else max(64, bars)
-        halo_base = cover_rad + gap + max_h * 0.40
-        halo_amp = max_h * (0.10 + 0.30 * energy)
-        for j in range(halo_steps):
-            aa0 = (-math.pi / 2.0 + self._audio_ring_phase
-                   + math.tau * j / halo_steps)
-            wave0 = 0.5 + 0.5 * math.sin(phase * 2.0 + j * 0.71)
-            pulse0 = 0.5 + 0.5 * math.sin(phase * 3.1 + j * 1.17)
-            beat0 = 0.5 + 0.5 * math.sin(phase * 1.2 - j * 0.33)
-            pulse_val = 0.50 * wave0 + 0.32 * pulse0 + 0.18 * beat0
-            if spectrum:
-                idx = spectrum_index_for_slot(j, halo_steps)
-                spec_val = max(0.0, min(1.0, float(spectrum[idx])))
-                val = pulse_val + (spec_val - pulse_val) * morph
-            else:
-                val = pulse_val
-            rr = halo_base + halo_amp * val
-            pt = QPointF(c.x() + math.cos(aa0) * rr,
-                         c.y() + math.sin(aa0) * rr)
-            if j == 0:
-                halo_path.moveTo(pt)
-            else:
-                halo_path.lineTo(pt)
-        halo_path.closeSubpath()
-        p.drawPath(halo_path)
+        # blob（流動）不畫底環——它要「有聲音才有」，沒有預設常駐圈
+        if shape != "blob":
+            halo = QColor(self._accent)
+            halo.setAlpha(round(34 + 44 * energy))
+            p.setBrush(halo)
+            halo_path = QPainterPath()
+            halo_steps = (96 if (meter_mode or self._mode == "pulse")
+                          else max(64, bars))
+            halo_base = cover_rad + gap + max_h * 0.40
+            halo_amp = max_h * (0.10 + 0.30 * energy)
+            steady_halo = bool(spectrum) and morph >= 0.999
+            for j in range(halo_steps):
+                aa0 = (-math.pi / 2.0 + self._audio_ring_phase
+                       + math.tau * j / halo_steps)
+                if spectrum:
+                    idx = spectrum_index_for_slot(j, halo_steps)
+                    spec_val = max(0.0, min(1.0, float(spectrum[idx])))
+                    if steady_halo:
+                        # morph==1：合成律動權重為 0，直接用頻段值（等價且省）
+                        val = spec_val
+                    else:
+                        wave0 = 0.5 + 0.5 * math.sin(phase * 2.0 + j * 0.71)
+                        pulse0 = 0.5 + 0.5 * math.sin(phase * 3.1 + j * 1.17)
+                        beat0 = 0.5 + 0.5 * math.sin(phase * 1.2 - j * 0.33)
+                        pulse_val = 0.50 * wave0 + 0.32 * pulse0 + 0.18 * beat0
+                        val = pulse_val + (spec_val - pulse_val) * morph
+                else:
+                    wave0 = 0.5 + 0.5 * math.sin(phase * 2.0 + j * 0.71)
+                    pulse0 = 0.5 + 0.5 * math.sin(phase * 3.1 + j * 1.17)
+                    beat0 = 0.5 + 0.5 * math.sin(phase * 1.2 - j * 0.33)
+                    val = 0.50 * wave0 + 0.32 * pulse0 + 0.18 * beat0
+                rr = halo_base + halo_amp * val
+                pt = QPointF(c.x() + math.cos(aa0) * rr,
+                             c.y() + math.sin(aa0) * rr)
+                if j == 0:
+                    halo_path.moveTo(pt)
+                else:
+                    halo_path.lineTo(pt)
+            halo_path.closeSubpath()
+            p.drawPath(halo_path)
 
+        if shape == "blob":
+            self._draw_blob_lobes(p, c, rad, base_rad, max_h, spectrum,
+                                  morph, energy, phase, thickness,
+                                  spectrum_index_for_slot)
+        else:
+            self._draw_ring_bars(p, c, rad, base_rad, max_h, spectrum, morph,
+                                 energy, idle, phase, bars, thickness,
+                                 meter_mode, spectrum_index_for_slot)
+        p.restore()
+
+        if draw_cover:
+            cover_rect = self._cover_rect_for_shape(shape, r, c, rad)
+            self._draw_audio_cover_stack(p, alpha, pm, old, cover_rect, rad)
+
+    def _draw_ring_bars(self, p, c, rad, base_rad, max_h, spectrum, morph,
+                        energy, idle, phase, bars, thickness, meter_mode,
+                        spectrum_index_for_slot):
+        cx, cy = c.x(), c.y()
+        n_spec = len(spectrum) if spectrum else 0
         reverse_bars = bool(spectrum and self._audio_fade_reverse)
         if reverse_bars and morph < 0.999:
             p.save()
             p.setOpacity(p.opacity() * max(0.0, min(1.0, 1.0 - morph)))
-            pulse_bars = 48
-            for i in range(pulse_bars):
-                a = -math.pi / 2.0 + math.tau * i / pulse_bars
+            ptable = self._angle_table(48)
+            for i in range(48):
                 wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
                 pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
                 beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
@@ -1375,24 +1526,23 @@ class ArtView(QWidget):
                 pen_w = max(1.0, rad * (0.018 + 0.010 * mix) * thickness)
                 inner = base_rad
                 outer = base_rad + h
-                x = math.cos(a)
-                y = math.sin(a)
+                x, y = ptable[i]
                 p.setPen(QPen(col, pen_w, Qt.SolidLine, Qt.RoundCap))
-                p.drawLine(QPointF(c.x() + x * inner, c.y() + y * inner),
-                           QPointF(c.x() + x * outer, c.y() + y * outer))
+                p.drawLine(QPointF(cx + x * inner, cy + y * inner),
+                           QPointF(cx + x * outer, cy + y * outer))
             p.restore()
 
         if reverse_bars:
             p.save()
             p.setOpacity(p.opacity() * max(0.0, min(1.0, morph)))
+        table = self._angle_table(bars)
+        # morph==1 的穩態頻譜：裝飾性 wave/pulse/beat 權重為 0，整段略過
+        # （h、visual 數學上等價於原式）；meter 後備配色也用不到這些 sin。
+        steady = bool(spectrum) and morph >= 0.999
         for i in range(bars):
-            a = -math.pi / 2.0 + math.tau * i / bars
-            wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
-            pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
-            beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
             if spectrum:
                 spec_idx = spectrum_index_for_slot(i, bars)
-                freq_t = spec_idx / max(1, len(spectrum) - 1)
+                freq_t = spec_idx / max(1, n_spec - 1)
                 band = max(0.0, min(1.0, float(spectrum[spec_idx])))
                 high_t = max(0.0, min(1.0, (freq_t - 0.84) / 0.16))
                 high_boost = 1.0 + 0.10 * high_t * high_t * (3.0 - 2.0 * high_t)
@@ -1401,15 +1551,18 @@ class ArtView(QWidget):
                 # 也不削低音——低/中/高各跳各的，頻段分離才有 Wallpaper
                 # Engine 的層次與重拍衝擊。極小靜態地板避免歸零時看起來斷掉。
                 band = max(0.0, min(1.0, 0.02 + band * 0.98))
-                mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
-                pulse_h = max_h * (idle + energy * (0.25 + 0.75 * mix))
-                if not self._playing and energy <= 0.02:
-                    pulse_h = max_h * (0.14 + 0.10 * mix)
                 fft_h = max_h * (0.025 + band * 0.975)
-                if reverse_bars:
+                if reverse_bars or steady:
                     h = fft_h
                     visual = band
                 else:
+                    wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
+                    pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
+                    beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
+                    mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
+                    pulse_h = max_h * (idle + energy * (0.25 + 0.75 * mix))
+                    if not self._playing and energy <= 0.02:
+                        pulse_h = max_h * (0.14 + 0.10 * mix)
                     h = pulse_h + (fft_h - pulse_h) * morph
                     visual = band * morph + mix * (1.0 - morph)
                 col = QColor(self._accent).lighter(122 + round(40 * visual))
@@ -1428,6 +1581,9 @@ class ArtView(QWidget):
                 pen_w = max(
                     1.0, rad * 0.010 * thickness)
             else:
+                wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
+                pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
+                beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
                 mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
                 h = max_h * (idle + energy * (0.25 + 0.75 * mix))
                 if not self._playing and energy <= 0.02:
@@ -1439,17 +1595,150 @@ class ArtView(QWidget):
                 pen_w = max(1.0, rad * (0.018 + 0.010 * mix) * thickness)
             inner = base_rad
             outer = base_rad + h
-            x = math.cos(a)
-            y = math.sin(a)
-            start = QPointF(c.x() + x * inner, c.y() + y * inner)
-            end = QPointF(c.x() + x * outer, c.y() + y * outer)
+            x, y = table[i]
+            start = QPointF(cx + x * inner, cy + y * inner)
+            end = QPointF(cx + x * outer, cy + y * outer)
             p.setPen(QPen(col, pen_w, Qt.SolidLine, Qt.RoundCap))
             p.drawLine(start, end)
         if reverse_bars:
             p.restore()
 
-        cover_rect = QRectF(c.x() - cover_rad, c.y() - cover_rad,
-                            cover_rad * 2.0, cover_rad * 2.0)
+    def _draw_blob_lobes(self, p, c, rad, base_rad, max_h, spectrum, morph,
+                         energy, phase, thickness, spectrum_index_for_slot):
+        # 液態頻譜輪廓：封面外圈一條平滑閉合曲線，每個角度的半徑直接對應一個
+        # 頻段——自頂端往左右兩側鏡像（= 圓形等化器），所以輪廓的鼓起/凹陷
+        # 就是當下的頻譜，隨音樂即時起伏，一眼看得出是音訊回應。整體外擴量
+        # 由音量驅動：靜音時收回封面後（藏起來），有聲音才漲出來。無頻譜
+        # （pulse 律動模式）時退回有機合成波。只畫兩條閉合路徑、吃預算好的
+        # 角度表並做循環 3-tap 平滑，成本低。
+        steps = 64
+        table = self._angle_table(steps)
+        cover_rad = rad * 0.78
+        blob_base = cover_rad - max_h * 0.05      # 略縮進封面邊內，靜音時藏住
+        amp = max_h * (1.15 + 0.5 * thickness)
+        drive = min(1.25, energy * 0.95)          # 外擴強度＝音量，靜音→0
+        n_spec = len(spectrum) if spectrum else 0
+
+        # 每個 slot 取一個 0..1 起伏值：鏡像頻譜（依 morph 混入合成律動），
+        # 再做循環 3-tap 平滑，得到液態而非鋸齒的曲線。
+        raw = [0.0] * steps
+        for j in range(steps):
+            synth = 0.5 + 0.5 * math.sin(phase * 1.4 + j * 0.55)
+            if spectrum:
+                f = 2.0 * min(j, steps - j) / steps   # 0=頂端 → 1=底端（鏡像）
+                idx = max(0, min(n_spec - 1, round(f * (n_spec - 1))))
+                spec_val = float(spectrum[idx])
+                if spec_val < 0.0:
+                    spec_val = 0.0
+                elif spec_val > 1.0:
+                    spec_val = 1.0
+                raw[j] = synth + (spec_val - synth) * morph
+            else:
+                raw[j] = synth
+        val = [0.0] * steps
+        for j in range(steps):
+            val[j] = (raw[j - 1] + raw[j] * 2.0 + raw[(j + 1) % steps]) * 0.25
+
+        accent = QColor(self._accent)
+        h0, s0, v0, _ = accent.getHsv()
+        if h0 < 0:
+            h0 = 280
+        sat = min(255, int(s0 * 0.72 + 64))
+        bri = min(255, int(max(v0, 205)))
+        # (半徑外偏移, 振幅倍率, 色相偏移, alpha, 基礎佔比)：底層較大較淡、
+        # 主層較亮，半透明相疊出流動層次。
+        layers = (
+            (max_h * 0.30, 1.18, 26.0, 96, 0.30),
+            (0.0, 1.0, 0.0, 150, 0.25),
+        )
+        cx, cy = c.x(), c.y()
+        p.setPen(Qt.NoPen)
+        for roff, ascale, hue, a0, floor in layers:
+            col = QColor.fromHsv(int((h0 + hue) % 360), sat, bri, int(a0))
+            path = QPainterPath()
+            for j in range(steps):
+                ext = drive * (roff + amp * ascale
+                               * (floor + (1.0 - floor) * val[j]))
+                rr = blob_base + ext
+                cos_t, sin_t = table[j]
+                pt = QPointF(cx + cos_t * rr, cy + sin_t * rr)
+                if j == 0:
+                    path.moveTo(pt)
+                else:
+                    path.lineTo(pt)
+            path.closeSubpath()
+            p.setBrush(col)
+            p.drawPath(path)
+
+    def _draw_audio_bars(self, p, alpha, pm, old, r, c, rad, draw_cover=True):
+        # 直立直方圖：封面縮小上移到上半部置中，等化器長條從下方基線往上長。
+        spectrum = self._audio_spectrum
+        thickness = max(0.4, min(2.5, float(
+            SETTINGS.get("audio_feedback_thickness", 1.0))))
+        energy = max(0.0, min(1.0, self._audio_energy))
+        phase = self._audio_phase
+        cover_rect = self._cover_rect_for_shape("bars", r, c, rad)
+        baseline = r.bottom() - rad * 0.08
+        max_bar_h = rad * 0.62
+        region_left = r.left() + rad * 0.06
+        region_right = r.right() - rad * 0.06
+        region_w = max(1.0, region_right - region_left)
+        n = 48
+        slot = region_w / n
+        bar_w = min(slot * 0.92, max(1.5, slot * 0.6 * min(1.9, thickness)))
+        corner = bar_w * 0.5
+        accent = QColor(self._accent)
+        p.save()
+        p.setOpacity(alpha)
+        p.setPen(Qt.NoPen)
+        for i in range(n):
+            if spectrum:
+                idx = max(0, min(len(spectrum) - 1,
+                                 round(i * (len(spectrum) - 1)
+                                       / max(1, n - 1))))
+                band = max(0.0, min(1.0, float(spectrum[idx])))
+                band = max(0.0, min(1.0, 0.02 + band * 0.98))
+                visual = band
+                h = max_bar_h * (0.03 + band * 0.97)
+            else:
+                wave = 0.5 + 0.5 * math.sin(phase * 2.1 + i * 0.73)
+                pulse = 0.5 + 0.5 * math.sin(phase * 3.4 + i * 1.41)
+                beat = 0.5 + 0.5 * math.sin(phase * 1.1 - i * 0.29)
+                mix = 0.50 * wave + 0.32 * pulse + 0.18 * beat
+                visual = mix
+                h = max_bar_h * (0.06 + energy * (0.20 + 0.80 * mix))
+                if not self._playing and energy <= 0.02:
+                    h = max_bar_h * (0.05 + 0.06 * mix)
+            col = QColor(accent).lighter(122 + round(40 * visual))
+            col.setAlpha(round(120 + 120 * max(energy, visual)))
+            if i % 4 == 0:
+                col = QColor(255, 255, 255,
+                             round(110 + 110 * max(energy, visual)))
+            x = region_left + slot * (i + 0.5) - bar_w * 0.5
+            p.setBrush(col)
+            p.drawRoundedRect(QRectF(x, baseline - h, bar_w, h),
+                              corner, corner)
+        p.restore()
+        if draw_cover:
+            self._draw_audio_cover_stack(p, alpha, pm, old, cover_rect, rad)
+
+    def _audio_spin_deg(self) -> float:
+        if not SETTINGS.get("audio_feedback_spin", False):
+            return 0.0
+        return math.degrees(self._audio_spin)
+
+    def _draw_audio_cover_stack(self, p, alpha, pm, old, cover_rect, rad):
+        # 封面外圈深色描邊 + 換曲交叉淡化 + 主題色外框（畫在旋轉之外，封面不轉）
+        if (self._mode == "audio" and self._cover_pulse > 0.001
+                and SETTINGS.get("audio_cover_pulse", True)):
+            strength = max(0.2, min(2.0, float(
+                SETTINGS.get("audio_cover_pulse_strength", 1.0))))
+            s = 1.0 + 0.22 * strength * self._cover_pulse
+            cen = cover_rect.center()
+            hw = cover_rect.width() * 0.5 * s
+            cover_rect = QRectF(cen.x() - hw, cen.y() - hw, hw * 2.0, hw * 2.0)
+        p.save()
+        p.setOpacity(alpha)
         p.setPen(QPen(QColor(0, 0, 0, 90), max(2.0, rad * 0.035)))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(cover_rect.adjusted(-rad * 0.014, -rad * 0.014,
@@ -2176,6 +2465,9 @@ class SeekBar(QWidget):
         # 設定切換時保留舊畫面，套用新樣式後用 crossfade 過渡。
         self._transition_pm: QPixmap | None = None
         self._transition_t = 1.0
+        # 波浪樣式的 2x 超取樣緩衝：重用同一張 pixmap（只在尺寸變更時重配），
+        # 避免高 fps 下每幀配置/釋放 QPixmap。
+        self._wave_buf: QPixmap | None = None
         self._transition_anim = Anim(self)
         self._transition_anim.valueChanged.connect(self._on_transition)
         self._transition_anim.finished.connect(self._transition_done)
@@ -2206,16 +2498,16 @@ class SeekBar(QWidget):
         self._sync_fx()
 
     def style_changed(self):
-        own_transition = self._transition_pm is None
-        if own_transition:
-            self.begin_visual_transition()
+        # seek_style（plain/wave/glow）不走交叉淡化——波浪振幅 _amp 與流光
+        # _glow 本來就是逐幀平滑過渡的。讓波浪「慢慢攤平」比 fade 一張凍結
+        # 舊圖順得多。只在動畫關閉時直接歸位避免卡住。
         self._style = SETTINGS.get("seek_style", "wave")
+        if not anim_on():
+            self._amp = 1.0 if (self._style == "wave" and self._playing) else 0.0
+            self._glow = 1.0 if (self._style == "glow" and self._playing) else 0.0
         self._sync_fx()
         self._sync_thumb()
-        if own_transition:
-            self.commit_visual_transition()
-        else:
-            self.update()
+        self.update()
 
     def thumb_mode_changed(self):
         # seek_thumb（圓鈕顯示：hover/always）只改圓鈕可見度，不動底軌/填滿，
@@ -2254,7 +2546,7 @@ class SeekBar(QWidget):
         if self._transition_pm is None:
             self.update()
             return
-        ms = round(adur(320, 170))
+        ms = round(adur(640, 340))
         if not anim_on() or ms <= 0:
             self._transition_pm = None
             self._transition_t = 1.0
@@ -2752,7 +3044,12 @@ class SeekBar(QWidget):
                                 draw_track: bool = True,
                                 content_opacity: float = 1.0):
         ss = 2.0
-        pm = QPixmap(max(1, math.ceil(w * ss)), max(1, math.ceil(h * ss)))
+        bw = max(1, math.ceil(w * ss))
+        bh = max(1, math.ceil(h * ss))
+        pm = self._wave_buf
+        if pm is None or pm.width() != bw or pm.height() != bh:
+            pm = QPixmap(bw, bh)
+            self._wave_buf = pm
         pm.fill(Qt.transparent)
         pp = QPainter(pm)
         aa(pp)
@@ -2813,7 +3110,7 @@ class SeekBar(QWidget):
         content_opacity = 1.0
 
         wave_y = cy
-        wavy = style == "wave" and self._amp > 0.001
+        wavy = self._amp > 0.001
         if wavy:
             self._paint_wave_antialiased(p, float(w), h, pad, tw, cy,
                                          bar_h, ratio, fill_w, grad, gray,

@@ -3491,8 +3491,6 @@ class PlayerWindow(QWidget):
             if app is not None:
                 app.setFont(QFont(value))
         seek_transition_keys = {
-            "seek_style", "seek_wave_amp", "seek_wave_speed",
-            "seek_glow_strength", "seek_length",
             "seek_thumb_shape", "seek_thumb_size", "seek_fill_color",
             "seek_thumb_color", "seek_track_color",
         }
@@ -3612,7 +3610,17 @@ class PlayerWindow(QWidget):
             self.card.set_cover_enabled(bool(value), animate=True)
         elif key == "art_mode":
             self.card.art.set_mode(str(value), animate=True)
-        elif key in ("audio_feedback_thickness", "audio_feedback_sensitivity"):
+            # 離開音訊模式就停掉 WASAPI loopback 擷取執行緒——它原本只在
+            # 結束程式時才關，切回封面/黑膠後仍整個 session 持續擷取系統音訊、
+            # 每幾毫秒寫一次環形緩衝，純浪費 CPU。再次進 audio 由 bars() lazy
+            # 重啟（stop() 不設 _failed，可正常復活）。
+            if str(value) != "audio":
+                self._spectrum.stop()
+        elif key == "audio_feedback_shape":
+            self.card.art.audio_shape_changed()
+        elif key in ("audio_feedback_thickness", "audio_feedback_sensitivity",
+                     "audio_feedback_spin", "audio_feedback_spin_speed",
+                     "audio_cover_pulse", "audio_cover_pulse_strength"):
             self.card.art.update()
         elif key in ("cover_shape", "cover_radius_strength"):
             self.card.apply_cover_shape(animate=True)

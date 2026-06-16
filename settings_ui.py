@@ -154,6 +154,12 @@ def art_mode_options():
             ("audio", tr("art_audio"))]
 
 
+def audio_feedback_shape_options():
+    return [("ring", tr("audio_shape_ring")),
+            ("bars", tr("audio_shape_bars")),
+            ("blob", tr("audio_shape_blob"))]
+
+
 def cover_shape_options():
     return [
         ("rounded", tr("cover_shape_rounded")),
@@ -4297,6 +4303,21 @@ class SettingsPanel(QWidget):
             "audio_feedback_sensitivity",
             PanelSlider(20, 300, SETTINGS["audio_feedback_sensitivity"] * 100,
                         fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sg_audio_shape = adv_row("audio_feedback_shape", Segmented(
+            audio_feedback_shape_options(), SETTINGS["audio_feedback_shape"],
+            accent=self._accent))
+        self.tg_audio_spin = adv_toggle("audio_feedback_spin",
+                                        "audio_feedback_spin")
+        self.sl_audio_spin_speed = adv_row(
+            "audio_feedback_spin_speed",
+            PanelSlider(10, 300, SETTINGS["audio_feedback_spin_speed"] * 100,
+                        fmt=lambda v: f"{v / 100.0:.1f}x", accent=self._accent))
+        self.tg_audio_cover_pulse = adv_toggle("audio_cover_pulse",
+                                               "audio_cover_pulse")
+        self.sl_audio_cover_pulse_strength = adv_row(
+            "audio_cover_pulse_strength",
+            PanelSlider(20, 200, SETTINGS["audio_cover_pulse_strength"] * 100,
+                        fmt=lambda v: f"{v / 100.0:.1f}x", accent=self._accent))
         self.tg_show_vinyl_center = adv_toggle(
             "show_vinyl_center", "show_vinyl_center")
         self.sl_vinyl_center_size = adv_row("vinyl_center_size", PanelSlider(
@@ -4501,6 +4522,14 @@ class SettingsPanel(QWidget):
                                                 v / 100.0))
         self.sl_audio_feedback_sensitivity.changed.connect(
             lambda v: self.setting_changed.emit("audio_feedback_sensitivity",
+                                                v / 100.0))
+        self.sg_audio_shape.changed.connect(
+            lambda v: self.setting_changed.emit("audio_feedback_shape", v))
+        self.sl_audio_spin_speed.changed.connect(
+            lambda v: self.setting_changed.emit("audio_feedback_spin_speed",
+                                                v / 100.0))
+        self.sl_audio_cover_pulse_strength.changed.connect(
+            lambda v: self.setting_changed.emit("audio_cover_pulse_strength",
                                                 v / 100.0))
         self.sl_vinyl_center_size.changed.connect(
             lambda v: self.setting_changed.emit("vinyl_center_size", v / 100.0))
@@ -5655,6 +5684,8 @@ class SettingsPanel(QWidget):
                                         SETTINGS["card_preset"])
         self.sg_art_mode.set_options(art_mode_options(),
                                      SETTINGS["art_mode"])
+        self.sg_audio_shape.set_options(audio_feedback_shape_options(),
+                                        SETTINGS["audio_feedback_shape"])
         self.sg_cover_shape.set_options(cover_shape_options(),
                                         SETTINGS["cover_shape"])
         self.sg_ctl.set_options(align_options(), SETTINGS["controls_align"])
@@ -5868,6 +5899,8 @@ class SettingsPanel(QWidget):
                     self.sl_art_cover_size, self.sl_art_vinyl_size,
                     self.sl_audio_feedback_thickness,
                     self.sl_audio_feedback_sensitivity,
+                    self.sl_audio_spin_speed,
+                    self.sl_audio_cover_pulse_strength,
                     self.sl_vinyl_center_size,
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,
@@ -5879,6 +5912,7 @@ class SettingsPanel(QWidget):
                     self.sg_source, self.sg_startup_show,
                     self.sg_ctl, self.sg_card_preset,
                     self.sg_art_mode, self.sg_cover_shape,
+                    self.sg_audio_shape,
                     self.sg_lang, self.btn_advanced, self.btn_reset,
                     self.btn_advanced_close, self.fp_font,
                     self.bg_image, self.custom_image, self.cp_font_color,
@@ -5895,6 +5929,7 @@ class SettingsPanel(QWidget):
                     self.tg_anim_enabled, self.tg_show_cover,
                     self.tg_show_tonearm, self.tg_show_vinyl_center,
                     self.tg_cover_border, self.tg_marquee,
+                    self.tg_audio_spin, self.tg_audio_cover_pulse,
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
                     self.tg_btn_repeat)
         return tuple(w for w in controls if w is not None)
@@ -5960,51 +5995,46 @@ class SettingsPanel(QWidget):
                                     host.sizeHint().height() or host.height())))
         target_h = full_h if visible else 0
         was_visible = host.isVisible()
-        eff = host.graphicsEffect()
-        cur_opacity = eff.opacity() if isinstance(
-            eff, QGraphicsOpacityEffect) else 1.0
+        # 停掉並丟棄上一次的淡入動畫，每次都用全新的 anim/eff，避免殘留參照
         anim = getattr(host, "_weather_anim", None)
         if anim is not None:
             anim.stop()
+            host._weather_anim = None
+        # 重點：靜止的列「不留」QGraphicsOpacityEffect。掛著離屏快取效果的
+        # widget 在局部重繪/拖動視窗時會整塊不繪製（那一區變空白，靜止全幀
+        # 重繪才補回）。效果只在淡入動畫期間短暫存在，結束即移除。
         if not animate or not anim_on():
             host.setFixedHeight(target_h)
             host.setVisible(visible)
-            if isinstance(eff, QGraphicsOpacityEffect):
-                eff.setOpacity(1.0)
+            host.setGraphicsEffect(None)
             return
-        if was_visible == visible and cur_opacity >= 0.999:
-            return
-        if not isinstance(eff, QGraphicsOpacityEffect):
-            eff = QGraphicsOpacityEffect(host)
-            host.setGraphicsEffect(eff)
         if not visible:
             host.hide()
-            eff.setOpacity(1.0)
+            host.setGraphicsEffect(None)
             return
         host.setFixedHeight(full_h)
         host.show()
-        eff.setOpacity(0.0 if not was_visible else cur_opacity)
-        if anim is None:
-            anim = Anim(host)
-            host._weather_anim = anim
-            anim.valueChanged.connect(
-                lambda value, eff=eff:
-                    eff.setOpacity(max(0.0, min(1.0, float(value)))))
-        old_done = getattr(host, "_weather_done_cb", None)
-        if old_done is not None:
-            try:
-                anim.finished.disconnect(old_done)
-            except (TypeError, RuntimeError):
-                pass
+        if was_visible:
+            # 已經可見、不需淡入：確保沒有殘留效果即可
+            host.setGraphicsEffect(None)
+            return
+        eff = QGraphicsOpacityEffect(host)
+        host.setGraphicsEffect(eff)
+        eff.setOpacity(0.0)
+        anim = Anim(host)
+        host._weather_anim = anim
+        anim.valueChanged.connect(
+            lambda value, eff=eff:
+                eff.setOpacity(max(0.0, min(1.0, float(value)))))
 
-        def on_done(host=host, full_h=full_h, eff=eff):
+        def on_done(host=host, full_h=full_h):
             host.setFixedHeight(full_h)
             host.show()
-            eff.setOpacity(1.0)
+            host.setGraphicsEffect(None)   # 動畫結束移除效果，避免拖動時空白
+            host._weather_anim = None
 
         anim.finished.connect(on_done)
-        host._weather_done_cb = on_done
-        anim.setStartValue(float(eff.opacity()))
+        anim.setStartValue(0.0)
         anim.setEndValue(1.0)
         anim.setDuration(adur(160, 90))
         anim.setEasingCurve(QEasingCurve.OutCubic)

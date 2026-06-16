@@ -95,6 +95,11 @@ DEFAULTS = {
     "art_vinyl_size": 0.9983334355091419,
     "audio_feedback_thickness": 1.0,
     "audio_feedback_sensitivity": 1.0,
+    "audio_feedback_shape": "ring",  # ring=環形頻譜 / bars=直立直方圖 / blob=流動波瓣（僅 audio 模式）
+    "audio_feedback_spin": False,    # 反饋周圍是否繞封面旋轉（僅 ring/blob）
+    "audio_feedback_spin_speed": 1.0,  # 旋轉速度倍率
+    "audio_cover_pulse": True,       # audio 模式封面跟著節奏脈動縮放
+    "audio_cover_pulse_strength": 1.0,  # 脈動強度倍率
     "show_vinyl_center": True,
     "vinyl_center_size": 1.0,
     "show_tonearm": True,
@@ -638,6 +643,16 @@ def load_settings():
         2.5, max(0.4, float(SETTINGS.get("audio_feedback_thickness", 1.0))))
     SETTINGS["audio_feedback_sensitivity"] = min(
         3.0, max(0.2, float(SETTINGS.get("audio_feedback_sensitivity", 1.0))))
+    if SETTINGS.get("audio_feedback_shape") not in ("ring", "bars", "blob"):
+        SETTINGS["audio_feedback_shape"] = "ring"
+    SETTINGS["audio_feedback_spin"] = bool(
+        SETTINGS.get("audio_feedback_spin", False))
+    SETTINGS["audio_feedback_spin_speed"] = min(
+        3.0, max(0.1, float(SETTINGS.get("audio_feedback_spin_speed", 1.0))))
+    SETTINGS["audio_cover_pulse"] = bool(
+        SETTINGS.get("audio_cover_pulse", True))
+    SETTINGS["audio_cover_pulse_strength"] = min(
+        2.0, max(0.2, float(SETTINGS.get("audio_cover_pulse_strength", 1.0))))
     SETTINGS["show_vinyl_center"] = bool(
         SETTINGS.get("show_vinyl_center", True))
     SETTINGS["vinyl_center_size"] = min(
