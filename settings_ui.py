@@ -18,7 +18,7 @@ from style import (AUTO_THEME_MODES, BACKGROUND_IMAGE_MODES, CARD_PRESETS,
                    GLYPH_CHECK, GLYPH_CHEVRON_DOWN,
                    GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
                    GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_MODES,
-                   SEEK_STYLES, SETTINGS,
+                   SEEK_STYLES, SETTINGS, SEEK_THUMB_SHAPES,
                    SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES,
                    WEATHER_EFFECTS, Anim, aa,
                    adur, all_themes, anim_on, blend, icon_font,
@@ -125,6 +125,10 @@ def seek_options():
 
 def seek_thumb_options():
     return [(k, tr(f"seek_thumb_{k}")) for k, _ in SEEK_THUMBS]
+
+
+def seek_thumb_shape_options():
+    return [(k, tr(f"seek_thumb_shape_{k}")) for k, _ in SEEK_THUMB_SHAPES]
 
 
 def progress_time_options():
@@ -3717,6 +3721,9 @@ class SettingsPanel(QWidget):
         if single_panel:
             self._advanced_open = False
             self._advanced_hiding = False
+        else:
+            self._advanced_open = bool(
+                SETTINGS.get("settings_advanced_open", False))
         self._panel_category = getattr(
             self, "_panel_category", "section_general")
         if self._panel_category not in PANEL_CATEGORY_KEYS:
@@ -4074,18 +4081,27 @@ class SettingsPanel(QWidget):
             self.sl_artist_size = row("artist_size", PanelSlider(
                 60, 180, SETTINGS["artist_size"] * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_title_x = row("title_x_offset", PanelSlider(
-                -80, 80, SETTINGS["title_x_offset"],
-                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-            self.sl_title_y = row("title_y_offset", PanelSlider(
-                -80, 80, SETTINGS["title_y_offset"],
-                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-            self.sl_artist_x = row("artist_x_offset", PanelSlider(
-                -80, 80, SETTINGS["artist_x_offset"],
-                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-            self.sl_artist_y = row("artist_y_offset", PanelSlider(
-                -80, 80, SETTINGS["artist_y_offset"],
-                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+
+        def build_controls():
+            section(lay, "section_controls")
+            self.sg_seek = row("seek_bar", Segmented(
+                seek_options(), SETTINGS["seek_style"], accent=self._accent))
+            self.sg_thumb = row("seek_thumb", Segmented(
+                seek_thumb_options(), SETTINGS["seek_thumb"],
+                accent=self._accent))
+            self.sg_thumb_shape = row("seek_thumb_shape", Segmented(
+                seek_thumb_shape_options(),
+                SETTINGS.get("seek_thumb_shape", "circle"),
+                accent=self._accent))
+            self.sl_seek_length = row("seek_length", PanelSlider(
+                20, 130, SETTINGS["seek_length"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_seek_thumb_size = row("seek_thumb_size", PanelSlider(
+                20, 150, SETTINGS["seek_thumb_size"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sg_progress_time = row("progress_time", Segmented(
+                progress_time_options(), SETTINGS["progress_time_mode"],
+                accent=self._accent))
 
         def build_cover():
             section(lay, "section_cover")
@@ -4142,12 +4158,14 @@ class SettingsPanel(QWidget):
             build_text()
             build_general()
             build_cover()
+            build_controls()
             build_buttons()
         else:
             build_general()
             build_appearance()
             build_text()
             build_cover()
+            build_controls()
             build_buttons()
 
         self.btn_advanced = PanelButton("", accent=self._accent, parent=self)
@@ -4170,6 +4188,8 @@ class SettingsPanel(QWidget):
 
         def toggle_advanced():
             self._advanced_open = not self._advanced_open
+            self.setting_changed.emit(
+                "settings_advanced_open", self._advanced_open)
             update_advanced_button()
             self._toggle_advanced_panel(self._advanced_open)
 
@@ -4177,6 +4197,7 @@ class SettingsPanel(QWidget):
             if not self._advanced_open and not self._advanced_hiding:
                 return
             self._advanced_open = False
+            self.setting_changed.emit("settings_advanced_open", False)
             update_advanced_button()
             self._toggle_advanced_panel(False)
 
@@ -4241,6 +4262,20 @@ class SettingsPanel(QWidget):
             0, 100, SETTINGS["auto_color_strength"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
 
+        section(adv, "section_text")
+        self.sl_title_x = adv_row("title_x_offset", PanelSlider(
+            -80, 80, SETTINGS["title_x_offset"],
+            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+        self.sl_title_y = adv_row("title_y_offset", PanelSlider(
+            -80, 80, SETTINGS["title_y_offset"],
+            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+        self.sl_artist_x = adv_row("artist_x_offset", PanelSlider(
+            -80, 80, SETTINGS["artist_x_offset"],
+            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+        self.sl_artist_y = adv_row("artist_y_offset", PanelSlider(
+            -80, 80, SETTINGS["artist_y_offset"],
+            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+
         section(adv, "section_cover")
         self.sl_tonearm_speed = adv_row("tonearm_speed", PanelSlider(
             40, 250, SETTINGS["tonearm_speed"] * 100,
@@ -4276,11 +4311,6 @@ class SettingsPanel(QWidget):
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
 
         section(adv, "section_controls")
-        self.sg_seek = adv_row("seek_bar", Segmented(
-            seek_options(), SETTINGS["seek_style"], accent=self._accent))
-        self.sg_progress_time = adv_row("progress_time", Segmented(
-            progress_time_options(), SETTINGS["progress_time_mode"],
-            accent=self._accent))
         self.sl_seek_wave_amp = adv_row("seek_wave_amp", PanelSlider(
             0, 200, SETTINGS["seek_wave_amp"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
@@ -4302,14 +4332,6 @@ class SettingsPanel(QWidget):
             ColorValueButton(SETTINGS.get("seek_track_color", ""),
                              "#ffffff", "seek_track_color",
                              accent=self._accent))
-        self.sl_seek_length = adv_row("seek_length", PanelSlider(
-            20, 130, SETTINGS["seek_length"] * 100,
-            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-        self.sl_seek_thumb_size = adv_row("seek_thumb_size", PanelSlider(
-            20, 150, SETTINGS["seek_thumb_size"] * 100,
-            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-        self.sg_thumb = adv_row("seek_thumb", Segmented(
-            seek_thumb_options(), SETTINGS["seek_thumb"], accent=self._accent))
         self.tg_controls_hover = adv_toggle("controls_hover",
                                             "controls_hover")
         self.tg_topbar_hover = adv_toggle("topbar_hover", "topbar_hover")
@@ -4341,9 +4363,11 @@ class SettingsPanel(QWidget):
 
         update_advanced_button()
         self.advanced_box.setVisible(False if single_panel else self._advanced_open)
+        self._advanced_t = 0.0 if single_panel else (
+            1.0 if self._advanced_open else 0.0)
         if self._advanced_eff is not None:
             self._advanced_eff.setOpacity(
-                0.0 if single_panel else (1.0 if self._advanced_open else 0.0))
+                0.0 if single_panel else self._advanced_t)
 
         foot_box = QWidget(body)
         foot = QHBoxLayout(foot_box)
@@ -4529,6 +4553,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("seek_thumb_size", v / 100.0))
         self.sg_thumb.changed.connect(
             lambda v: self.setting_changed.emit("seek_thumb", v))
+        self.sg_thumb_shape.changed.connect(
+            lambda v: self.setting_changed.emit("seek_thumb_shape", v))
         self.sg_ctl.changed.connect(
             lambda v: self.setting_changed.emit("controls_align", v))
         self.sg_lang.changed.connect(
@@ -5622,6 +5648,9 @@ class SettingsPanel(QWidget):
             progress_time_options(), SETTINGS["progress_time_mode"])
         self.sg_thumb.set_options(seek_thumb_options(),
                                   SETTINGS["seek_thumb"])
+        self.sg_thumb_shape.set_options(
+            seek_thumb_shape_options(),
+            SETTINGS.get("seek_thumb_shape", "circle"))
         self.sg_card_preset.set_options(card_preset_options(),
                                         SETTINGS["card_preset"])
         self.sg_art_mode.set_options(art_mode_options(),
@@ -5843,7 +5872,8 @@ class SettingsPanel(QWidget):
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,
                     self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
-                    self.sg_progress_time, self.sg_thumb, self.sg_panel_type,
+                    self.sg_progress_time, self.sg_thumb, self.sg_thumb_shape,
+                    self.sg_panel_type,
                     self.sg_panel_category, self.sg_bg_image_mode,
                     self.sg_weather_effect,
                     self.sg_source, self.sg_startup_show,

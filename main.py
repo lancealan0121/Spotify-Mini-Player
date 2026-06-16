@@ -173,8 +173,10 @@ def rounded_pixmap(img: QImage, size: int, radius: int, dpr: float) -> QPixmap:
     p.setClipPath(path)
     scaled = img.scaled(px, px, Qt.KeepAspectRatioByExpanding,
                         Qt.SmoothTransformation)
-    scaled.setDevicePixelRatio(dpr)
-    p.drawImage(QRectF(0, 0, size, size), scaled)
+    sx = max(0.0, (scaled.width() - px) / 2.0)
+    sy = max(0.0, (scaled.height() - px) / 2.0)
+    p.drawImage(QRectF(0, 0, size, size), scaled,
+                QRectF(sx, sy, px, px))
     p.end()
     return pm
 
@@ -3488,6 +3490,17 @@ class PlayerWindow(QWidget):
             app = QApplication.instance()
             if app is not None:
                 app.setFont(QFont(value))
+        seek_transition_keys = {
+            "seek_style", "seek_wave_amp", "seek_wave_speed",
+            "seek_glow_strength", "seek_length",
+            "seek_thumb_shape", "seek_thumb_size", "seek_fill_color",
+            "seek_thumb_color", "seek_track_color",
+        }
+        seek_visual_transition = (
+            key in seek_transition_keys and self.card is not None
+            and hasattr(self.card, "seek"))
+        if seek_visual_transition:
+            self.card.seek.begin_visual_transition()
         SETTINGS[key] = value
         self._save_timer.start()         # 防抖寫檔（拖曳滑桿時每幀都會進來）
         if key in ("scale", "font"):
@@ -3559,7 +3572,11 @@ class PlayerWindow(QWidget):
             self.card.seek.style_changed()
         elif key == "seek_length":
             self.card.apply_seek_length()
-        elif key in ("seek_thumb", "seek_thumb_size"):
+        elif key == "seek_thumb":
+            # 圓鈕顯示模式（hover/always）：只重新同步圓鈕可見度動畫，
+            # 不走整幀交叉淡化（避免新舊圓鈕重疊的幽靈圖層）
+            self.card.seek.thumb_mode_changed()
+        elif key in ("seek_thumb_shape", "seek_thumb_size"):
             self.card.seek.style_changed()
         elif key == "progress_time_mode":
             dur = self.state.duration if self.state is not None else self.card.seek._dur
@@ -3633,6 +3650,8 @@ class PlayerWindow(QWidget):
                 self.bridge.poke()
         elif key in ("startup_enabled", "startup_show"):
             sync_startup_entry()
+        if seek_visual_transition:
+            self.card.seek.commit_visual_transition()
         # gpu：重啟後生效（啟動時設定 QT_WIDGETS_RHI）
 
     def _reset_settings(self):

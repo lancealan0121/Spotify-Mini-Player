@@ -216,6 +216,12 @@ class SystemSpectrumAnalyzer:
     ATTACK_TAU = 0.035   # bar 竄起時間常數（秒）：小=反應快、衝擊強
     RELEASE_TAU = 0.22   # bar 回落時間常數（秒）：大=尾巴長、不抖
     PEAK_TAU = 1.2       # 正規化峰值衰減時間常數（秒）：小=動態跟得緊
+    SILENCE_HOLD = 0.05  # 多久沒有新樣本流入就當作靜音（秒）：loopback 暫停渲染
+                         # 時不送 callback，緩衝會凍結。偵測下限是一個 callback
+                         # 間隔（blocksize 512 @ 44.1kHz≈11.6ms），這裡留約 4 倍
+                         # 餘裕，播放中不會誤判、暫停時又幾乎無感延遲。
+    SILENCE_RELEASE_TAU = 0.07  # 靜音時 bar 專用回落時間常數（秒）：比音樂尾巴
+                         # （RELEASE_TAU）快很多，暫停瞬間就俐落縮回，不拖泥帶水。
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -229,6 +235,7 @@ class SystemSpectrumAnalyzer:
         self._device_label = ""
         self._peak = 1.0
         self._last_bars_t = None
+        self._last_write_t = None
         if _SPECTRUM_OK:
             self._buffer = np.zeros(self.SAMPLE_RATE, dtype=np.float32)
             self._write_pos = 0
@@ -340,6 +347,7 @@ class SystemSpectrumAnalyzer:
                     self._buffer[self._write_pos:] = mono[:first]
                     self._buffer[:end % len(self._buffer)] = mono[first:]
                 self._write_pos = end % len(self._buffer)
+                self._last_write_t = time.monotonic()
         except Exception:
             return
 
@@ -363,6 +371,7 @@ class SystemSpectrumAnalyzer:
                     self._buffer[self._write_pos:] = mono[:first]
                     self._buffer[:end % len(self._buffer)] = mono[first:]
                 self._write_pos = end % len(self._buffer)
+                self._last_write_t = time.monotonic()
         except Exception:
             return
 
@@ -461,7 +470,7 @@ class SystemSpectrumAnalyzer:
         try:
             self._stream = sd.InputStream(
                 samplerate=self.SAMPLE_RATE,
-                blocksize=1024,
+                blocksize=512,
                 dtype="float32",
                 device=device,
                 channels=channels,
@@ -495,6 +504,22 @@ class SystemSpectrumAnalyzer:
     def bars(self) -> Optional[list[float]]:
         if not self.start():
             return None
+        now = time.monotonic()
+        last_write = self._last_write_t
+        # loopback 在沒有音訊渲染時不會送 callback，環形緩衝會凍結在最後一段
+        # 音樂。若資料停止流入超過 SILENCE_HOLD 就當作靜音，讓 bar 依 release
+        # 時間常數平滑回落歸零，而不是回傳凍結的舊頻譜（卡住不縮回封面）。
+        silent = last_write is None or (now - last_write) > self.SILENCE_HOLD
+        last = self._last_bars_t
+        self._last_bars_t = now
+        dt = 0.016 if last is None else min(0.1, max(1e-4, now - last))
+        if silent:
+            k_dn = 1.0 - math.exp(-dt / self.SILENCE_RELEASE_TAU)
+            self._smooth += (0.0 - self._smooth) * k_dn
+            self._smooth[self._smooth < 1e-4] = 0.0
+            # 峰值同步衰減，下次有音樂時才能立刻重新正規化到滿幅。
+            self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), 1e-6)
+            return self._smooth.tolist()
         with self._lock:
             pos = self._write_pos
             if pos >= self.FFT_SIZE:
@@ -510,11 +535,6 @@ class SystemSpectrumAnalyzer:
             raw[i] = float(np.mean(spectrum[idx]))
         raw *= self._tilt
         raw = np.log1p(raw * 8.0)
-
-        now = time.monotonic()
-        last = self._last_bars_t
-        self._last_bars_t = now
-        dt = 0.016 if last is None else min(0.1, max(1e-4, now - last))
 
         mx = float(raw.max()) if raw.size else 0.0
         self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), mx, 1e-6)

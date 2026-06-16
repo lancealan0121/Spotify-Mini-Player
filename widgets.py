@@ -2,7 +2,8 @@
 import math
 import time
 
-from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QRectF, QSize,
+                            Qt, QTimer, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF,
                            QLinearGradient, QPainter, QPainterPath, QPen,
                            QPixmap, QRadialGradient)
@@ -2124,6 +2125,9 @@ class SeekBar(QWidget):
     WAVE_SPEED = 4.8      # 相位速度 rad/s
     GLOW_SPEED = 0.67     # 流光速度 cycle/s
     PAD = 7.0             # 左右留邊，避免圓鈕與圓端蓋被裁切
+    THUMB_ANIM_FACTOR = 3.0
+    HOVER_ANIM_FACTOR = 0.5   # seek_thumb=hover 滑過出現/消失再加速（疊在
+                              # THUMB_ANIM_FACTOR 上）：只影響 hover 進出，不動其他
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2151,10 +2155,16 @@ class SeekBar(QWidget):
         self._ta = Anim(self)
         self._ta.valueChanged.connect(self._on_thumb)
 
+        # 按下圓鈕放大（0~1 過渡，平滑進出而非瞬間跳大）
+        self._press = 0.0
+        self._pa = Anim(self)
+        self._pa.valueChanged.connect(self._on_press)
+
         # 波浪/流光相位（時間基準，速度與 fps 無關）
         self._style = SETTINGS.get("seek_style", "wave")
         self._phase = 0.0
         self._glow_phase = 0.0
+        self._thumb_spin = 0.0
         self._amp = 0.0              # 目前波浪振幅（平滑過渡）
         self._glow = 0.0             # 流光透明度（播放/暫停淡入淡出）
         self._fx_last = time.monotonic()
@@ -2162,6 +2172,13 @@ class SeekBar(QWidget):
         self._fx.setTimerType(Qt.PreciseTimer)
         self._fx.setInterval(fps_ms())
         self._fx.timeout.connect(self._fx_tick)
+
+        # 設定切換時保留舊畫面，套用新樣式後用 crossfade 過渡。
+        self._transition_pm: QPixmap | None = None
+        self._transition_t = 1.0
+        self._transition_anim = Anim(self)
+        self._transition_anim.valueChanged.connect(self._on_transition)
+        self._transition_anim.finished.connect(self._transition_done)
 
         self.setMouseTracking(True)
 
@@ -2189,9 +2206,76 @@ class SeekBar(QWidget):
         self._sync_fx()
 
     def style_changed(self):
+        own_transition = self._transition_pm is None
+        if own_transition:
+            self.begin_visual_transition()
         self._style = SETTINGS.get("seek_style", "wave")
         self._sync_fx()
         self._sync_thumb()
+        if own_transition:
+            self.commit_visual_transition()
+        else:
+            self.update()
+
+    def thumb_mode_changed(self):
+        # seek_thumb（圓鈕顯示：hover/always）只改圓鈕可見度，不動底軌/填滿，
+        # 直接走 _sync_thumb 的彈出/收回動畫即可。不要走整幀交叉淡化——那會把
+        # 舊圓鈕烘進快照、與正在動畫的新圓鈕重疊成幽靈圖層（原本的卡頓主因）。
+        self._sync_thumb()
+
+    def begin_visual_transition(self):
+        if (not anim_on() or self.width() <= 1 or self.height() <= 1
+                or not self.isVisible()):
+            self._transition_pm = None
+            self._transition_t = 1.0
+            return
+        if self._transition_anim.state() == Anim.Running:
+            self._transition_anim.stop()
+        # 擷取「整幀」舊畫面（含底軌）。舊版只拍填滿/圓鈕、底軌不進快照，
+        # 導致 wave↔plain 切換時波浪底軌瞬切、看起來像沒動畫。
+        self._transition_pm = self._render_pixmap()
+        self._transition_t = 0.0
+
+    def _render_pixmap(self) -> QPixmap:
+        dpr = max(1.0, self.devicePixelRatioF())
+        pm = QPixmap(QSize(max(1, round(self.width() * dpr)),
+                           max(1, round(self.height() * dpr))))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        try:
+            aa(painter)
+            self._paint_contents(painter, draw_track=True)
+        finally:
+            painter.end()
+        return pm
+
+    def commit_visual_transition(self):
+        if self._transition_pm is None:
+            self.update()
+            return
+        ms = round(adur(320, 170))
+        if not anim_on() or ms <= 0:
+            self._transition_pm = None
+            self._transition_t = 1.0
+            self.update()
+            return
+        self._transition_anim.stop()
+        self._transition_t = 0.0
+        self._transition_anim.setStartValue(0.0)
+        self._transition_anim.setEndValue(1.0)
+        self._transition_anim.setDuration(ms)
+        self._transition_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._transition_anim.start()
+
+    def _on_transition(self, value):
+        self._transition_t = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _transition_done(self):
+        if self._transition_t >= 0.999:
+            self._transition_pm = None
+            self._transition_t = 1.0
         self.update()
 
     def apply_fps(self):
@@ -2262,6 +2346,7 @@ class SeekBar(QWidget):
         return {
             "phase": self._phase,
             "glow_phase": self._glow_phase,
+            "thumb_spin": self._thumb_spin,
             "amp": self._amp,
             "glow": self._glow,
             "thumb": self._thumb,
@@ -2273,6 +2358,7 @@ class SeekBar(QWidget):
             return
         self._phase = float(state.get("phase", self._phase))
         self._glow_phase = float(state.get("glow_phase", self._glow_phase))
+        self._thumb_spin = float(state.get("thumb_spin", self._thumb_spin))
         self._amp = float(state.get("amp", self._amp))
         self._glow = float(state.get("glow", self._glow))
         self._thumb = float(state.get("thumb", self._thumb))
@@ -2287,6 +2373,9 @@ class SeekBar(QWidget):
         style = self._style
         if not self.isVisible():
             return False
+        if (SETTINGS.get("seek_thumb_shape", "circle") == "star"
+                and self._playing and self._thumb > 0.001 and anim_on()):
+            return True
         if self._amp > 0.001 or self._glow > 0.01:
             return True
         if style == "wave":
@@ -2326,6 +2415,9 @@ class SeekBar(QWidget):
             if abs(self._glow - glow_target) < 0.01:
                 self._glow = glow_target
             self._glow_phase += self.GLOW_SPEED * dt
+        if (SETTINGS.get("seek_thumb_shape", "circle") == "star"
+                and self._playing and self._thumb > 0.001 and anim_on()):
+            self._thumb_spin += math.tau * 0.09 * dt
         if not self._needs_fx():
             self._fx.stop()
         self.update()
@@ -2369,7 +2461,36 @@ class SeekBar(QWidget):
 
     def _on_thumb(self, v):
         self._thumb = float(v)
+        self._sync_fx()
         self.update()
+
+    def _on_press(self, v):
+        self._press = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    def _animate_press(self, down: bool):
+        target = 1.0 if down else 0.0
+        if abs(self._press - target) < 0.001 and self._pa.state() != Anim.Running:
+            self._press = target
+            self.update()
+            return
+        if not anim_on():
+            self._press = target
+            self._pa.stop()
+            self.update()
+            return
+        self._pa.stop()
+        self._pa.setStartValue(self._press)
+        self._pa.setEndValue(target)
+        if down:
+            self._pa.setDuration(adur(170, 90))
+            curve = QEasingCurve(QEasingCurve.OutBack)
+            curve.setOvershoot(2.6)
+            self._pa.setEasingCurve(curve)
+        else:
+            self._pa.setDuration(adur(220, 110))
+            self._pa.setEasingCurve(QEasingCurve.OutCubic)
+        self._pa.start()
 
     def _thumb_should_show(self) -> bool:
         if not self._enabled_seek or self._dur <= 0:
@@ -2391,7 +2512,8 @@ class SeekBar(QWidget):
         h = max(1.0, float(self.height()))
         factor = self._thumb_size_factor()
         base = max(2.0, h * (4.6 / 18.0)) * factor
-        drag = h * (1.2 / 18.0) * factor if self._drag else 0.0
+        # 按下放大走 _press 過渡（0~1），平滑而非瞬間跳大
+        drag = h * (1.2 / 18.0) * factor * self._press
         return (base + drag) * (self._thumb if visible is None else visible)
 
     def _pad(self) -> float:
@@ -2409,11 +2531,16 @@ class SeekBar(QWidget):
             self._thumb = target
             self.update()
             return
+        # seek_thumb=hover 的滑過進出再加速兩倍（HOVER_ANIM_FACTOR），其餘
+        # 情境（常駐模式、拖曳、啟用切換）維持原速，不受影響。
+        speed = self.THUMB_ANIM_FACTOR
+        if (SETTINGS.get("seek_thumb", "hover") == "hover" and not self._drag):
+            speed *= self.HOVER_ANIM_FACTOR
         self._ta.stop()
         self._ta.setStartValue(self._thumb)
         if show:
             self._ta.setEndValue(target)
-            self._ta.setDuration(adur(260, 130))
+            self._ta.setDuration(round(adur(260, 130) * speed))
             if anim_full():
                 curve = QEasingCurve(QEasingCurve.OutBack)
                 curve.setOvershoot(2.2)
@@ -2422,7 +2549,7 @@ class SeekBar(QWidget):
                 self._ta.setEasingCurve(QEasingCurve.OutCubic)
         else:
             self._ta.setEndValue(target)
-            self._ta.setDuration(adur(160, 100))
+            self._ta.setDuration(round(adur(160, 100) * speed))
             self._ta.setEasingCurve(QEasingCurve.InCubic)
         self._ta.start()
 
@@ -2439,14 +2566,17 @@ class SeekBar(QWidget):
     def enterEvent(self, e):
         self._hover = True
         self._sync_thumb()
+        self._sync_fx()
 
     def leaveEvent(self, e):
         self._hover = False
         self._sync_thumb()
+        self._sync_fx()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and self._enabled_seek and self._dur > 0:
             self._drag = True
+            self._animate_press(True)
             self._target = self._sec_from_x(e.position().x())
             self._sync_thumb()
             self.previewed.emit(self._target)
@@ -2472,6 +2602,7 @@ class SeekBar(QWidget):
     def mouseReleaseEvent(self, e):
         if self._drag:
             self._drag = False
+            self._animate_press(False)
             self._pos = self._target
             self.seeked.emit(self._target)
             if self._ca.state() != Anim.Running:
@@ -2497,10 +2628,55 @@ class SeekBar(QWidget):
     def _track_color(self) -> QColor:
         return QColor(self._track_col)
 
+    def _thumb_shape(self) -> str:
+        shape = str(SETTINGS.get("seek_thumb_shape", "circle"))
+        return shape if shape in ("circle", "star", "rect") else "circle"
+
+    def _star_path(self, radius: float) -> QPainterPath:
+        path = QPainterPath()
+        inner = radius * 0.47
+        for i in range(10):
+            a = -math.pi / 2 + i * math.pi / 5
+            r = radius if i % 2 == 0 else inner
+            pt = QPointF(math.cos(a) * r, math.sin(a) * r)
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        path.closeSubpath()
+        return path
+
+    def _draw_thumb(self, p: QPainter, center: QPointF,
+                    thumb_color: QColor):
+        if self._thumb <= 0.01 or self._dur <= 0:
+            return
+        r = self._thumb_radius()
+        c = QColor(thumb_color)
+        c.setAlpha(round(c.alpha() * min(1.0, self._thumb)))
+        p.save()
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        shape = self._thumb_shape()
+        if shape == "star":
+            p.translate(center)
+            p.rotate(math.degrees(self._thumb_spin))
+            p.drawPath(self._star_path(max(1.0, r * 1.18)))
+        elif shape == "rect":
+            rw = max(3.0, r * 1.05)
+            rh = max(rw + 1.0, r * 2.65)
+            rr = min(rw, rh) * 0.34
+            p.drawRoundedRect(
+                QRectF(center.x() - rw / 2, center.y() - rh / 2, rw, rh),
+                rr, rr)
+        else:
+            p.drawEllipse(center, r, r)
+        p.restore()
+
     def _draw_wave_track(self, p: QPainter, w: float, h: float, pad: float,
                          tw: float, cy: float, bar_h: float, ratio: float,
                          fill_w: float, grad, gray: QColor,
-                         thumb_color: QColor):
+                         thumb_color: QColor, draw_track: bool = True,
+                         content_opacity: float = 1.0):
         wave_amp = float(SETTINGS.get("seek_wave_amp", 1.0))
         amp = h * self.WAVE_AMP * wave_amp * self._amp
         k = 2 * math.pi / max(26.0, h * 1.9)
@@ -2537,11 +2713,13 @@ class SeekBar(QWidget):
                      pad + tw - bar_h / 2)
         wave_y = wy(sample)
         p.setBrush(Qt.NoBrush)
-        if fill_w < pad + tw - 1:
+        if draw_track and fill_w < pad + tw - 1:
             pen = QPen(gray, bar_h)
             pen.setCapStyle(Qt.RoundCap)
             pen.setJoinStyle(Qt.RoundJoin)
             draw_segment(fill_w, pad + tw, pen)
+        p.save()
+        p.setOpacity(max(0.0, min(1.0, content_opacity)))
         if ratio > 0:
             pen = QPen(QBrush(grad), bar_h)
             pen.setCapStyle(Qt.RoundCap)
@@ -2564,18 +2742,15 @@ class SeekBar(QWidget):
                     pen.setCapStyle(Qt.RoundCap)
                     pen.setJoinStyle(Qt.RoundJoin)
                     draw_segment(left, right, pen)
-        if self._thumb > 0.01 and self._dur > 0:
-            r = self._thumb_radius()
-            p.setPen(Qt.NoPen)
-            c = QColor(thumb_color)
-            c.setAlpha(round(c.alpha() * min(1.0, self._thumb)))
-            p.setBrush(c)
-            p.drawEllipse(QPointF(fill_w, wave_y), r, r)
+        self._draw_thumb(p, QPointF(fill_w, wave_y), thumb_color)
+        p.restore()
 
     def _paint_wave_antialiased(self, p: QPainter, w: float, h: float,
                                 pad: float, tw: float, cy: float,
                                 bar_h: float, ratio: float, fill_w: float,
-                                grad, gray: QColor, thumb_color: QColor):
+                                grad, gray: QColor, thumb_color: QColor,
+                                draw_track: bool = True,
+                                content_opacity: float = 1.0):
         ss = 2.0
         pm = QPixmap(max(1, math.ceil(w * ss)), max(1, math.ceil(h * ss)))
         pm.fill(Qt.transparent)
@@ -2583,14 +2758,43 @@ class SeekBar(QWidget):
         aa(pp)
         pp.scale(ss, ss)
         self._draw_wave_track(pp, w, h, pad, tw, cy, bar_h,
-                              ratio, fill_w, grad, gray, thumb_color)
+                              ratio, fill_w, grad, gray, thumb_color,
+                              draw_track=draw_track,
+                              content_opacity=content_opacity)
         pp.end()
         p.setRenderHint(QPainter.SmoothPixmapTransform, True)
         p.drawPixmap(QRectF(0, 0, w, h), pm, QRectF(pm.rect()))
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        aa(p)
+    def _crossfade_pixmap(self, new_pm: QPixmap, old_pm: QPixmap,
+                          t: float) -> QPixmap:
+        # 整幀線性交叉淡化 buf = 新×t + 舊×(1−t)。每個權重各自以 Over 烘到
+        # 透明底（src×opacity 精確），最後用 opacity=1 的 Plus 純相加——避免
+        # 直接用半透明 Over/Plus 疊圖造成 alpha 下沉（過渡中變透/變暗閃爍）。
+        size = new_pm.size()
+        dpr = new_pm.devicePixelRatio()
+        t = max(0.0, min(1.0, t))
+        buf = QPixmap(size)
+        buf.setDevicePixelRatio(dpr)
+        buf.fill(Qt.transparent)
+        bp = QPainter(buf)
+        bp.setOpacity(1.0 - t)
+        bp.drawPixmap(0, 0, old_pm)
+        bp.end()
+        layer = QPixmap(size)
+        layer.setDevicePixelRatio(dpr)
+        layer.fill(Qt.transparent)
+        lp = QPainter(layer)
+        lp.setOpacity(t)
+        lp.drawPixmap(0, 0, new_pm)
+        lp.end()
+        cp = QPainter(buf)
+        cp.setCompositionMode(QPainter.CompositionMode_Plus)
+        cp.setOpacity(1.0)
+        cp.drawPixmap(0, 0, layer)
+        cp.end()
+        return buf
+
+    def _paint_contents(self, p: QPainter, draw_track: bool = True):
         w, h = self.width(), float(self.height())
         pad = self._pad()
         tw = w - pad * 2                 # 軌道實際寬度
@@ -2606,22 +2810,27 @@ class SeekBar(QWidget):
         grad.setColorAt(0.0, fill_color.lighter(125))
         grad.setColorAt(1.0, fill_color)
         gray = self._track_color()
+        content_opacity = 1.0
 
         wave_y = cy
         wavy = style == "wave" and self._amp > 0.001
         if wavy:
             self._paint_wave_antialiased(p, float(w), h, pad, tw, cy,
                                          bar_h, ratio, fill_w, grad, gray,
-                                         thumb_color)
+                                         thumb_color, draw_track=draw_track,
+                                         content_opacity=content_opacity)
             return
 
         # 底軌
-        p.setPen(Qt.NoPen)
-        p.setBrush(gray)
-        p.drawRoundedRect(QRectF(pad, cy - bar_h / 2, tw, bar_h),
-                          bar_h / 2, bar_h / 2)
+        if draw_track:
+            p.setPen(Qt.NoPen)
+            p.setBrush(gray)
+            p.drawRoundedRect(QRectF(pad, cy - bar_h / 2, tw, bar_h),
+                              bar_h / 2, bar_h / 2)
         if ratio > 0:
             fw = max(bar_h, tw * ratio)
+            p.save()
+            p.setOpacity(content_opacity)
             p.setPen(Qt.NoPen)
             p.setBrush(grad)
             p.drawRoundedRect(
@@ -2648,13 +2857,23 @@ class SeekBar(QWidget):
                 p.setPen(Qt.NoPen)
                 p.setBrush(g2)
                 p.drawPath(clip)
+            p.restore()
 
         # hover / 拖曳圓鈕（彈出動畫）
-        if self._thumb > 0.01 and self._dur > 0:
-            r = self._thumb_radius()
-            cx = fill_w
-            p.setPen(Qt.NoPen)
-            c = QColor(thumb_color)
-            c.setAlpha(round(c.alpha() * min(1.0, self._thumb)))
-            p.setBrush(c)
-            p.drawEllipse(QPointF(cx, wave_y), r, r)
+        p.save()
+        p.setOpacity(content_opacity)
+        self._draw_thumb(p, QPointF(fill_w, wave_y), thumb_color)
+        p.restore()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        aa(p)
+        if (self._transition_pm is not None and self._transition_t < 0.999):
+            new_pm = self._render_pixmap()
+            buf = self._crossfade_pixmap(
+                new_pm, self._transition_pm, self._transition_t)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(QRectF(0, 0, self.width(), float(self.height())),
+                         buf, QRectF(buf.rect()))
+            return
+        self._paint_contents(p)
