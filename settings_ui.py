@@ -21,7 +21,7 @@ from style import (AUTO_THEME_MODES, BACKGROUND_IMAGE_MODES, CARD_PRESETS,
                    SEEK_STYLES, SETTINGS, SEEK_THUMB_SHAPES,
                    SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES,
                    WEATHER_EFFECTS, Anim, aa,
-                   adur, all_themes, anim_on, blend, icon_font,
+                   adur, all_themes, anim_on, blend, fps_ms, icon_font,
                    is_safe_ui_font, safe_font_family, soft_shadow,
                    theme_color, theme_gradient, theme_label, tr, ui_font)
 from widgets import IconButton
@@ -3030,8 +3030,12 @@ class _ScrollablePanelBody(_PanelBody):
         self._scroll_hover_t = 0.0
         self._scroll_drag = False
         self._scroll_drag_delta = 0.0
-        self._sa = Anim(self)
-        self._sa.valueChanged.connect(self._on_scroll)
+        self._scroll_velocity = 0.0
+        self._scroll_last_t = 0.0
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setTimerType(Qt.PreciseTimer)
+        self._scroll_timer.setInterval(fps_ms())
+        self._scroll_timer.timeout.connect(self._step_scroll)
         self._scroll_ha = Anim(self)
         self._scroll_ha.valueChanged.connect(self._on_scrollbar_hover)
         self.setMouseTracking(True)
@@ -3094,7 +3098,25 @@ class _ScrollablePanelBody(_PanelBody):
             lay.activate()
         self._offset = self._clamp(self._offset)
         self._target_offset = self._clamp(self._target_offset)
-        self._place_content()
+        if self._max_offset() <= 1:
+            self._stop_smooth_scroll()
+        self._place_content(force=True)
+
+    def resize_viewport_only(self, height: int):
+        """section 動畫專用：只縮 viewport／footer 高度，不重排 content。
+
+        content 由 _SectionSlideOverlay 的快照蓋住，SectionLabel 則保留在
+        底下即時重繪箭頭；這裡刻意不碰 content layout，只把 viewport 與固定
+        footer 的幾何跟著視窗縮放。寬度與 header／footer 高度沿用最後一次
+        set_viewport 的結果。"""
+        height = max(1, int(height))
+        width = max(1, self.width())
+        self._viewport_h = max(1, height - self._header_h - self._footer_h)
+        if self._footer_widget is not None:
+            self._footer_widget.setGeometry(
+                0, height - self._footer_h, width, self._footer_h)
+            self._footer_widget.raise_()
+        self.viewport.setGeometry(0, self._header_h, width, self._viewport_h)
 
     def _max_offset(self) -> float:
         return max(0.0, float(self._content_h - self._viewport_h))
@@ -3162,11 +3184,16 @@ class _ScrollablePanelBody(_PanelBody):
         ratio = (float(y) - drag_delta - hit.y()) / span
         return self._clamp(ratio * self._max_offset())
 
+    def _stop_smooth_scroll(self):
+        self._scroll_timer.stop()
+        self._scroll_velocity = 0.0
+        self._scroll_last_t = 0.0
+
     def _set_offset_direct(self, value: float):
-        self._sa.stop()
+        self._stop_smooth_scroll()
         self._offset = self._clamp(value)
         self._target_offset = self._offset
-        self._place_content()
+        self._place_content(force=True)
 
     def _begin_scrollbar_drag(self, pos: QPointF) -> bool:
         geo = self._scrollbar_geometry()
@@ -3178,7 +3205,7 @@ class _ScrollablePanelBody(_PanelBody):
         self._scroll_drag = True
         self._scroll_hover = True
         self._scroll_hover_to(True)
-        self._sa.stop()
+        self._stop_smooth_scroll()
         if thumb_hit.contains(pos):
             self._scroll_drag_delta = pos.y() - thumb.y()
         else:
@@ -3211,42 +3238,102 @@ class _ScrollablePanelBody(_PanelBody):
         return QPointF(pos.x() + cp.x() + vp.x(),
                        pos.y() + cp.y() + vp.y())
 
-    def _place_content(self):
-        self.content.move(0, -round(self._offset))
-        self.viewport.update()
+    def _place_content(self, force: bool = False):
+        y = -round(self._offset)
+        if force or self.content.y() != y:
+            self.content.move(0, y)
+            self.viewport.update()
         self.update()
 
     def set_scroll_offset(self, value: float):
-        self._sa.stop()
+        self._stop_smooth_scroll()
         self._offset = self._clamp(value)
         self._target_offset = self._offset
-        self._place_content()
+        self._place_content(force=True)
 
     def _on_scroll(self, value):
         self._offset = self._clamp(float(value))
         self._place_content()
+
+    def _start_smooth_scroll(self):
+        self._scroll_timer.setInterval(fps_ms())
+        if not self._scroll_timer.isActive():
+            self._scroll_last_t = time.monotonic()
+            self._scroll_timer.start()
+
+    def _step_scroll(self):
+        max_offset = self._max_offset()
+        if max_offset <= 1:
+            self._offset = 0.0
+            self._target_offset = 0.0
+            self._stop_smooth_scroll()
+            self._place_content(force=True)
+            return
+
+        target = self._clamp(self._target_offset)
+        self._target_offset = target
+        now = time.monotonic()
+        if self._scroll_last_t <= 0.0:
+            self._scroll_last_t = now
+            return
+        dt = max(0.001, min(0.05, now - self._scroll_last_t))
+        self._scroll_last_t = now
+
+        current = self._offset
+        ms = adur(210, 120)
+        if not anim_on() or ms <= 0:
+            self._offset = target
+            self._stop_smooth_scroll()
+            self._place_content(force=True)
+            return
+        smooth_time = max(0.045, (ms / 1000.0) * 0.48)
+        omega = 2.0 / smooth_time
+        x = omega * dt
+        decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x)
+        change = current - target
+        temp = (self._scroll_velocity + omega * change) * dt
+        velocity = (self._scroll_velocity - omega * temp) * decay
+        new_offset = target + (change + temp) * decay
+
+        if ((target - current) > 0.0) == (new_offset > target):
+            new_offset = target
+            velocity = 0.0
+        clamped = self._clamp(new_offset)
+        if abs(clamped - new_offset) > 0.001:
+            velocity = 0.0
+        self._offset = clamped
+        self._scroll_velocity = velocity
+        self._place_content()
+
+        if abs(self._target_offset - self._offset) < 0.35:
+            if abs(self._scroll_velocity) < 8.0:
+                self._offset = self._target_offset
+                self._stop_smooth_scroll()
+                self._place_content()
 
     def _scroll_to(self, value: float):
         target = self._clamp(value)
         self._target_offset = target
         ms = adur(210, 120)
         if not anim_on() or ms <= 0:
-            self._sa.stop()
+            self._stop_smooth_scroll()
             self._offset = target
+            self._place_content(force=True)
+            return
+        if abs(self._offset - target) < 0.35:
+            self._offset = target
+            self._stop_smooth_scroll()
             self._place_content()
             return
-        self._sa.stop()
-        self._sa.setStartValue(self._offset)
-        self._sa.setEndValue(target)
-        self._sa.setDuration(ms)
-        self._sa.setEasingCurve(QEasingCurve.OutCubic)
-        self._sa.start()
+        self._start_smooth_scroll()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._offset = self._clamp(self._offset)
         self._target_offset = self._clamp(self._target_offset)
-        self._place_content()
+        if self._max_offset() <= 1:
+            self._stop_smooth_scroll()
+        self._place_content(force=True)
 
     def eventFilter(self, obj, event):
         if obj is self.content:
@@ -3278,9 +3365,9 @@ class _ScrollablePanelBody(_PanelBody):
             return
         pixel = e.pixelDelta().y()
         if pixel:
-            delta = pixel
+            delta = pixel * 1.2
         else:
-            delta = e.angleDelta().y() / 120.0 * panel_px(58)
+            delta = e.angleDelta().y() / 120.0 * panel_px(76)
         self._scroll_to(self._target_offset - delta)
         e.accept()
 
@@ -3310,22 +3397,29 @@ class _ScrollablePanelBody(_PanelBody):
             self._set_scrollbar_hover(None)
         super().leaveEvent(e)
 
-    def paintEvent(self, e):
-        super().paintEvent(e)
+    def _paint_scrollbar(self, p: QPainter, y_offset: float = 0.0):
         geo = self._scrollbar_geometry()
         if geo is None:
             return
         _, thumb, _ = geo
         t = self._scroll_hover_t
         w = panel_f(3 + 2 * t)
-        draw_thumb = QRectF(thumb.center().x() - w / 2.0, thumb.y(),
+        draw_thumb = QRectF(thumb.center().x() - w / 2.0,
+                            thumb.y() + float(y_offset),
                             w, thumb.height())
-        p = QPainter(self)
-        aa(p)
         p.setPen(Qt.NoPen)
         alpha = round(44 + (98 - 44) * t)
         p.setBrush(QColor(255, 255, 255, alpha))
         p.drawRoundedRect(draw_thumb, w / 2.0, w / 2.0)
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        geo = self._scrollbar_geometry()
+        if geo is None:
+            return
+        p = QPainter(self)
+        aa(p)
+        self._paint_scrollbar(p)
 
 
 class _PanelZoomOverlay(QWidget):
@@ -3603,6 +3697,151 @@ class _PanelSlideOverlay(QWidget):
             p.drawPixmap(r, self._new, QRectF(self._new.rect()))
 
 
+class _SectionSlideOverlay(QWidget):
+    """section 展開/收合動畫層：凍結 content 整層 reflow，改用展開後快照。
+
+    原本動畫每幀都讓捲動內容重新 layout（撐開的 section 把下方數十個控制項
+    全部 move + 重繪），是設定面板下拉只有 ~30fps 的主因。改成動畫開始抓一張
+    「展開後」content 快照，動畫期間只 drawPixmap 兩段——展開點以上不動、以下
+    隨露出高度平移，完全不碰 layout 與子元件重繪。座標皆為 content（未捲動）
+    座標，套上捲動位移 _offset 後映射到 viewport。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self._pm: QPixmap | None = None      # content 展開後快照
+        self._x_top = 0.0                    # 展開 section 在 content 的 y
+        self._full_h = 1.0                   # 展開高度
+        self._offset = 0.0                   # 捲動位移
+        self._header_x = 0.0                 # SectionLabel 在 content 的 x
+        self._header_w = 1.0                 # SectionLabel 寬
+        self._header_top = 0.0               # SectionLabel 在 content 的 y
+        self._header_h = 0.0                 # SectionLabel 高（>0 才挖空）
+        self._header_gap = 0.0               # header 和 group 之間的展開態 gap
+        self._header: SectionLabel | None = None
+        self._t = 1.0
+        self.hide()
+
+    def setup(self, pm: QPixmap, x_top: float, full_h: float, offset: float,
+              header_x: float = 0.0, header_top: float = 0.0,
+              header_w: float = 1.0, header_h: float = 0.0,
+              header: SectionLabel | None = None):
+        self._pm = pm
+        self._x_top = float(x_top)
+        self._full_h = max(1.0, float(full_h))
+        self._offset = float(offset)
+        self._header_x = float(header_x)
+        self._header_w = max(1.0, float(header_w))
+        self._header_top = float(header_top)
+        self._header_h = max(0.0, float(header_h))
+        self._header_gap = max(
+            0.0, self._x_top - (self._header_top + self._header_h))
+        self._header = header
+        self._t = 0.0
+        self.update()
+
+    def clear(self):
+        self._pm = None
+        self._header = None
+
+    def set_t(self, t: float):
+        self._t = max(0.0, min(1.0, float(t)))
+        self.update()
+
+    def set_offset(self, offset: float):
+        self._offset = max(0.0, float(offset))
+        self.update()
+
+    def paintEvent(self, _):
+        if self._pm is None:
+            return
+        p = QPainter(self)
+        aa(p)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        w = float(self.width())
+        vh = float(self.height())
+        content_w = w
+        parent = self.parent()
+        if isinstance(parent, _ScrollablePanelBody):
+            geo = parent._scrollbar_geometry()
+            if geo is not None:
+                hit, _, _ = geo
+                content_w = max(1.0, min(w, hit.x() - self.x() - panel_f(2)))
+        h = self._full_h * self._t           # section 目前露出高度
+        gap = self._header_gap * self._t
+        offset = self._offset
+
+        def draw_src_at(src_y: float, dst_y: float, height: float):
+            top = max(0.0, float(dst_y))
+            bottom = min(vh, float(dst_y) + float(height))
+            if bottom <= top or content_w <= 0.0:
+                return
+            src_top = float(src_y) + (top - float(dst_y))
+            p.drawPixmap(QRectF(0, top, content_w, bottom - top),
+                         self._pm,
+                         QRectF(0, src_top, content_w, bottom - top))
+
+        header_top_v = self._header_top - offset
+        header_bot_v = header_top_v + self._header_h
+        draw_src_at(offset, 0.0, header_top_v)
+
+        group_dst_top = header_bot_v + gap
+        if h > 0.0:
+            draw_src_at(self._x_top, group_dst_top, h)
+
+        below_dst = group_dst_top + h
+        below_src = self._x_top + self._full_h
+        draw_src_at(below_src, below_dst, vh - below_dst)
+
+        self._paint_header_snapshot_text(p, w, header_top_v)
+        self._paint_live_header_arrow(p, w, header_top_v)
+
+    def _paint_header_snapshot_text(self, p: QPainter, width: float, y: float):
+        if self._pm is None or self._header_h <= 0.0:
+            return
+        if y >= self.height() or y + self._header_h <= 0.0:
+            return
+        text_x = self._header_x + panel_f(18)
+        text_w = min(max(1.0, self._header_w - panel_f(18)),
+                     max(1.0, width - text_x))
+        if text_w <= 1.0:
+            return
+        top = max(0.0, y)
+        bottom = min(float(self.height()), y + self._header_h)
+        if bottom <= top:
+            return
+        src_y = self._header_top + (top - y)
+        p.drawPixmap(QRectF(text_x, top, text_w, bottom - top),
+                     self._pm,
+                     QRectF(text_x, src_y, text_w, bottom - top))
+
+    def _paint_live_header_arrow(self, p: QPainter, width: float, y: float):
+        header = self._header
+        if header is None or self._header_h <= 0.0:
+            return
+        if y >= self.height() or y + self._header_h <= 0.0:
+            return
+        x = self._header_x
+        w = min(max(1.0, self._header_w), max(1.0, width - x))
+        p.save()
+        p.setClipRect(QRectF(x, y, w, self._header_h))
+        p.translate(x, y)
+        p.setPen(QColor(255, 255, 255, 255))
+        arrow_rect = QRectF(0, 0, panel_f(16), self._header_h)
+        c = arrow_rect.center()
+        p.save()
+        p.translate(c)
+        p.rotate(-90.0 + 90.0 * float(getattr(header, "_arrow_t", 1.0)))
+        p.translate(-c)
+        p.setFont(panel_icon_font(9))
+        p.drawText(arrow_rect, Qt.AlignCenter, GLYPH_CHEVRON_DOWN)
+        p.restore()
+        p.restore()
+
+
 class SettingsPanel(QWidget):
     """獨立的無邊框設定視窗；所有變更即時套用。"""
 
@@ -3685,8 +3924,18 @@ class SettingsPanel(QWidget):
         self._theme_row_to = 0
         self._section_resize_anchor: QPoint | None = None
         self._section_frame_lock_size: QSize | None = None
+        self._section_frame_lock_panel: _ScrollablePanelBody | None = None
+        self._section_frame_lock_panel_geo = QRect()
         self._section_frame_lock_body_h = 0
         self._section_frame_lock_content_h = 0
+        self._section_overlay: _SectionSlideOverlay | None = None
+        self._section_overlay_group: str | None = None
+        self._section_overlay_host: _ScrollablePanelBody | None = None
+        self._section_scrollbar_restore: (
+            tuple[_ScrollablePanelBody, bool, float] | None) = None
+        # overlay 逐幀縮窗基準（展開態視窗／body 幾何、section 全高、header／
+        # footer 高、錨點）；None 表示這次 section 動畫不走 overlay 縮窗。
+        self._section_overlay_frame: dict | None = None
         self._advanced_anim = Anim(self)
         self._advanced_anim.valueChanged.connect(self._on_advanced_anim)
         self._advanced_anim.finished.connect(self._advanced_anim_done)
@@ -3697,7 +3946,15 @@ class SettingsPanel(QWidget):
         self._geo_to_pos = QPoint()
         self._geo_from_size = QSize()
         self._geo_to_size = QSize()
+        self.panel_fps_label: QLabel | None = None
+        self._panel_fps_frames = 0
+        self._panel_fps_last = time.monotonic()
+        self._panel_fps_frame_pending = False
+        self._panel_fps_timer = QTimer(self)
+        self._panel_fps_timer.setInterval(500)
+        self._panel_fps_timer.timeout.connect(self._update_panel_fps_label)
         self._build_body()
+        self.apply_fps_overlay()
         QTimer.singleShot(0, lambda: self.sync_weather_controls(animate=False))
 
     def _build_body(self, expanded: bool | None = None,
@@ -3758,6 +4015,9 @@ class SettingsPanel(QWidget):
         title.setStyleSheet("color: rgba(255,255,255,235);")
         head.addWidget(title)
         head.addStretch(1)
+        self.panel_fps_label = QLabel(self._panel_fps_text(0.0), head_box)
+        self._style_panel_fps_label()
+        head.addWidget(self.panel_fps_label)
         btn_close = IconButton(GLYPH_CLOSE, panel_px(10), panel_px(24),
                                fx="spin")
         self._btn_close = btn_close
@@ -4636,7 +4896,79 @@ class SettingsPanel(QWidget):
         # relayout，避免舊的局部高度算法讓固定按鈕與內容互相拉扯。
         self.sw_theme.size_changed.connect(self._on_theme_size_changed)
         self._apply_search(self.search.text(), relayout=False)
+        self._install_panel_fps_filters()
+        self.apply_fps_overlay()
         return self._apply_body_geometry(resize_window=resize_window)
+
+    def _style_panel_fps_label(self):
+        if self.panel_fps_label is None:
+            return
+        self.panel_fps_label.setFont(panel_font(9, QFont.DemiBold))
+        self.panel_fps_label.setAlignment(Qt.AlignCenter)
+        self.panel_fps_label.setStyleSheet(
+            "background: rgba(0,0,0,110);"
+            "color: rgba(255,255,255,190);"
+            f"border-radius: {panel_px(5)}px;"
+            f"padding: {panel_px(2)}px {panel_px(6)}px;")
+        self.panel_fps_label.setMinimumHeight(panel_px(20))
+        self.panel_fps_label.adjustSize()
+
+    def _panel_fps_text(self, fps: float) -> str:
+        return f"{tr('settings')} {fps:.0f} FPS"
+
+    def apply_fps_overlay(self):
+        show = bool(SETTINGS.get("show_fps", False))
+        if self.panel_fps_label is not None:
+            self._style_panel_fps_label()
+            self.panel_fps_label.setVisible(show)
+        if show:
+            self._panel_fps_frames = 0
+            self._panel_fps_last = time.monotonic()
+            if not self._panel_fps_timer.isActive():
+                self._panel_fps_timer.start()
+        else:
+            self._panel_fps_timer.stop()
+
+    def _update_panel_fps_label(self):
+        now = time.monotonic()
+        dt = max(0.001, now - self._panel_fps_last)
+        fps = self._panel_fps_frames / dt
+        self._panel_fps_frames = 0
+        self._panel_fps_last = now
+        if self.panel_fps_label is not None:
+            self.panel_fps_label.setText(self._panel_fps_text(fps))
+            self.panel_fps_label.adjustSize()
+
+    def _mark_panel_fps_frame(self):
+        if (not SETTINGS.get("show_fps", False)
+                or self._panel_fps_frame_pending):
+            return
+        self._panel_fps_frame_pending = True
+        self._panel_fps_frames += 1
+        QTimer.singleShot(0, self._clear_panel_fps_frame_pending)
+
+    def _clear_panel_fps_frame_pending(self):
+        self._panel_fps_frame_pending = False
+
+    def _install_panel_fps_filters(self):
+        widgets = [self._body, self.advanced_box]
+        widgets.extend(getattr(self, "_full_boxes", []))
+        widgets.extend(self._controls())
+        for panel in list(widgets):
+            if panel is None:
+                continue
+            panel.installEventFilter(self)
+            viewport = getattr(panel, "viewport", None)
+            content = getattr(panel, "content", None)
+            if viewport is not None:
+                viewport.installEventFilter(self)
+            if content is not None:
+                content.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Paint and obj is not self.panel_fps_label:
+            self._mark_panel_fps_frame()
+        return super().eventFilter(obj, event)
 
     def _panel_layout(self, panel: QWidget):
         content = getattr(panel, "content", panel)
@@ -5057,59 +5389,132 @@ class SettingsPanel(QWidget):
             if container.height() != h:
                 container.setFixedHeight(h)
 
+    def _section_panels(self) -> list[_ScrollablePanelBody]:
+        panels = [self._body, self.advanced_box]
+        panels.extend(getattr(self, "_full_boxes", []))
+        return [p for p in panels if isinstance(p, _ScrollablePanelBody)]
+
+    def _section_host_panel(self, container: QWidget
+                            ) -> _ScrollablePanelBody | None:
+        for panel in self._section_panels():
+            content = getattr(panel, "content", None)
+            if content is not None and content.isAncestorOf(container):
+                return panel
+        return None
+
+    def _section_header(self, group_id: str) -> SectionLabel | None:
+        for _, lab, _, gid, _ in self._section_groups:
+            if gid == group_id:
+                return lab
+        return None
+
+    def _capture_section_panel_states(self) -> list[dict]:
+        states = []
+        for panel in self._section_panels():
+            if panel is not self._body and not panel.isVisible():
+                continue
+            g = QRect(panel.geometry())
+            states.append({
+                "panel": panel,
+                "geo": g,
+                "viewport_h": max(1, int(getattr(panel, "_viewport_h",
+                                                 max(1, g.height())))),
+                "content_h": max(1, int(getattr(panel, "_content_h",
+                                                max(1, g.height())))),
+            })
+        return states
+
     def _section_frame_lock_enabled(self) -> bool:
-        return (SETTINGS.get("settings_panel_type", "normal") == "normal"
-                and self.advanced_box is not None
-                and not self._advanced_open
-                and not self._advanced_hiding)
+        ptype = SETTINGS.get("settings_panel_type", "normal")
+        # categories：單一捲動 body（進階區隱藏），與 normal 無進階同構，可鎖
+        if ptype == "categories":
+            return True
+        # full：多 box 並排、section 散在各 box，尺寸算法不同，暫走舊路徑
+        if ptype != "normal":
+            return False
+        # normal：不論進階區開或合都能鎖（含主人慣用的進階常開場景），只要它
+        # 「靜止」——正在開/合動畫中其 geometry 每幀變，鎖了會和 _on_advanced_anim
+        # 打架，這種情況沿用逐幀 relayout。
+        if self.advanced_box is None:
+            return True
+        if self._advanced_hiding:
+            return False
+        return self._advanced_anim.state() != Anim.Running
 
     def _clear_section_frame_lock(self):
         self._section_frame_lock_size = None
+        self._section_frame_lock_panel = None
+        self._section_frame_lock_panel_geo = QRect()
         self._section_frame_lock_body_h = 0
         self._section_frame_lock_content_h = 0
+        self._section_overlay_frame = None
 
     def _begin_section_frame_lock(self, group_id: str,
                                   start: float, end: float):
         self._clear_section_frame_lock()
         if not self._section_frame_lock_enabled() or self._body is None:
             return
-        if end <= start:
-            return
         container = self._section_anim_containers.get(group_id)
         if container is None:
             return
-        body_geo = self._body.geometry()
-        body_w = max(1, body_geo.width())
-        lay = self._section_gap_layouts.get(group_id)
+        host = self._section_host_panel(container)
+        if host is None:
+            return
 
-        # 展開時先把捲動內容層固定到最終尺寸。動畫每幀只改 section
-        # clip 高度，不再重算整個面板高度，避免上方控制項在透明視窗中重繪抖動。
-        self._set_section_gap(group_id, self._section_gap(group_id))
-        container.setFixedHeight(max(0, round(float(end))))
-        target_content_h = self._panel_content_height(self._body, body_w)
-        container.setFixedHeight(max(0, round(float(start))))
-        self._set_section_gap_for_height(group_id, start)
-        content_lay = self._panel_layout(self._body)
-        if content_lay is not None:
-            content_lay.activate()
+        anchor = QPoint(self._section_resize_anchor or self.pos())
+        full_h = max(1.0, float(self._section_anim_full_heights.get(
+            group_id, max(float(start), float(end), 1.0))))
+        target_gap = self._section_gap(group_id)
+        saved_offsets = [
+            (panel, float(panel._offset), float(panel._target_offset))
+            for panel in self._section_panels()
+        ]
 
-        pm = panel_margin()
-        geo = self._screen_geometry_for(
-            self.pos(), QSize(self.width(), target_content_h + pm * 2))
-        max_inner_h = max(panel_px(160), geo.height() - pm * 2)
-        lock_h = max(self.height(), min(target_content_h, max_inner_h) + pm * 2)
-        lock_size = QSize(self.width(), max(1, lock_h))
-        body_h = max(1, lock_size.height() - pm * 2)
-        target_pos = self._bounded_window_pos(self.pos(), lock_size)
-        if self.size() != lock_size:
-            self.setFixedSize(lock_size)
+        def endpoint(height: float, visible: bool, gap: int) -> dict:
+            self._set_section_gap(group_id, gap)
+            container.setFixedHeight(max(0, round(float(height))))
+            container.setVisible(visible)
+            final_size = self._apply_body_geometry(resize_window=False,
+                                                   animate=False)
+            return {
+                "size": QSize(final_size),
+                "pos": self._bounded_window_pos(anchor, final_size),
+                "panels": self._capture_section_panel_states(),
+            }
+
+        collapsed_state = endpoint(0.0, False, 0)
+        expanded_state = endpoint(full_h, True, target_gap)
+
+        # 回到展開態抓 overlay 快照；實際起始幾何會在第一幀套用。
+        final = expanded_state["size"]
+        target_pos = expanded_state["pos"]
+        if self.size() != final:
+            self.setFixedSize(final)
         if self.pos() != target_pos:
             self.move(target_pos)
-        self._body.setGeometry(body_geo.x(), body_geo.y(), body_w, body_h)
-        self._set_panel_viewport(self._body, body_w, body_h, target_content_h)
-        self._section_frame_lock_size = lock_size
-        self._section_frame_lock_body_h = body_h
+        for panel, offset, target in saved_offsets:
+            panel._offset = offset
+            panel._target_offset = target
+            panel._place_content(force=True)
+
+        host_geo = QRect(host.geometry())
+        host_w = max(1, host_geo.width())
+        host_h = max(1, host_geo.height())
+        target_content_h = self._panel_content_height(host, host_w)
+        self._set_panel_viewport(host, host_w, host_h, target_content_h)
+        self._section_frame_lock_size = final
+        self._section_frame_lock_panel = host
+        self._section_frame_lock_panel_geo = host_geo
+        self._section_frame_lock_body_h = host_h
         self._section_frame_lock_content_h = target_content_h
+        self._section_overlay_frame = {
+            "host": host,
+            "anchor": anchor,
+            "section_full": full_h,
+            "start_offset": float(host._offset),
+            "expanded": expanded_state,
+            "collapsed": collapsed_state,
+        }
 
     def _relayout_section_frame(self):
         if self._section_resize_anchor is None:
@@ -5117,29 +5522,32 @@ class SettingsPanel(QWidget):
             return
         self._geo_anim.stop()
         lock_size = self._section_frame_lock_size
-        if lock_size is not None and self._body is not None:
+        panel = self._section_frame_lock_panel
+        if lock_size is not None and panel is not None:
             target_pos = self._bounded_window_pos(
                 self._section_resize_anchor, lock_size)
             if self.size() != lock_size:
                 self.setFixedSize(lock_size)
             if self.pos() != target_pos:
                 self.move(target_pos)
-            g = self._body.geometry()
+            g = QRect(self._section_frame_lock_panel_geo)
+            if g.isNull():
+                g = panel.geometry()
             body_h = max(1, self._section_frame_lock_body_h or g.height())
             content_h = max(
                 1, self._section_frame_lock_content_h
-                or getattr(self._body, "_content_h", body_h))
-            if g.height() != body_h:
-                self._body.setGeometry(g.x(), g.y(), g.width(), body_h)
-            if (getattr(self._body, "_viewport_h", 0)
-                    != body_h - getattr(self._body, "_header_h", 0)
-                    - getattr(self._body, "_footer_h", 0)):
-                self._set_panel_viewport(self._body, g.width(),
+                or getattr(panel, "_content_h", body_h))
+            if panel.geometry() != g:
+                panel.setGeometry(g)
+            if (getattr(panel, "_viewport_h", 0)
+                    != body_h - getattr(panel, "_header_h", 0)
+                    - getattr(panel, "_footer_h", 0)):
+                self._set_panel_viewport(panel, g.width(),
                                          body_h, content_h)
-            lay = self._panel_layout(self._body)
+            lay = self._panel_layout(panel)
             if lay is not None:
                 lay.activate()
-            self._body.viewport.update()
+            panel.viewport.update()
             self.update()
             return
         final = self._apply_body_geometry(resize_window=False, animate=False)
@@ -5150,6 +5558,155 @@ class SettingsPanel(QWidget):
         if self.pos() != target_pos:
             self.move(target_pos)
         self.update()
+
+    def _begin_section_overlay(self, group_id: str, container: QWidget,
+                               start: float, full_h: float) -> bool:
+        """以展開後快照接管 section 動畫，凍結 content reflow。回傳是否啟用。
+
+        無搜尋、視窗已鎖定（_begin_section_frame_lock 成功）時啟用；其餘
+        情況回傳 False，沿用逐幀 relayout 路徑。動畫期間真實 content 留在
+        底下，只挖出 SectionLabel 那塊讓箭頭能即時旋轉。
+        """
+        frame = self._section_overlay_frame
+        host = self._section_host_panel(container)
+        if (frame is None or host is None
+                or frame.get("host") is not host or full_h < 1):
+            return False
+        if SETTINGS.get("settings_panel_type", "normal") not in (
+                "normal", "categories"):
+            return False
+        if getattr(self, "search", None) is not None and self.search.text().strip():
+            return False
+        vp = host.viewport.geometry()
+        if vp.width() < 2 or vp.height() < 2:
+            return False
+        # 先把 content 排成「展開後」layout，再抓快照
+        container.setFixedHeight(int(round(full_h)))
+        if not container.isVisible():
+            container.show()
+        self._set_section_gap(group_id, self._section_gap(group_id))
+        lay = self._panel_layout(host)
+        if lay is not None:
+            lay.activate()
+        content = host.content
+        pm = content.grab()
+        if pm.isNull():
+            return False
+        x_top = float(container.mapTo(content, QPoint(0, 0)).y())
+        header = self._section_header(group_id)
+        header_x = 0.0
+        header_top = 0.0
+        header_w = 1.0
+        header_h = 0.0
+        if header is not None:
+            header_pos = header.mapTo(content, QPoint(0, 0))
+            header_x = float(header_pos.x())
+            header_top = float(header_pos.y())
+            header_w = float(header.width())
+            header_h = float(header.height())
+        if self._section_overlay is None:
+            self._section_overlay = _SectionSlideOverlay(host)
+        elif self._section_overlay.parent() is not host:
+            self._section_overlay.hide()
+            self._section_overlay.setParent(host)
+        ov = self._section_overlay
+        ov.setGeometry(vp)
+        ov.setup(pm, x_top, full_h, float(host._offset),
+                 header_x, header_top, header_w, header_h, header)
+        ov.set_t(max(0.0, min(1.0, start / max(1.0, full_h))))
+        self._section_overlay_host = host
+        self._section_scrollbar_restore = (
+            host, bool(host._scroll_hover), float(host._scroll_hover_t))
+        host._scroll_ha.stop()
+        host._scroll_hover = False
+        host._scroll_hover_t = 0.0
+        host.update()
+        content.hide()
+        ov.show()
+        ov.raise_()
+        self._section_overlay_group = group_id
+        return True
+
+    def _apply_section_overlay_frame(self, cur_h: float):
+        """overlay 動畫每幀：在收合/展開端點幾何間內插，不重排 content。"""
+        fr = self._section_overlay_frame
+        ov = self._section_overlay
+        if fr is None or ov is None:
+            return
+        host = fr.get("host")
+        if not isinstance(host, _ScrollablePanelBody):
+            return
+
+        def lerp(a: float, b: float, t: float) -> float:
+            return a + (b - a) * t
+
+        def interp_size(a: QSize, b: QSize, t: float) -> QSize:
+            return QSize(max(1, round(lerp(a.width(), b.width(), t))),
+                         max(1, round(lerp(a.height(), b.height(), t))))
+
+        def interp_rect(a: QRect, b: QRect, t: float) -> QRect:
+            return QRect(round(lerp(a.x(), b.x(), t)),
+                         round(lerp(a.y(), b.y(), t)),
+                         max(1, round(lerp(a.width(), b.width(), t))),
+                         max(1, round(lerp(a.height(), b.height(), t))))
+
+        full = max(1.0, float(fr.get("section_full", 1.0)))
+        t = max(0.0, min(1.0, float(cur_h) / full))
+        collapsed = fr["collapsed"]
+        expanded = fr["expanded"]
+        size = interp_size(collapsed["size"], expanded["size"], t)
+        pos = self._bounded_window_pos(fr["anchor"], size)
+        if self.size() != size:
+            self.setFixedSize(size)
+        if self.pos() != pos:
+            self.move(pos)
+
+        expanded_by_id = {id(s["panel"]): s for s in expanded["panels"]}
+        host_content_h = getattr(host, "_content_h", max(1, host.height()))
+        host_viewport_h = getattr(host, "_viewport_h", max(1, host.height()))
+        for c_state in collapsed["panels"]:
+            panel = c_state["panel"]
+            e_state = expanded_by_id.get(id(panel), c_state)
+            g = interp_rect(c_state["geo"], e_state["geo"], t)
+            if panel.geometry() != g:
+                panel.setGeometry(g)
+            if isinstance(panel, _ScrollablePanelBody):
+                panel.resize_viewport_only(g.height())
+                content_h = max(1, round(lerp(c_state["content_h"],
+                                              e_state["content_h"], t)))
+                viewport_h = max(1, round(lerp(c_state["viewport_h"],
+                                               e_state["viewport_h"], t)))
+                panel._content_h = content_h
+                panel._viewport_h = viewport_h
+                if panel is host:
+                    host_content_h = content_h
+                    host_viewport_h = viewport_h
+
+        max_offset = max(0.0, float(host_content_h - host_viewport_h))
+        offset = min(float(fr.get("start_offset", host._offset)), max_offset)
+        host._offset = offset
+        host._target_offset = offset
+        host._place_content(force=True)
+        ov.setGeometry(host.viewport.geometry())
+        ov.set_offset(offset)
+
+    def _end_section_overlay(self):
+        ov = self._section_overlay
+        host = self._section_overlay_host
+        self._section_overlay_group = None
+        self._section_overlay_host = None
+        self._section_overlay_frame = None
+        if ov is not None:
+            ov.hide()
+            ov.clear()
+        if isinstance(host, _ScrollablePanelBody):
+            restore = self._section_scrollbar_restore
+            self._section_scrollbar_restore = None
+            if restore is not None and restore[0] is host:
+                host._scroll_hover = restore[1]
+                host._scroll_hover_t = restore[2]
+            host.content.show()
+            host.update()
 
     def _set_section_height(self, group_id: str, value: float):
         container = self._section_anim_containers.get(group_id)
@@ -5163,14 +5720,30 @@ class SettingsPanel(QWidget):
         self._relayout_section_frame()
 
     def _on_section_anim(self, group_id: str, value):
+        if (self._section_overlay is not None
+                and self._section_overlay_group == group_id):
+            full = self._section_anim_full_heights.get(group_id, 1)
+            self._apply_section_overlay_frame(float(value))
+            self._section_overlay.set_t(float(value) / max(1.0, float(full)))
+            return
         self._set_section_height(group_id, float(value))
 
     def _section_anim_done(self, group_id: str):
+        overlay_active = self._section_overlay_group == group_id
         collapsed = bool(self._section_anim_targets.get(group_id, False))
         container = self._section_anim_containers.get(group_id)
+        if overlay_active:
+            full = float(self._section_anim_full_heights.get(group_id, 1))
+            final_h = 0.0 if collapsed else full
+            self._apply_section_overlay_frame(final_h)
+            if self._section_overlay is not None:
+                self._section_overlay.set_t(
+                    0.0 if collapsed else 1.0)
         self._section_animating.discard(group_id)
         if container is None:
             self._clear_section_frame_lock()
+            if overlay_active:
+                self._end_section_overlay()
             return
         self._clear_section_frame_lock()
         if collapsed:
@@ -5184,6 +5757,8 @@ class SettingsPanel(QWidget):
             container.setFixedHeight(self._section_content_height(container))
             container.show()
             self._relayout_section_frame()
+        if overlay_active:
+            self._end_section_overlay()
         self._section_anim_full_heights.pop(group_id, None)
         self._section_resize_anchor = None
 
@@ -5192,6 +5767,8 @@ class SettingsPanel(QWidget):
         anim = self._section_anims.get(group_id)
         if anim is not None and anim.state() == Anim.Running:
             anim.stop()
+            if self._section_overlay_group == group_id:
+                self._end_section_overlay()
         self._section_anim_containers[group_id] = container
         self._section_anim_targets[group_id] = bool(collapsed)
         if getattr(self, "search", None) is not None and self.search.text().strip():
@@ -5242,6 +5819,18 @@ class SettingsPanel(QWidget):
         self._stop_window_geometry_at_current()
         self._section_resize_anchor = QPoint(self.pos())
         self._begin_section_frame_lock(group_id, start, end)
+        self._section_overlay_group = None
+        if self._section_frame_lock_size is not None:
+            overlay_started = self._begin_section_overlay(
+                group_id, container, start, full_h)
+            if overlay_started:
+                # 立刻把視窗收斂到「起始」尺寸：收合 start=full_h→展開態（與
+                # lock 設的 final 相同、無實際變動）；展開 start=0→收合態（覆蓋
+                # lock 剛設的展開態 final）。同步區塊內連續 setFixedSize 只有最後
+                # 一次會繪製，使用者不會看到中間那一下展開態閃跳。
+                self._apply_section_overlay_frame(start)
+            else:
+                self._set_section_height(group_id, start)
         anim.setStartValue(start)
         anim.setEndValue(end)
         anim.setDuration(ms)
@@ -6073,6 +6662,7 @@ class SettingsPanel(QWidget):
         self._shadow_anim.start()
 
     def paintEvent(self, _):
+        self._mark_panel_fps_frame()
         p = QPainter(self)
         p.setCompositionMode(QPainter.CompositionMode_Source)
         p.fillRect(self.rect(), Qt.transparent)

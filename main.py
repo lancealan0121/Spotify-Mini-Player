@@ -394,6 +394,7 @@ class _WeatherLayer(QWidget):
         self._drops: list[dict] = []
         self._splashes: list[dict] = []
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
         self._last = time.monotonic()
         self._effect = "rain"
@@ -754,30 +755,39 @@ class _WeatherLayer(QWidget):
                 p.drawPixmap(QPointF(-pw / 2.0, -ph / 2.0), pm)
                 p.restore()
             return
+        drift_k = math.tan(math.radians(self._direction))
+        line_col = QColor(214, 232, 255)
+        pen = QPen(line_col, 1.0)
+        pen.setCapStyle(Qt.RoundCap)
+        hi_col = QColor(255, 255, 255)
+        hi_pen = QPen(hi_col, max(0.25, 0.45 * self._thickness_scale))
         for d in self._drops:
             depth = d["depth"]
             alpha = round((26 + depth * 92) * (0.42 + self._intensity * 0.72))
             if alpha <= 2:
                 continue
             length = d["len"]
-            drift = math.tan(math.radians(self._direction)) * length
-            col = QColor(214, 232, 255, min(150, alpha))
-            width = (0.45 + depth * 1.15) * self._thickness_scale
-            pen = QPen(col, width)
-            pen.setCapStyle(Qt.RoundCap)
+            drift = drift_k * length
+            line_col.setAlpha(min(150, alpha))
+            pen.setColor(line_col)
+            pen.setWidthF((0.45 + depth * 1.15) * self._thickness_scale)
             p.setPen(pen)
             p.drawLine(QPointF(d["x"], d["y"]),
                        QPointF(d["x"] - drift, d["y"] - length))
             if depth > 0.62:
-                p.setPen(QPen(QColor(255, 255, 255, min(70, alpha // 2)),
-                              max(0.25, 0.45 * self._thickness_scale)))
+                hi_col.setAlpha(min(70, alpha // 2))
+                hi_pen.setColor(hi_col)
+                p.setPen(hi_pen)
                 p.drawLine(QPointF(d["x"] + 0.8, d["y"] - length * 0.1),
                            QPointF(d["x"] - drift * 0.42,
                                    d["y"] - length * 0.62))
+        sp_col = QColor(225, 240, 255)
+        sp_pen = QPen(sp_col, max(0.3, 0.75 * self._thickness_scale))
         for s in self._splashes:
             t = max(0.0, min(1.0, s["life"] / s["max"]))
-            p.setPen(QPen(QColor(225, 240, 255, round(72 * t)),
-                          max(0.3, 0.75 * self._thickness_scale)))
+            sp_col.setAlpha(round(72 * t))
+            sp_pen.setColor(sp_col)
+            p.setPen(sp_pen)
             p.drawLine(QPointF(s["x"], s["y"]),
                        QPointF(s["x"] - s["vx"] * 0.045,
                                s["y"] - 2.6 * t))
@@ -794,7 +804,12 @@ class _LightningLayer(QWidget):
         self.setAutoFillBackground(False)
         self._rng = random.Random()
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.PreciseTimer)
         self._timer.timeout.connect(self._tick)
+        # 等待出招期間只需偵測 _wait 歸零，用低頻計時省 CPU（閃電平均數秒
+        # 一次，50ms 誤差人眼無感）；_strike() 後才切到全速畫衰減動畫。
+        self._wait_interval = 50
+        self._active_interval = 50
         self._last = time.monotonic()
         self._flash = 0.0
         self._life = 0.16
@@ -842,7 +857,11 @@ class _LightningLayer(QWidget):
 
     def apply_fps(self):
         fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
-        self._timer.setInterval(max(8, round(1000 / fps)))
+        self._active_interval = max(8, round(1000 / fps))
+        # 閃光中（高頻衰減動畫）才全速；等待期維持低頻省 CPU
+        self._timer.setInterval(self._active_interval
+                                if self._flash > 0.001
+                                else self._wait_interval)
 
     def _next_wait(self) -> float:
         chance = 0.045 + self._intensity ** 2.25
@@ -890,6 +909,7 @@ class _LightningLayer(QWidget):
         self._flash_peak = 0.45 + 0.55 * self._intensity
         self._flash = self._flash_peak
         self._wait = self._next_wait()
+        self._timer.setInterval(self._active_interval)
 
     def _tick(self):
         now = time.monotonic()
@@ -903,6 +923,7 @@ class _LightningLayer(QWidget):
             self._flash = max(0.0, self._flash_peak * tail * tail * flicker)
             if self._flash <= 0.001:
                 self._bolts.clear()
+                self._timer.setInterval(self._wait_interval)
             self.update()
             return
         self._wait -= dt
@@ -1162,6 +1183,7 @@ class Card(QWidget):
         self._custom_color_from: dict[str, QColor] = {}
         self._custom_color_to: dict[str, QColor] = {}
         self._custom_colors: dict[str, QColor] = {}
+        self._seek_fill_gradient: tuple[QColor, QColor] | None = None
         self._topbar_override = False
         self._topbar_override_to = False
         self._bg_fade_old: QPixmap | None = None
@@ -2254,6 +2276,21 @@ class Card(QWidget):
             "seek_track": seek_track,
         }, topbar_override
 
+    @staticmethod
+    def _gradient_key(pair: tuple[QColor, QColor] | None):
+        if pair is None:
+            return None
+        return tuple((c.red(), c.green(), c.blue(), c.alpha())
+                     for c in pair)
+
+    def _seek_fill_gradient_target(self) -> tuple[QColor, QColor] | None:
+        if optional_setting_color("seek_fill_color") is not None:
+            return None
+        pair = self._control_gradient(self._accent)
+        if pair is None:
+            return None
+        return QColor(pair[0]), QColor(pair[1])
+
     def _set_custom_color_frame(self, colors: dict[str, QColor],
                                 topbar_override: bool,
                                 force_topbar_override: bool = False):
@@ -2275,10 +2312,15 @@ class Card(QWidget):
         for b in self._topbar_buttons:
             b.set_color_override(topbar_col)
 
+        seek_grad = self._seek_fill_gradient_target()
         self.seek.set_custom_colors(colors["seek_fill"],
                                     colors["seek_thumb"],
-                                    colors["seek_track"])
+                                    colors["seek_track"],
+                                    seek_grad)
         self._custom_colors = {k: QColor(v) for k, v in colors.items()}
+        self._seek_fill_gradient = (
+            None if seek_grad is None
+            else (QColor(seek_grad[0]), QColor(seek_grad[1])))
         self._topbar_override = bool(topbar_override)
         self.update()
 
@@ -2302,12 +2344,16 @@ class Card(QWidget):
 
     def apply_custom_colors(self, animate: bool = True):
         target, topbar_override = self._custom_color_targets()
+        target_seek_grad = self._seek_fill_gradient_target()
         if not self._custom_colors:
             self._set_custom_color_frame(target, topbar_override)
             return
         same_colors = all(self._custom_colors.get(k) == v
                           for k, v in target.items())
-        if same_colors and self._topbar_override == topbar_override:
+        same_seek_grad = (self._gradient_key(self._seek_fill_gradient)
+                          == self._gradient_key(target_seek_grad))
+        if (same_colors and same_seek_grad
+                and self._topbar_override == topbar_override):
             return
         self._custom_color_abort = True
         self._custom_color_anim.stop()
@@ -3599,6 +3645,8 @@ class PlayerWindow(QWidget):
             self.card.apply_button_visibility(relayout=True, animate=True)
         elif key == "show_fps":
             self.card.apply_fps_overlay()
+            if self._panel is not None:
+                self._panel.apply_fps_overlay()
         elif key == "marquee_enabled":
             self.card.apply_marquee_setting()
         elif key == "anim_enabled":
@@ -3621,7 +3669,7 @@ class PlayerWindow(QWidget):
         elif key in ("audio_feedback_thickness", "audio_feedback_sensitivity",
                      "audio_feedback_spin", "audio_feedback_spin_speed",
                      "audio_cover_pulse", "audio_cover_pulse_strength"):
-            self.card.art.update()
+            self.card.art.apply_audio_feedback_settings()
         elif key in ("cover_shape", "cover_radius_strength"):
             self.card.apply_cover_shape(animate=True)
         elif key == "cover_blur":
@@ -3641,6 +3689,8 @@ class PlayerWindow(QWidget):
             self.card.apply_fps()
             _apply_timer_resolution()
             apply_anim_fps()             # 互動動畫共用計時器跟著換檔
+            if self._panel is not None:
+                self._panel.apply_fps_overlay()
         elif key == "controls_align":
             self.card.relayout_controls(animate=True)
         elif key == "language":

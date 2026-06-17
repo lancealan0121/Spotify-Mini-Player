@@ -374,6 +374,9 @@ class ArtView(QWidget):
         # 角度 cos/sin 表（依 slot 數快取）：halo/ring/blob 每幀重複用，
         # 省掉幾百次三角函數呼叫（Python 函式呼叫成本是高 fps 卡頓主因）。
         self._angle_cache: dict[int, list[tuple[float, float]]] = {}
+        # 唱片靜態盤面貼圖快取：盤面不隨 spin/封面/中心大小變化，烘成 pixmap
+        # 後每幀只 drawPixmap，省掉約 25 個 drawEllipse/漸層（高 fps 卡頓主因）。
+        self._vinyl_base_cache: dict[tuple, QPixmap] = {}
         self._cover_pulse = 0.0
         self._audio_energy = 0.0
         self._audio_peak_prev = 0.0
@@ -440,6 +443,7 @@ class ArtView(QWidget):
         self._cover_scale = cover_scale
         self._vinyl_scale = vinyl_scale
         self._layout_size = max(self.cover_size(), self.vinyl_size())
+        self._vinyl_base_cache.clear()    # vinyl 尺寸變了，盤面快取作廢
         self.pad = max(8, round(self._layout_size * 0.18))
         self.setFixedSize(self._layout_size + self.pad * 2,
                           self._layout_size + self.pad * 2)
@@ -717,7 +721,8 @@ class ArtView(QWidget):
 
     def _sync_audio(self):
         visible = (self.isVisible()
-                   and (self._audio > 0.02 or self._audio_energy > 0.01)
+                   and (self._audio > 0.02 or self._audio_energy > 0.01
+                        or self._cover_pulse > 0.001)
                    and anim_on())
         if self._mode == "audio":
             active = visible
@@ -781,7 +786,8 @@ class ArtView(QWidget):
         # 減去地板再做 gamma 拉對比——安靜時幾乎不動、重拍才大幅彈出，
         # 跳動差距明顯而不是整張圖均勻放大。
         bass_target = 0.0
-        if self._mode == "audio" and self._audio_spectrum:
+        if (self._mode == "audio" and self._audio_spectrum
+                and SETTINGS.get("audio_cover_pulse", True)):
             spec = self._audio_spectrum
             lo = max(1, len(spec) // 8)
             raw_bass = sum(spec[:lo]) / lo
@@ -833,6 +839,10 @@ class ArtView(QWidget):
             self._spin_speed = 54.0 * float(
                 SETTINGS.get("vinyl_spin_speed", 1.0))
         self._sync_spin()
+        self._sync_audio()
+        self.update()
+
+    def apply_audio_feedback_settings(self):
         self._sync_audio()
         self.update()
 
@@ -1022,15 +1032,41 @@ class ArtView(QWidget):
             p.drawText(rect, Qt.AlignCenter, GLYPH_NOTE)
         p.restore()
 
-    def _draw_vinyl(self, p: QPainter, alpha: float):
-        if alpha <= 0.01:
-            return
-        r = self._visual_rect("vinyl")
-        c = r.center()
-        rad = min(r.width(), r.height()) / 2
-        p.save()
-        p.setOpacity(alpha)
+    def _vinyl_base_pixmap(self, r: QRectF) -> tuple[QPixmap, float]:
+        """靜態唱片盤面（陰影/漸層底/溝槽/高光/描邊）烘成貼圖快取。
 
+        盤面只依尺寸與 dpr，與 spin 角度、封面、中心標籤大小無關；每幀重畫
+        約 25 個 drawEllipse/漸層是高 fps 卡頓主因，改一次烘成 pixmap，
+        paintEvent 只 drawPixmap。尺寸（縮放 / art_vinyl_size）、dpr 或反鋸齒
+        設定變才重建（set_scales 另會主動清快取）。回傳貼圖與外擴留邊 pad
+        （盤面描邊/陰影會略超出 r，繪製時座標往左上偏 pad）。
+        """
+        dpr = max(1.0, self.devicePixelRatioF())
+        w = max(1.0, r.width())
+        h = max(1.0, r.height())
+        pad = 2.0
+        key = (round(w), round(h), round(dpr * 100),
+               bool(SETTINGS.get("antialias", True)))
+        pm = self._vinyl_base_cache.get(key)
+        if pm is not None:
+            return pm, pad
+        pm = QPixmap(max(1, round((w + pad * 2) * dpr)),
+                     max(1, round((h + pad * 2) * dpr)))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        bp = QPainter(pm)
+        aa(bp)
+        local = QRectF(pad, pad, w, h)
+        self._paint_vinyl_base(bp, local, local.center(), min(w, h) / 2.0)
+        bp.end()
+        if len(self._vinyl_base_cache) > 6:
+            self._vinyl_base_cache.pop(next(iter(self._vinyl_base_cache)))
+        self._vinyl_base_cache[key] = pm
+        return pm, pad
+
+    def _paint_vinyl_base(self, p: QPainter, r: QRectF, c: QPointF,
+                          rad: float):
+        """唱片靜態盤面繪製（座標相對傳入 r/c/rad，供 _vinyl_base_pixmap 烘圖）。"""
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(0, 0, 0, 42))
         p.drawEllipse(r.adjusted(rad * 0.018, rad * 0.035,
@@ -1129,6 +1165,21 @@ class ArtView(QWidget):
         p.drawEllipse(QRectF(c.x() - rad * 0.88, c.y() - rad * 0.88,
                              rad * 1.76, rad * 1.76))
 
+    def _draw_vinyl(self, p: QPainter, alpha: float):
+        if alpha <= 0.01:
+            return
+        r = self._visual_rect("vinyl")
+        c = r.center()
+        rad = min(r.width(), r.height()) / 2
+        p.save()
+        p.setOpacity(alpha)
+
+        # 靜態盤面走快取貼圖（不隨 spin / 封面 / 中心大小變化，省每幀重畫）
+        base, pad = self._vinyl_base_pixmap(r)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawPixmap(QPointF(r.left() - pad, r.top() - pad), base)
+
+        # 中心標籤隨唱盤旋轉（封面交叉淡化 + 內圈描邊 + 中心孔）
         p.save()
         p.translate(c)
         p.rotate(self._spin)
@@ -1350,6 +1401,13 @@ class ArtView(QWidget):
         return QRectF(c.x() - cover_rad, c.y() - cover_rad,
                       cover_rad * 2.0, cover_rad * 2.0)
 
+    def _audio_cover_pulse_scale(self) -> float:
+        if self._mode != "audio" or self._cover_pulse <= 0.001:
+            return 1.0
+        strength = max(0.2, min(2.0, float(
+            SETTINGS.get("audio_cover_pulse_strength", 1.0))))
+        return 1.0 + 0.22 * strength * self._cover_pulse
+
     def _angle_table(self, count: int) -> list[tuple[float, float]]:
         """count 等分圓周（自頂端 -90° 起）的 (cos, sin) 表，依 count 快取。"""
         count = max(1, int(count))
@@ -1412,8 +1470,9 @@ class ArtView(QWidget):
             self._draw_audio_bars(p, alpha, pm, old, r, c, rad, draw_cover)
             return
         cover_rad = rad * 0.78
+        cover_outer_rad = cover_rad * self._audio_cover_pulse_scale()
         gap = rad * 0.065
-        base_rad = cover_rad + gap
+        base_rad = cover_outer_rad + gap
         max_h = max(5.0, self.pad * 0.95)
         spectrum = self._audio_spectrum if (
             meter_mode or self._audio_morph > 0.001
@@ -1454,7 +1513,7 @@ class ArtView(QWidget):
             halo_path = QPainterPath()
             halo_steps = (96 if (meter_mode or self._mode == "pulse")
                           else max(64, bars))
-            halo_base = cover_rad + gap + max_h * 0.40
+            halo_base = cover_outer_rad + gap + max_h * 0.40
             halo_amp = max_h * (0.10 + 0.30 * energy)
             steady_halo = bool(spectrum) and morph >= 0.999
             for j in range(halo_steps):
@@ -1507,6 +1566,8 @@ class ArtView(QWidget):
         cx, cy = c.x(), c.y()
         n_spec = len(spectrum) if spectrum else 0
         reverse_bars = bool(spectrum and self._audio_fade_reverse)
+        # 每根 bar 重用同一支筆（迴圈內只換色/線寬），省每幀數十次 QPen 配置
+        bar_pen = QPen(QColor(self._accent), 1.0, Qt.SolidLine, Qt.RoundCap)
         if reverse_bars and morph < 0.999:
             p.save()
             p.setOpacity(p.opacity() * max(0.0, min(1.0, 1.0 - morph)))
@@ -1527,7 +1588,9 @@ class ArtView(QWidget):
                 inner = base_rad
                 outer = base_rad + h
                 x, y = ptable[i]
-                p.setPen(QPen(col, pen_w, Qt.SolidLine, Qt.RoundCap))
+                bar_pen.setColor(col)
+                bar_pen.setWidthF(pen_w)
+                p.setPen(bar_pen)
                 p.drawLine(QPointF(cx + x * inner, cy + y * inner),
                            QPointF(cx + x * outer, cy + y * outer))
             p.restore()
@@ -1598,7 +1661,9 @@ class ArtView(QWidget):
             x, y = table[i]
             start = QPointF(cx + x * inner, cy + y * inner)
             end = QPointF(cx + x * outer, cy + y * outer)
-            p.setPen(QPen(col, pen_w, Qt.SolidLine, Qt.RoundCap))
+            bar_pen.setColor(col)
+            bar_pen.setWidthF(pen_w)
+            p.setPen(bar_pen)
             p.drawLine(start, end)
         if reverse_bars:
             p.restore()
@@ -1613,7 +1678,7 @@ class ArtView(QWidget):
         # 角度表並做循環 3-tap 平滑，成本低。
         steps = 64
         table = self._angle_table(steps)
-        cover_rad = rad * 0.78
+        cover_rad = rad * 0.78 * self._audio_cover_pulse_scale()
         blob_base = cover_rad - max_h * 0.05      # 略縮進封面邊內，靜音時藏住
         amp = max_h * (1.15 + 0.5 * thickness)
         drive = min(1.25, energy * 0.95)          # 外擴強度＝音量，靜音→0
@@ -1723,17 +1788,12 @@ class ArtView(QWidget):
             self._draw_audio_cover_stack(p, alpha, pm, old, cover_rect, rad)
 
     def _audio_spin_deg(self) -> float:
-        if not SETTINGS.get("audio_feedback_spin", False):
-            return 0.0
         return math.degrees(self._audio_spin)
 
     def _draw_audio_cover_stack(self, p, alpha, pm, old, cover_rect, rad):
         # 封面外圈深色描邊 + 換曲交叉淡化 + 主題色外框（畫在旋轉之外，封面不轉）
-        if (self._mode == "audio" and self._cover_pulse > 0.001
-                and SETTINGS.get("audio_cover_pulse", True)):
-            strength = max(0.2, min(2.0, float(
-                SETTINGS.get("audio_cover_pulse_strength", 1.0))))
-            s = 1.0 + 0.22 * strength * self._cover_pulse
+        s = self._audio_cover_pulse_scale()
+        if s != 1.0:
             cen = cover_rect.center()
             hw = cover_rect.width() * 0.5 * s
             cover_rect = QRectF(cen.x() - hw, cen.y() - hw, hw * 2.0, hw * 2.0)
@@ -2431,6 +2491,7 @@ class SeekBar(QWidget):
         self._accent = QColor(SPOTIFY_GREEN)
         self._enabled_seek = False
         self._fill_col = QColor(self._accent)
+        self._fill_grad: tuple[QColor, QColor] | None = None
         self._thumb_col = QColor(255, 255, 255)
         self._track_col = QColor(255, 255, 255, 36)
 
@@ -2480,8 +2541,11 @@ class SeekBar(QWidget):
         self._accent = QColor(c)
         self.update()
 
-    def set_custom_colors(self, fill: QColor, thumb: QColor, track: QColor):
+    def set_custom_colors(self, fill: QColor, thumb: QColor, track: QColor,
+                          fill_gradient: tuple[QColor, QColor] | None = None):
         self._fill_col = QColor(fill)
+        self._fill_grad = ((QColor(fill_gradient[0]), QColor(fill_gradient[1]))
+                           if fill_gradient is not None else None)
         self._thumb_col = QColor(thumb)
         self._track_col = QColor(track)
         self.update()
@@ -2914,6 +2978,11 @@ class SeekBar(QWidget):
     def _fill_color(self) -> QColor:
         return QColor(self._fill_col)
 
+    def _fill_gradient(self) -> tuple[QColor, QColor] | None:
+        if self._fill_grad is None:
+            return None
+        return QColor(self._fill_grad[0]), QColor(self._fill_grad[1])
+
     def _thumb_color(self) -> QColor:
         return QColor(self._thumb_col)
 
@@ -2981,7 +3050,11 @@ class SeekBar(QWidget):
 
         def wave_path(x0: float, x1: float) -> QPainterPath:
             path = QPainterPath()
-            steps = max(3, math.ceil((x1 - x0) / 0.75))
+            # 步長依波長自適應：每個波長約 30 點，配合 2x 超取樣 + 抗鋸齒
+            # 視覺已足夠平滑。原本固定 0.75px（每波長近百點）在寬軌道 + 高
+            # fps 下每幀數百次 sin/lineTo，是純 CPU 光柵化的浪費。
+            step_px = max(1.5, max(26.0, h * 1.9) / 30.0)
+            steps = max(3, math.ceil((x1 - x0) / step_px))
             for i in range(steps + 1):
                 x = x0 + (x1 - x0) * i / steps
                 if i == 0:
@@ -3101,11 +3174,20 @@ class SeekBar(QWidget):
 
         ratio = self._ratio()
         fill_w = pad + tw * ratio        # 填滿端點（絕對 x）
-        grad = QLinearGradient(pad, 0, pad + tw, 0)
         fill_color = self._fill_color()
         thumb_color = self._thumb_color()
-        grad.setColorAt(0.0, fill_color.lighter(125))
-        grad.setColorAt(1.0, fill_color)
+        grad = QLinearGradient(pad, 0, pad + tw, 0)
+        fill_grad = self._fill_gradient()
+        if fill_grad is None:
+            grad.setColorAt(0.0, fill_color.lighter(125))
+            grad.setColorAt(1.0, fill_color)
+        else:
+            c0, c1 = fill_grad
+            alpha = fill_color.alpha()
+            c0.setAlpha(alpha)
+            c1.setAlpha(alpha)
+            grad.setColorAt(0.0, c0)
+            grad.setColorAt(1.0, c1)
         gray = self._track_color()
         content_opacity = 1.0
 
