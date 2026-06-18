@@ -58,6 +58,9 @@ GLYPH_CHEVRON_UP = "\uE70E"
 
 # ---------------------------------------------------------------- 設定 ----
 
+FPS_MIN = 24
+FPS_MAX = 240
+
 DEFAULTS = {
     "pinned": True,
     "theme": "auto",        # auto 或 THEMES 內的 key
@@ -81,8 +84,12 @@ DEFAULTS = {
     "seek_length": 1.0504252783388335,
     "seek_thumb_size": 0.595937135919813,
     "progress_time_mode": "current",
+    "progress_time_anim_enabled": True,
+    "progress_time_anim_style": "fade",  # fade / slide / slide2
+    "progress_time_spacing": 0.0,  # 進度數字字距，邏輯 px
     "controls_hover": True, # 控制列只在 hover 時顯示
     "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
+    "marquee_edge_fade": True, # 跑馬燈文字左右邊緣淡化
     "title_size": 0.997494556708598,
     "artist_size": 0.997494556708598,
     "title_x_offset": -0.20591344239150544,
@@ -122,9 +129,11 @@ DEFAULTS = {
     "control_button_size": 0.9981209175314486,
     "control_button_spacing": 0.9962418350628971,
     "font": "Arial",
-    "fps": 144,             # 24 ~ 240，特效計時器更新率
+    "fps": 144,             # FPS_MIN ~ FPS_MAX；FPS_MAX 表示不限速
     "antialias": True,      # 反鋸齒
     "show_source": True,    # 左上角來源標誌（Spotify 圖示 + 文字）
+    "source_x_offset": 0.0,
+    "source_y_offset": 0.0,
     "source": "spotify",    # spotify / browser / any 媒體來源
     "startup_enabled": False,
     "startup_show": "boot",  # boot / spotify
@@ -135,9 +144,11 @@ DEFAULTS = {
     "background_image": "",     # 自訂卡片背景圖片路徑
     "background_image_mode": "cover",  # cover / contain / stretch / tile
     "background_image_brightness": 1.0,  # 0.35 ~ 1.65，自訂背景圖亮度
+    "background_image_auto_theme": True,  # 自動主題使用封面色；False 時使用背景圖色
     "background_image_parallax": False,  # 自訂背景圖滑鼠視差
     "background_image_parallax_strength": 1.0,  # 0.0 ~ 2.0
     "background_image_parallax_fps": 30,  # 5 ~ 60，視差更新率
+    "seek_hover_time": True,  # hover 進度條時顯示滑鼠位置時間
     "weather_enabled": False,  # 降水效果總開關
     "weather_effect": "rain",  # rain / snow / custom，目前編輯與顯示的降水類型
     "rain_enabled": False,   # 飄雨效果
@@ -154,7 +165,7 @@ DEFAULTS = {
     "snow_spin_speed": 1.0,   # 0.0 ~ 3.0，雪花旋轉速度
     "snow_fall_speed": 1.0,   # 0.25 ~ 2.5，雪花下落速度
     "custom_intensity": 0.42, # 0.0 ~ 1.0，自訂符號密度
-    "custom_size": 1.0,       # 0.45 ~ 2.2，自訂符號大小
+    "custom_size": 1.0,       # 0.45 ~ 5.0，自訂符號大小
     "custom_spin_speed": 1.0, # 0.0 ~ 3.0，自訂符號旋轉速度
     "custom_fall_speed": 1.0, # 0.25 ~ 2.5，自訂符號下落速度
     "custom_symbols": "❄,❅,❆", # 逗號分隔的自訂符號
@@ -164,7 +175,7 @@ DEFAULTS = {
     "lightning_thickness": 1.0,  # 0.4 ~ 3.0，閃電線條粗細
     "lightning_intensity": 0.55, # 0.0 ~ 2.5，閃光強度與頻率
     "lightning_duration": 0.18,  # 0.05 ~ 1.5，閃電出現到消失秒數
-    "lightning_duration_random": False, # 閃電持續時間隨機
+    "lightning_random_duration": False, # 閃電持續時間隨機
     "font_color": "",           # 曲名 / 作者文字顏色，空字串 = 預設
     "source_text_color": "",    # 左上來源文字顏色，空字串 = 預設
     "topbar_icon_color": "",    # 右上工具列圖示顏色，空字串 = 預設
@@ -180,7 +191,7 @@ DEFAULTS = {
     "hotkey_next": "",
     "hotkey_vol_up": "",
     "hotkey_vol_down": "",
-    "language": "ja",       # zh / ja / en
+    "language": "ja",       # zh / ja
 }
 
 THEMES = [
@@ -208,13 +219,15 @@ SEEK_STYLES = [("plain", "簡約"), ("wave", "波浪"), ("glow", "流光")]
 SEEK_THUMBS = [("hover", "滑過顯示"), ("always", "常駐顯示")]
 SEEK_THUMB_SHAPES = [("circle", "圓形"), ("star", "星星"), ("rect", "直條")]
 PROGRESS_TIME_MODES = [("current", "目前"), ("remaining", "-剩餘")]
+PROGRESS_TIME_ANIM_STYLES = [("fade", "淡化"), ("slide", "滑動"),
+                             ("slide2", "滑動 2")]
 AUTO_THEME_MODES = [("solid", "單色"), ("gradient", "漸層")]
 SOURCE_MODES = [("spotify", "Spotify"), ("browser", "瀏覽器"), ("any", "全部")]
 CONTROLS_ALIGN = [("left", "靠左"), ("center", "置中"), ("right", "靠右")]
 CARD_PRESETS = [("mini", "超迷你"), ("standard", "標準"),
                 ("wide", "寬版"), ("controls", "控制列")]
 WEATHER_EFFECTS = [("rain", "雨"), ("snow", "雪"), ("custom", "自訂")]
-LANGUAGES = [("zh", "中文"), ("ja", "日本語"), ("en", "English")]
+LANGUAGES = [("zh", "中文"), ("ja", "日本語")]
 SETTINGS_PANEL_TYPES = [("normal", "一般"), ("categories", "分類")]
 BACKGROUND_IMAGE_MODES = [
     ("cover", "填滿裁切"),
@@ -230,7 +243,7 @@ def _load_i18n() -> dict:
     """從 i18n.json 載入語言字串；缺漏的鍵以 zh 補齊。
 
     語言文字一律放在外部 i18n.json（不寫死在程式裡），方便直接編修/新增
-    語言。檔案結構為 {"zh": {...}, "ja": {...}, "en": {...}}。
+    語言。檔案結構為 {"zh": {...}, "ja": {...}}。
     """
     try:
         with open(I18N_PATH, encoding="utf-8") as f:
@@ -239,9 +252,12 @@ def _load_i18n() -> dict:
         data = {}
     if not isinstance(data, dict):
         data = {}
+    loaded = {}
     for lang, _ in LANGUAGES:
         if not isinstance(data.get(lang), dict):
             data[lang] = {}
+        loaded[lang] = data[lang]
+    data = loaded
     base = data.get("zh", {})
     for lang in data:
         if lang == "zh":
@@ -531,9 +547,12 @@ def load_settings():
         SETTINGS.get("settings_advanced_open", False))
     SETTINGS.pop("settings_full_positions", None)
     SETTINGS["radius"] = min(28, max(6, int(SETTINGS["radius"])))
-    SETTINGS["fps"] = min(240, max(24, int(SETTINGS["fps"])))
+    SETTINGS["fps"] = min(FPS_MAX, max(FPS_MIN, int(SETTINGS["fps"])))
     SETTINGS["antialias"] = bool(SETTINGS["antialias"])
     SETTINGS["show_source"] = bool(SETTINGS["show_source"])
+    for key in ("source_x_offset", "source_y_offset"):
+        SETTINGS[key] = min(80.0, max(
+            -80.0, float(SETTINGS.get(key, 0.0))))
     SETTINGS["startup_enabled"] = bool(
         SETTINGS.get("startup_enabled", False))
     if SETTINGS.get("startup_show") not in ("boot", "spotify"):
@@ -550,12 +569,16 @@ def load_settings():
         SETTINGS["background_image_mode"] = "cover"
     SETTINGS["background_image_brightness"] = min(1.65, max(0.35, float(
         SETTINGS.get("background_image_brightness", 1.0))))
+    SETTINGS["background_image_auto_theme"] = bool(
+        SETTINGS.get("background_image_auto_theme", True))
     SETTINGS["background_image_parallax"] = bool(
         SETTINGS.get("background_image_parallax", False))
     SETTINGS["background_image_parallax_strength"] = min(2.0, max(
         0.0, float(SETTINGS.get("background_image_parallax_strength", 1.0))))
     SETTINGS["background_image_parallax_fps"] = min(60, max(
         5, int(SETTINGS.get("background_image_parallax_fps", 30))))
+    SETTINGS["seek_hover_time"] = bool(
+        SETTINGS.get("seek_hover_time", True))
     if "weather_enabled" not in data:
         SETTINGS["weather_enabled"] = bool(SETTINGS.get("rain_enabled", False))
     SETTINGS["weather_enabled"] = bool(SETTINGS.get("weather_enabled", False))
@@ -587,7 +610,7 @@ def load_settings():
     SETTINGS["custom_intensity"] = min(1.0, max(
         0.0, float(SETTINGS.get("custom_intensity",
                                 SETTINGS.get("snow_intensity", 0.42)))))
-    SETTINGS["custom_size"] = min(2.2, max(
+    SETTINGS["custom_size"] = min(5.0, max(
         0.45, float(SETTINGS.get("custom_size",
                                  SETTINGS.get("snow_size", 1.0)))))
     SETTINGS["custom_spin_speed"] = min(3.0, max(
@@ -617,14 +640,20 @@ def load_settings():
         0.0, float(SETTINGS.get("lightning_intensity", 0.55))))
     SETTINGS["lightning_duration"] = min(1.5, max(
         0.05, float(SETTINGS.get("lightning_duration", 0.18))))
-    SETTINGS["lightning_duration_random"] = bool(
-        SETTINGS.get("lightning_duration_random", False))
+    random_duration = SETTINGS.get("lightning_random_duration", False)
+    if ("lightning_random_duration" not in data
+            and "lightning_duration_random" in data):
+        random_duration = data.get("lightning_duration_random", False)
+    SETTINGS["lightning_random_duration"] = bool(random_duration)
+    SETTINGS.pop("lightning_duration_random", None)
     for key in COLOR_SETTING_KEYS:
         raw = str(SETTINGS.get(key, "") or "").strip()
         c = QColor(raw) if raw else QColor()
         SETTINGS[key] = c.name(QColor.HexRgb) if c.isValid() else ""
     SETTINGS["marquee_enabled"] = bool(
         SETTINGS.get("marquee_enabled", True))
+    SETTINGS["marquee_edge_fade"] = bool(
+        SETTINGS.get("marquee_edge_fade", True))
     SETTINGS["title_size"] = min(
         1.8, max(0.6, float(SETTINGS.get("title_size", 1.0))))
     SETTINGS["artist_size"] = min(
@@ -648,7 +677,7 @@ def load_settings():
     SETTINGS["audio_feedback_spin"] = bool(
         SETTINGS.get("audio_feedback_spin", False))
     SETTINGS["audio_feedback_spin_speed"] = min(
-        3.0, max(0.1, float(SETTINGS.get("audio_feedback_spin_speed", 1.0))))
+        2.5, max(0.01, float(SETTINGS.get("audio_feedback_spin_speed", 1.0))))
     SETTINGS["audio_cover_pulse"] = bool(
         SETTINGS.get("audio_cover_pulse", True))
     SETTINGS["audio_cover_pulse_strength"] = min(
@@ -710,6 +739,13 @@ def load_settings():
     if SETTINGS.get("progress_time_mode") not in [
             k for k, _ in PROGRESS_TIME_MODES]:
         SETTINGS["progress_time_mode"] = "current"
+    SETTINGS["progress_time_anim_enabled"] = bool(
+        SETTINGS.get("progress_time_anim_enabled", True))
+    if SETTINGS.get("progress_time_anim_style") not in [
+            k for k, _ in PROGRESS_TIME_ANIM_STYLES]:
+        SETTINGS["progress_time_anim_style"] = "fade"
+    SETTINGS["progress_time_spacing"] = min(8.0, max(
+        -2.0, float(SETTINGS.get("progress_time_spacing", 0.0))))
     SETTINGS["seek_wave_amp"] = min(
         2.0, max(0.0, float(SETTINGS.get("seek_wave_amp", 1.0))))
     SETTINGS["seek_wave_speed"] = min(
@@ -770,21 +806,6 @@ def optional_setting_color(key: str) -> QColor | None:
         return None
     c = QColor(raw)
     return c if c.isValid() else None
-
-
-def setting_color(key: str, fallback, alpha: int | None = None) -> QColor:
-    c = optional_setting_color(key)
-    if c is None:
-        c = QColor(fallback)
-    if not c.isValid():
-        c = QColor("#ffffff")
-    if alpha is not None:
-        c.setAlpha(max(0, min(255, int(alpha))))
-    return c
-
-
-def theme_label(key: str, fallback: str) -> str:
-    return tr(f"theme_{key}") if f"theme_{key}" in _I18N["zh"] else fallback
 
 
 def save_settings():
@@ -872,7 +893,10 @@ def adur(full_ms: int, simple_ms: int | None = None) -> int:
 
 def fps_ms() -> int:
     """特效計時器的間隔毫秒（依 fps 設定）。"""
-    return max(4, round(1000 / SETTINGS["fps"]))
+    fps = int(SETTINGS["fps"])
+    if fps >= FPS_MAX:
+        return 0
+    return max(4, round(1000 / fps))
 
 
 def aa(p: QPainter):

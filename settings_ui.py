@@ -15,15 +15,16 @@ from PySide6.QtWidgets import (QApplication, QDialog,
 
 from style import (AUTO_THEME_MODES, BACKGROUND_IMAGE_MODES, CARD_PRESETS,
                    CONTROLS_ALIGN,
-                   GLYPH_CHECK, GLYPH_CHEVRON_DOWN,
+                   FPS_MAX, FPS_MIN, GLYPH_CHECK, GLYPH_CHEVRON_DOWN,
                    GLYPH_CLOSE, GLYPH_MUTE, GLYPH_SEARCH, GLYPH_SETTINGS,
-                   GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_MODES,
+                   GLYPH_VOLUME, LANGUAGES, PROGRESS_TIME_ANIM_STYLES,
+                   PROGRESS_TIME_MODES,
                    SEEK_STYLES, SETTINGS, SEEK_THUMB_SHAPES,
                    SEEK_THUMBS, SETTINGS_PANEL_TYPES, SOURCE_MODES,
                    WEATHER_EFFECTS, Anim, aa,
                    adur, all_themes, anim_on, blend, fps_ms, icon_font,
                    is_safe_ui_font, safe_font_family, soft_shadow,
-                   theme_color, theme_gradient, theme_label, tr, ui_font)
+                   theme_color, theme_gradient, tr, ui_font)
 from widgets import IconButton
 
 PANEL_W_BASE = 376
@@ -133,6 +134,11 @@ def seek_thumb_shape_options():
 
 def progress_time_options():
     return [(k, tr(f"progress_time_{k}")) for k, _ in PROGRESS_TIME_MODES]
+
+
+def progress_time_anim_options():
+    return [(k, tr(f"progress_time_anim_{k}"))
+            for k, _ in PROGRESS_TIME_ANIM_STYLES]
 
 
 def auto_theme_options():
@@ -2120,14 +2126,6 @@ class SwatchRow(QWidget):
             self._sel_t = 1.0
             self.update()
 
-    def _center_lerp(self, a: float, b: float, t: float) -> QPointF:
-        if a < 0 or b < 0:
-            return QPointF()
-        c0 = self._center(max(0, min(len(self._keys) - 1, int(round(a)))))
-        c1 = self._center(max(0, min(len(self._keys) - 1, int(round(b)))))
-        return QPointF(c0.x() + (c1.x() - c0.x()) * t,
-                       c0.y() + (c1.y() - c0.y()) * t)
-
     def _draw_check(self, p: QPainter, center: QPointF, alpha: float):
         if alpha <= 0.01:
             return
@@ -3006,6 +3004,44 @@ class _PanelBody(QWidget):
         p.drawPath(path)
 
 
+class _ScrollSnapshot(QWidget):
+    """捲動動畫期間用內容快照代替整棵 QWidget 樹逐幀移動。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pm: QPixmap | None = None
+        self._offset = 0.0
+        self.hide()
+
+    def set_snapshot(self, pm: QPixmap | None, offset: float):
+        self._pm = pm
+        self._offset = float(offset)
+        self.update()
+
+    def set_offset(self, offset: float):
+        self._offset = float(offset)
+        self.update()
+
+    def wheelEvent(self, e):
+        e.ignore()
+
+    def mousePressEvent(self, e):
+        e.ignore()
+
+    def mouseMoveEvent(self, e):
+        e.ignore()
+
+    def mouseReleaseEvent(self, e):
+        e.ignore()
+
+    def paintEvent(self, _):
+        if self._pm is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawPixmap(QPointF(0.0, -self._offset), self._pm)
+
+
 class _ScrollablePanelBody(_PanelBody):
     """圓角面板外框 + 可垂直捲動的內容層。"""
 
@@ -3018,6 +3054,8 @@ class _ScrollablePanelBody(_PanelBody):
         self.content.setAttribute(Qt.WA_TranslucentBackground)
         self.content.setMouseTracking(True)
         self.content.installEventFilter(self)
+        self._scroll_snapshot = _ScrollSnapshot(self.viewport)
+        self._scroll_snapshot_hid_content = False
         self._header_widget: QWidget | None = None
         self._footer_widget: QWidget | None = None
         self._header_h = 0
@@ -3092,6 +3130,8 @@ class _ScrollablePanelBody(_PanelBody):
                 0, height - self._footer_h, width, self._footer_h)
             self._footer_widget.raise_()
         self.viewport.setGeometry(0, self._header_h, width, self._viewport_h)
+        self._scroll_snapshot.setGeometry(0, 0, self._snapshot_width(),
+                                          self._viewport_h)
         self.content.resize(width, max(self._viewport_h, self._content_h))
         lay = self.content.layout()
         if lay is not None:
@@ -3117,6 +3157,8 @@ class _ScrollablePanelBody(_PanelBody):
                 0, height - self._footer_h, width, self._footer_h)
             self._footer_widget.raise_()
         self.viewport.setGeometry(0, self._header_h, width, self._viewport_h)
+        self._scroll_snapshot.setGeometry(0, 0, self._snapshot_width(),
+                                          self._viewport_h)
 
     def _max_offset(self) -> float:
         return max(0.0, float(self._content_h - self._viewport_h))
@@ -3143,6 +3185,10 @@ class _ScrollablePanelBody(_PanelBody):
                        panel_f(3), thumb_h)
         thumb_hit = QRectF(hit.x(), thumb_y, hit.width(), thumb_h)
         return hit, thumb, thumb_hit
+
+    def _snapshot_width(self) -> int:
+        reserve = panel_px(20) if self._max_offset() > 1 else 0
+        return max(1, self.viewport.width() - reserve)
 
     def _set_scrollbar_hover(self, pos: QPointF | None) -> bool:
         geo = self._scrollbar_geometry()
@@ -3184,13 +3230,41 @@ class _ScrollablePanelBody(_PanelBody):
         ratio = (float(y) - drag_delta - hit.y()) / span
         return self._clamp(ratio * self._max_offset())
 
+    def _begin_scroll_snapshot(self):
+        if (not self._scroll_snapshot.isHidden() or self.content.width() <= 0
+                or self.content.height() <= 0 or self.content.isHidden()):
+            return
+        pm = self.content.grab()
+        if pm.isNull():
+            return
+        self._scroll_snapshot.setGeometry(0, 0, self._snapshot_width(),
+                                          self.viewport.height())
+        self._scroll_snapshot.set_snapshot(pm, self._offset)
+        self._scroll_snapshot.show()
+        self._scroll_snapshot.raise_()
+        self.content.hide()
+        self._scroll_snapshot_hid_content = True
+
+    def _end_scroll_snapshot(self):
+        if self._scroll_snapshot.isHidden():
+            return
+        self.content.move(0, -round(self._offset))
+        if self._scroll_snapshot_hid_content:
+            self.content.show()
+            self._scroll_snapshot_hid_content = False
+        self._scroll_snapshot.hide()
+        self._scroll_snapshot.set_snapshot(None, self._offset)
+        self.viewport.update()
+
     def _stop_smooth_scroll(self):
         self._scroll_timer.stop()
         self._scroll_velocity = 0.0
         self._scroll_last_t = 0.0
+        self._end_scroll_snapshot()
 
-    def _set_offset_direct(self, value: float):
-        self._stop_smooth_scroll()
+    def _set_offset_direct(self, value: float, keep_snapshot: bool = False):
+        if not keep_snapshot:
+            self._stop_smooth_scroll()
         self._offset = self._clamp(value)
         self._target_offset = self._offset
         self._place_content(force=True)
@@ -3206,12 +3280,14 @@ class _ScrollablePanelBody(_PanelBody):
         self._scroll_hover = True
         self._scroll_hover_to(True)
         self._stop_smooth_scroll()
+        self._begin_scroll_snapshot()
         if thumb_hit.contains(pos):
             self._scroll_drag_delta = pos.y() - thumb.y()
         else:
             self._scroll_drag_delta = thumb.height() / 2.0
             self._set_offset_direct(
-                self._offset_from_thumb_y(pos.y(), self._scroll_drag_delta))
+                self._offset_from_thumb_y(pos.y(), self._scroll_drag_delta),
+                keep_snapshot=True)
         self.grabMouse()
         self.setCursor(Qt.ClosedHandCursor)
         self.content.setCursor(Qt.ClosedHandCursor)
@@ -3221,7 +3297,8 @@ class _ScrollablePanelBody(_PanelBody):
         if not self._scroll_drag:
             return False
         self._set_offset_direct(
-            self._offset_from_thumb_y(pos.y(), self._scroll_drag_delta))
+            self._offset_from_thumb_y(pos.y(), self._scroll_drag_delta),
+            keep_snapshot=True)
         return True
 
     def _end_scrollbar_drag(self) -> bool:
@@ -3229,6 +3306,7 @@ class _ScrollablePanelBody(_PanelBody):
             return False
         self._scroll_drag = False
         self.releaseMouse()
+        self._end_scroll_snapshot()
         return True
 
     def _content_event_pos(self, event) -> QPointF:
@@ -3240,6 +3318,10 @@ class _ScrollablePanelBody(_PanelBody):
 
     def _place_content(self, force: bool = False):
         y = -round(self._offset)
+        if not self._scroll_snapshot.isHidden():
+            self._scroll_snapshot.set_offset(self._offset)
+            self.update()
+            return
         if force or self.content.y() != y:
             self.content.move(0, y)
             self.viewport.update()
@@ -3259,6 +3341,7 @@ class _ScrollablePanelBody(_PanelBody):
         self._scroll_timer.setInterval(fps_ms())
         if not self._scroll_timer.isActive():
             self._scroll_last_t = time.monotonic()
+            self._begin_scroll_snapshot()
             self._scroll_timer.start()
 
     def _step_scroll(self):
@@ -3547,156 +3630,6 @@ class _PanelZoomOverlay(QWidget):
         p.drawPixmap(rect, pm, QRectF(0, 0, bw, bh))
 
 
-class _PanelFadeOverlay(QWidget):
-    """設定面板語言切換過渡：舊畫面淡出、新畫面淡入。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-        self._old: QPixmap | None = None
-        self._new: QPixmap | None = None
-        self._r0 = QRectF()
-        self._r1 = QRectF()
-        self._t = 0.0
-        self._buf: QPixmap | None = None
-        self._buf2: QPixmap | None = None
-        self.hide()
-
-    def setup(self, old_pm: QPixmap, old_rect, new_pm: QPixmap, new_rect):
-        self._old = old_pm
-        self._new = new_pm
-        self._r0 = QRectF(old_rect)
-        self._r1 = QRectF(new_rect)
-        self._t = 0.0
-        dpr = self.devicePixelRatioF()
-        bw = int(max(self._r0.width(), self._r1.width()) * dpr) + 2
-        bh = int(max(self._r0.height(), self._r1.height()) * dpr) + 2
-        if (self._buf is None or self._buf.width() < bw
-                or self._buf.height() < bh):
-            self._buf = QPixmap(bw, bh)
-            self._buf2 = QPixmap(bw, bh)
-        self.update()
-
-    def set_t(self, t: float):
-        self._t = float(t)
-        self.update()
-
-    def cur_rect(self) -> QRectF:
-        t = self._t
-        return QRectF(
-            self._r0.x() + (self._r1.x() - self._r0.x()) * t,
-            self._r0.y() + (self._r1.y() - self._r0.y()) * t,
-            self._r0.width() + (self._r1.width() - self._r0.width()) * t,
-            self._r0.height() + (self._r1.height() - self._r0.height()) * t)
-
-    def _compose(self, rect: QRectF) -> tuple[QPixmap, float, float]:
-        dpr = self.devicePixelRatioF()
-        bw = max(1.0, rect.width() * dpr)
-        bh = max(1.0, rect.height() * dpr)
-        if (self._buf is None or self._buf.width() < bw
-                or self._buf.height() < bh):
-            self._buf = QPixmap(int(bw) + 2, int(bh) + 2)
-            self._buf2 = QPixmap(int(bw) + 2, int(bh) + 2)
-        target = QRectF(0, 0, bw, bh)
-        t = self._t
-        self._buf.fill(Qt.transparent)
-        p = QPainter(self._buf)
-        aa(p)
-        if self._new is not None and t > 0.0:
-            p.setOpacity(t)
-            p.drawPixmap(target, self._new, QRectF(self._new.rect()))
-        if self._old is not None and t < 1.0:
-            if t <= 0.0:
-                p.setOpacity(1.0)
-                p.drawPixmap(target, self._old, QRectF(self._old.rect()))
-            else:
-                self._buf2.fill(Qt.transparent)
-                p2 = QPainter(self._buf2)
-                aa(p2)
-                p2.setOpacity(1.0 - t)
-                p2.drawPixmap(target, self._old, QRectF(self._old.rect()))
-                p2.end()
-                p.setOpacity(1.0)
-                p.setCompositionMode(QPainter.CompositionMode_Plus)
-                p.drawPixmap(0, 0, self._buf2)
-        p.end()
-        return self._buf, bw, bh
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        aa(p)
-        r = self.cur_rect()
-        clip = QPainterPath()
-        clip.addRoundedRect(r, panel_f(16), panel_f(16))
-        p.setClipPath(clip)
-        pm, bw, bh = self._compose(r)
-        p.drawPixmap(r, pm, QRectF(0, 0, bw, bh))
-
-
-class _PanelSlideOverlay(QWidget):
-    """設定面板類型切換：舊面板滑出、新面板滑入。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setAttribute(Qt.WA_NoSystemBackground)
-        self._old: QPixmap | None = None
-        self._new: QPixmap | None = None
-        self._r0 = QRectF()
-        self._r1 = QRectF()
-        self._clip_rect = QRectF()
-        self._clip_radius = panel_f(16)
-        self._t = 0.0
-        self.hide()
-
-    def setup(self, old_pm: QPixmap, old_rect,
-              new_pm: QPixmap, new_rect,
-              clip_rect=None, clip_radius: float | None = None):
-        self._old = old_pm
-        self._new = new_pm
-        self._r0 = QRectF(old_rect)
-        self._r1 = QRectF(new_rect)
-        self._clip_rect = (QRectF(clip_rect) if clip_rect is not None
-                           else self._r0.united(self._r1))
-        self._clip_radius = (panel_f(16) if clip_radius is None
-                             else max(0.0, float(clip_radius)))
-        self._t = 0.0
-        self.update()
-
-    def set_t(self, t: float):
-        self._t = max(0.0, min(1.0, float(t)))
-        self.update()
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        aa(p)
-        span = max(self._r0.width(), self._r1.width(), panel_f(80))
-        clip_rect = QRectF(self._clip_rect)
-        if not clip_rect.isValid():
-            clip_rect = self._r0.united(self._r1)
-        if not clip_rect.isValid():
-            clip_rect = QRectF(self.rect())
-        clip = QPainterPath()
-        if self._clip_radius > 0.0:
-            clip.addRoundedRect(clip_rect, self._clip_radius,
-                                self._clip_radius)
-        else:
-            clip.addRect(clip_rect)
-        p.fillPath(clip, QColor(21, 21, 27, 252))
-        p.setClipPath(clip)
-        if self._old is not None:
-            r = QRectF(self._r0)
-            r.moveLeft(self._r0.x() - span * self._t)
-            p.drawPixmap(r, self._old, QRectF(self._old.rect()))
-        if self._new is not None:
-            r = QRectF(self._r1)
-            r.moveLeft(self._r1.x() + span * (1.0 - self._t))
-            p.drawPixmap(r, self._new, QRectF(self._new.rect()))
-
-
 class _SectionSlideOverlay(QWidget):
     """section 展開/收合動畫層：凍結 content 整層 reflow，改用展開後快照。
 
@@ -3879,14 +3812,6 @@ class SettingsPanel(QWidget):
         self._zoom_anim.valueChanged.connect(self._on_zoom)
         self._zoom_anim.finished.connect(self._zoom_done)
         self._final_size = None
-        self._fade_overlay: _PanelFadeOverlay | None = None
-        self._fade_final_size = None
-        self._fade_abort = False
-        self._lang_old_pm: QPixmap | None = None
-        self._lang_old_rect = QRectF()
-        self._fade_anim = Anim(self)
-        self._fade_anim.valueChanged.connect(self._on_language_fade)
-        self._fade_anim.finished.connect(self._language_fade_done)
         self._type_overlay: _PanelZoomOverlay | None = None
         self._type_slide_anim = Anim(self)
         self._type_slide_anim.valueChanged.connect(self._on_type_slide)
@@ -4196,6 +4121,11 @@ class SettingsPanel(QWidget):
                             SETTINGS["background_image_brightness"] * 100,
                             fmt=lambda v: f"{v:.0f}%",
                             accent=self._accent))
+            self.tg_bg_image_auto_theme = row(
+                "background_image_auto_theme",
+                Toggle(bool(SETTINGS.get("background_image_auto_theme", True)),
+                       accent=self._accent),
+                stretch=False)
             self.tg_bg_image_parallax = row("background_image_parallax",
                 Toggle(bool(SETTINGS.get("background_image_parallax", False)),
                        accent=self._accent),
@@ -4249,7 +4179,7 @@ class SettingsPanel(QWidget):
                 25, 250, SETTINGS.get("snow_fall_speed", 1.0) * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
             self.sl_custom_size = row("custom_size", PanelSlider(
-                45, 220, SETTINGS.get("custom_size", 1.0) * 100,
+                45, 500, SETTINGS.get("custom_size", 1.0) * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
             self.sl_custom_spin_speed = row("custom_spin_speed", PanelSlider(
                 0, 300, SETTINGS.get("custom_spin_speed", 1.0) * 100,
@@ -4300,8 +4230,10 @@ class SettingsPanel(QWidget):
                             fmt=lambda v: f"{v / 100.0:.2f}s",
                             step=1, accent=self._accent))
             self.tg_lightning_duration_random = row(
-                "lightning_duration_random",
-                Toggle(bool(SETTINGS.get("lightning_duration_random", False)),
+                "lightning_random_duration",
+                Toggle(bool(SETTINGS.get(
+                    "lightning_random_duration",
+                    SETTINGS.get("lightning_duration_random", False))),
                        accent=self._accent),
                 stretch=False)
             self.sg_auto_theme = row("auto_theme", Segmented(
@@ -4341,6 +4273,9 @@ class SettingsPanel(QWidget):
             self.tg_marquee = row("marquee_enabled", Toggle(
                 bool(SETTINGS["marquee_enabled"]), accent=self._accent),
                 stretch=False)
+            self.tg_marquee_edge_fade = row("marquee_edge_fade", Toggle(
+                bool(SETTINGS.get("marquee_edge_fade", True)),
+                accent=self._accent), stretch=False)
             self.sl_title_size = row("title_size", PanelSlider(
                 60, 180, SETTINGS["title_size"] * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
@@ -4368,6 +4303,25 @@ class SettingsPanel(QWidget):
             self.sg_progress_time = row("progress_time", Segmented(
                 progress_time_options(), SETTINGS["progress_time_mode"],
                 accent=self._accent))
+            self.sl_progress_time_spacing = row(
+                "progress_time_spacing",
+                PanelSlider(-20, 80,
+                            SETTINGS.get("progress_time_spacing", 0.0) * 10.0,
+                            fmt=lambda v: f"{v / 10.0:.1f}px",
+                            accent=self._accent, step=1))
+            self.tg_seek_hover_time = row("seek_hover_time", Toggle(
+                bool(SETTINGS.get("seek_hover_time", True)),
+                accent=self._accent), stretch=False)
+            self.tg_progress_time_anim = row(
+                "progress_time_anim_enabled",
+                Toggle(bool(SETTINGS.get("progress_time_anim_enabled", True)),
+                       accent=self._accent),
+                stretch=False)
+            self.sg_progress_time_anim = row(
+                "progress_time_anim_style",
+                Segmented(progress_time_anim_options(),
+                          SETTINGS.get("progress_time_anim_style", "fade"),
+                          accent=self._accent))
 
         def build_cover():
             section(lay, "section_cover")
@@ -4529,6 +4483,12 @@ class SettingsPanel(QWidget):
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
 
         section(adv, "section_text")
+        self.sl_source_x = adv_row("source_x_offset", PanelSlider(
+            -80, 80, SETTINGS["source_x_offset"],
+            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+        self.sl_source_y = adv_row("source_y_offset", PanelSlider(
+            -80, 80, SETTINGS["source_y_offset"],
+            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
         self.sl_title_x = adv_row("title_x_offset", PanelSlider(
             -80, 80, SETTINGS["title_x_offset"],
             fmt=lambda v: f"{v:.0f}px", accent=self._accent))
@@ -4570,8 +4530,11 @@ class SettingsPanel(QWidget):
                                         "audio_feedback_spin")
         self.sl_audio_spin_speed = adv_row(
             "audio_feedback_spin_speed",
-            PanelSlider(10, 300, SETTINGS["audio_feedback_spin_speed"] * 100,
-                        fmt=lambda v: f"{v / 100.0:.1f}x", accent=self._accent))
+            PanelSlider(1, 250, SETTINGS["audio_feedback_spin_speed"] * 100,
+                        fmt=lambda v: (f"{v / 100.0:.2f}x"
+                                       if v < 10
+                                       else f"{v / 100.0:.1f}x"),
+                        step=1, accent=self._accent))
         self.tg_audio_cover_pulse = adv_toggle("audio_cover_pulse",
                                                "audio_cover_pulse")
         self.sl_audio_cover_pulse_strength = adv_row(
@@ -4619,8 +4582,9 @@ class SettingsPanel(QWidget):
 
         section(adv, "section_performance")
         self.sl_fps = adv_row("FPS", PanelSlider(
-            24, 240, SETTINGS["fps"],
-            fmt=lambda v: f"{v:.0f}", accent=self._accent))
+            FPS_MIN, FPS_MAX, SETTINGS["fps"],
+            fmt=lambda v: "無限" if round(v) >= FPS_MAX else f"{v:.0f}",
+            accent=self._accent))
         self.tg_show_fps = adv_toggle("show_fps", "show_fps")
         self.tg_anim_enabled = adv_toggle("anim_enabled", "anim_enabled")
         self.tg_aa = adv_toggle("antialias", "antialias")
@@ -4679,6 +4643,9 @@ class SettingsPanel(QWidget):
         self.sl_bg_image_brightness.changed.connect(
             lambda v: self.setting_changed.emit(
                 "background_image_brightness", v / 100.0))
+        self.tg_bg_image_auto_theme.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "background_image_auto_theme", v))
         self.tg_bg_image_parallax.changed.connect(
             lambda v: self.setting_changed.emit(
                 "background_image_parallax", v))
@@ -4738,7 +4705,7 @@ class SettingsPanel(QWidget):
                 "lightning_duration", v / 100.0))
         self.tg_lightning_duration_random.changed.connect(
             lambda v: self.setting_changed.emit(
-                "lightning_duration_random", v))
+                "lightning_random_duration", v))
         self.sg_art_mode.changed.connect(
             lambda v: self.setting_changed.emit("art_mode", v))
         self.tg_show_tonearm.changed.connect(
@@ -4824,6 +4791,17 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("seek_style", v))
         self.sg_progress_time.changed.connect(
             lambda v: self.setting_changed.emit("progress_time_mode", v))
+        self.sl_progress_time_spacing.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "progress_time_spacing", v / 10.0))
+        self.tg_seek_hover_time.changed.connect(
+            lambda v: self.setting_changed.emit("seek_hover_time", v))
+        self.tg_progress_time_anim.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "progress_time_anim_enabled", v))
+        self.sg_progress_time_anim.changed.connect(
+            lambda v: self.setting_changed.emit(
+                "progress_time_anim_style", v))
         self.sl_seek_wave_amp.changed.connect(
             lambda v: self.setting_changed.emit("seek_wave_amp", v / 100.0))
         self.sl_seek_wave_speed.changed.connect(
@@ -4858,6 +4836,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("number_color", v))
         self.tg_marquee.changed.connect(
             lambda v: self.setting_changed.emit("marquee_enabled", v))
+        self.tg_marquee_edge_fade.changed.connect(
+            lambda v: self.setting_changed.emit("marquee_edge_fade", v))
         self.sl_title_size.changed.connect(
             lambda v: self.setting_changed.emit("title_size", v / 100.0))
         self.sl_artist_size.changed.connect(
@@ -4870,6 +4850,10 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("artist_x_offset", v))
         self.sl_artist_y.changed.connect(
             lambda v: self.setting_changed.emit("artist_y_offset", v))
+        self.sl_source_x.changed.connect(
+            lambda v: self.setting_changed.emit("source_x_offset", v))
+        self.sl_source_y.changed.connect(
+            lambda v: self.setting_changed.emit("source_y_offset", v))
         self.sl_control_button_size.changed.connect(
             lambda v: self.setting_changed.emit(
                 "control_button_size", v / 100.0))
@@ -5240,27 +5224,6 @@ class SettingsPanel(QWidget):
             return
         self.btn_advanced.set_text(tr("advanced"))
         self.btn_advanced.set_chevron(self._advanced_open)
-
-    def _category_content_rect(self) -> QRect:
-        if self._body is None:
-            return QRect()
-        top = None
-        for _, lab, _, _, _ in self._section_groups:
-            if lab.isVisible():
-                top = lab.mapTo(self._body, QPoint(0, 0)).y()
-                break
-        if top is None:
-            top = 0
-        top = max(0, min(self._body.height() - 1, int(top)))
-        return QRect(0, top, self._body.width(),
-                     max(1, self._body.height() - top))
-
-    def _body_rect_to_panel(self, rect: QRect) -> QRectF:
-        if self._body is None:
-            return QRectF(rect)
-        top_left = self._body.geometry().topLeft() + rect.topLeft()
-        return QRectF(top_left.x(), top_left.y(),
-                      rect.width(), rect.height())
 
     def _set_panel_category(self, key: str):
         if key not in PANEL_CATEGORY_KEYS:
@@ -6207,36 +6170,6 @@ class SettingsPanel(QWidget):
         self._lang_timer.setInterval(0)
         self._lang_timer.start()
 
-    def _prepare_language_fade(self, *_):
-        if self._body is None:
-            return
-        if self._fade_anim.state() == Anim.Running:
-            self._fade_abort = True
-            self._fade_anim.stop()
-            self._fade_abort = False
-            if self._fade_overlay is not None:
-                self._fade_overlay.hide()
-            self._body.show()
-            self._body.raise_()
-
-        self._lang_old_pm = None
-        self._lang_old_rect = QRectF()
-        ms = adur(220, 120)
-        if not anim_on() or ms <= 0 or not self.isVisible():
-            return
-
-        old_pm = self._body.grab()
-        old_rect = self._body.geometry()
-        self._lang_old_pm = old_pm
-        self._lang_old_rect = QRectF(old_rect)
-        if self._fade_overlay is None:
-            self._fade_overlay = _PanelFadeOverlay(self)
-        self._fade_overlay.setGeometry(self.rect())
-        self._fade_overlay.setup(old_pm, old_rect, old_pm, old_rect)
-        self._fade_overlay.show()
-        self._fade_overlay.raise_()
-        self.repaint()
-
     def _apply_language_texts(self):
         self._title_label.setText(tr("settings"))
         self._advanced_title_label.setText(tr("advanced"))
@@ -6264,6 +6197,9 @@ class SettingsPanel(QWidget):
         self.sg_seek.set_options(seek_options(), SETTINGS["seek_style"])
         self.sg_progress_time.set_options(
             progress_time_options(), SETTINGS["progress_time_mode"])
+        self.sg_progress_time_anim.set_options(
+            progress_time_anim_options(),
+            SETTINGS.get("progress_time_anim_style", "fade"))
         self.sg_thumb.set_options(seek_thumb_options(),
                                   SETTINGS["seek_thumb"])
         self.sg_thumb_shape.set_options(
@@ -6308,14 +6244,6 @@ class SettingsPanel(QWidget):
         if self._body is None:
             self._build_body()
             return
-        if self._fade_anim.state() == Anim.Running:
-            self._fade_abort = True
-            self._fade_anim.stop()
-            self._fade_abort = False
-        self._lang_old_pm = None
-        self._lang_old_rect = QRectF()
-        if self._fade_overlay is not None:
-            self._fade_overlay.hide()
         self._apply_language_texts()
         lay = self._panel_layout(self._body)
         if lay is not None:
@@ -6327,22 +6255,6 @@ class SettingsPanel(QWidget):
             self._on_advanced_anim(1.0)
         self._apply_body_geometry()
         self.update()
-        self.repaint()
-
-    def _on_language_fade(self, v):
-        if self._fade_overlay is not None:
-            self._fade_overlay.set_t(float(v))
-
-    def _language_fade_done(self):
-        if self._fade_abort:
-            return
-        self._lang_old_pm = None
-        self._lang_old_rect = QRectF()
-        if self._fade_overlay is not None:
-            self._fade_overlay.hide()
-        if self._body is not None:
-            self._body.show()
-            self._body.raise_()
         self.repaint()
 
     def _on_type_slide(self, v):
@@ -6473,6 +6385,7 @@ class SettingsPanel(QWidget):
                     self.sl_lightning_duration,
                     self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
+                    self.sl_source_x, self.sl_source_y,
                     self.sl_title_size, self.sl_artist_size,
                     self.sl_title_x, self.sl_title_y,
                     self.sl_artist_x, self.sl_artist_y,
@@ -6482,6 +6395,7 @@ class SettingsPanel(QWidget):
                     self.sl_seek_wave_amp, self.sl_seek_wave_speed,
                     self.sl_seek_glow_strength, self.sl_seek_length,
                     self.sl_seek_thumb_size,
+                    self.sl_progress_time_spacing,
                     self.sl_control_button_size,
                     self.sl_control_button_spacing,
                     self.sl_tonearm_speed, self.sl_vinyl_spin_speed,
@@ -6494,7 +6408,8 @@ class SettingsPanel(QWidget):
                     self.kb_toggle, self.kb_play,
                     self.kb_prev, self.kb_next, self.kb_vol_up,
                     self.kb_vol_down, self.sg_auto_theme, self.sg_seek,
-                    self.sg_progress_time, self.sg_thumb, self.sg_thumb_shape,
+                    self.sg_progress_time, self.sg_progress_time_anim,
+                    self.sg_thumb, self.sg_thumb_shape,
                     self.sg_panel_type,
                     self.sg_panel_category, self.sg_bg_image_mode,
                     self.sg_weather_effect,
@@ -6510,14 +6425,16 @@ class SettingsPanel(QWidget):
                     self.cp_seek_thumb_color, self.cp_seek_track_color,
                     self.tg_startup, self.tg_auto_keep_on_screen,
                     self.tg_aa, self.tg_src,
-                    self.tg_bg_image_parallax,
+                    self.tg_bg_image_auto_theme, self.tg_bg_image_parallax,
                     self.tg_weather_enabled, self.tg_lightning_enabled,
                     self.tg_lightning_duration_random,
                     self.tg_shadow, self.tg_gpu, self.tg_controls_hover,
+                    self.tg_seek_hover_time, self.tg_progress_time_anim,
                     self.tg_topbar_hover, self.tg_show_fps,
                     self.tg_anim_enabled, self.tg_show_cover,
                     self.tg_show_tonearm, self.tg_show_vinyl_center,
                     self.tg_cover_border, self.tg_marquee,
+                    self.tg_marquee_edge_fade,
                     self.tg_audio_spin, self.tg_audio_cover_pulse,
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
                     self.tg_btn_repeat)

@@ -24,14 +24,14 @@ from ctypes import wintypes
 
 from PySide6.QtCore import (QEvent, QEasingCurve, QPoint, QPointF, QRectF,
                             QSizeF, Qt, QTimer, Signal)
-from PySide6.QtGui import (QColor, QCursor, QFont, QIcon, QImage, QLinearGradient,
-                           QPainter, QPainterPath, QPen, QPixmap,
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QIcon,
+                           QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel,
                                QMenu, QSystemTrayIcon, QWidget)
 
 from settings_ui import SettingsPanel, VolumePopup, fade_in, fade_out
-from style import (ART_SIZE, CARD_H, CARD_W, GLYPH_CLOSE, GLYPH_GLOBE,
+from style import (ART_SIZE, CARD_H, CARD_W, FPS_MAX, FPS_MIN, GLYPH_CLOSE, GLYPH_GLOBE,
                    GLYPH_NEXT, GLYPH_NOTE, GLYPH_PIN, GLYPH_PREV,
                    GLYPH_REPEAT_ALL, GLYPH_REPEAT_ONE, GLYPH_SETTINGS,
                    GLYPH_SHUFFLE, GLYPH_VOLUME, MARGIN, S, SETTINGS,
@@ -228,6 +228,8 @@ class _CardFade(QWidget):
 class TimeLabel(QLabel):
     """底部時間文字：seek / 回起點時快速數字內插。"""
 
+    TEXT_STYLES = ("fade", "slide", "slide2")
+
     def __init__(self, text="0:00", parent=None):
         super().__init__(text, parent)
         self._sec = 0.0
@@ -238,6 +240,7 @@ class TimeLabel(QLabel):
         self._text_t = 1.0
         self._old_text = text
         self._new_text = text
+        self._text_style = "slide"
         self._text_anim = Anim(self)
         self._text_anim.valueChanged.connect(self._on_text_t)
         self._text_anim.finished.connect(self._text_done)
@@ -258,7 +261,13 @@ class TimeLabel(QLabel):
         QLabel.setText(self, self._new_text)
         self.update()
 
-    def _animate_text_to(self, text: str) -> bool:
+    def _can_animate_digits_only(self) -> bool:
+        if len(self._old_text) != len(self._new_text):
+            return False
+        return any(a != b and (a.isdigit() or b.isdigit())
+                   for a, b in zip(self._old_text, self._new_text))
+
+    def _animate_text_to(self, text: str, style: str = "slide") -> bool:
         old = self._new_text if self._text_anim.state() == Anim.Running else QLabel.text(self)
         if old == text:
             QLabel.setText(self, text)
@@ -267,8 +276,9 @@ class TimeLabel(QLabel):
         self._text_anim.stop()
         self._old_text = old
         self._new_text = text
+        self._text_style = style if style in self.TEXT_STYLES else "fade"
         QLabel.setText(self, text)
-        ms = adur(180, 110)
+        ms = adur(290, 180) if self._text_style == "slide2" else adur(180, 110)
         if not anim_on() or ms <= 0 or not self.isVisible():
             self._text_t = 1.0
             self.update()
@@ -282,7 +292,8 @@ class TimeLabel(QLabel):
         return True
 
     def set_seconds(self, sec: float, animate: bool = False,
-                    prefix: str = "", text_transition: bool = False):
+                    prefix: str = "", text_transition: bool = False,
+                    transition_style: str = "slide"):
         sec = max(0.0, float(sec))
         prefix = str(prefix or "")
         prefix_changed = prefix != self._prefix
@@ -291,7 +302,7 @@ class TimeLabel(QLabel):
         if text_transition:
             self._sec = sec
             self._target = sec
-            self._animate_text_to(new_text)
+            self._animate_text_to(new_text, transition_style)
             return
         if self._text_anim.state() == Anim.Running:
             if new_text != self._new_text:
@@ -331,10 +342,113 @@ class TimeLabel(QLabel):
         align = self.alignment() or (Qt.AlignLeft | Qt.AlignVCenter)
         t = self._text_t
         p.setPen(col)
-        p.setOpacity(1.0 - t)
-        p.drawText(r.translated(0, -dy * t), align, self._old_text)
+        if self._can_animate_digits_only():
+            self._paint_digit_transition(p, r, align, col, dy, t)
+        elif self._text_style == "fade":
+            p.setOpacity(1.0 - t)
+            p.drawText(r, align, self._old_text)
+            p.setOpacity(t)
+            p.drawText(r, align, self._new_text)
+        elif self._text_style == "slide2":
+            slide_dy = dy * 1.45
+            p.setOpacity(1.0 - t)
+            p.drawText(r.translated(0, -slide_dy * t), align,
+                       self._old_text)
+            p.setOpacity(t)
+            p.drawText(r.translated(0, slide_dy * (1.0 - t)), align,
+                       self._new_text)
+        else:
+            p.setOpacity(1.0 - t)
+            p.drawText(r.translated(0, -dy * t), align, self._old_text)
+            p.setOpacity(t)
+            p.drawText(r.translated(0, dy * (1.0 - t)), align, self._new_text)
+
+    def _text_start_x(self, fm: QFontMetricsF, rect: QRectF, align) -> float:
+        text_w = fm.horizontalAdvance(self._new_text)
+        if align & Qt.AlignRight:
+            return rect.right() - text_w
+        if align & Qt.AlignHCenter:
+            return rect.x() + (rect.width() - text_w) / 2.0
+        return rect.x()
+
+    def _paint_digit_transition(self, p: QPainter, rect: QRectF, align,
+                                color: QColor, dy: float, t: float):
+        fm = QFontMetricsF(p.font())
+        x = self._text_start_x(fm, rect, align)
+        baseline = rect.center().y() + (fm.ascent() - fm.descent()) / 2.0
+        for old_ch, new_ch in zip(self._old_text, self._new_text):
+            new_w = fm.horizontalAdvance(new_ch)
+            if old_ch == new_ch or not (old_ch.isdigit() or new_ch.isdigit()):
+                p.setOpacity(1.0)
+                p.setPen(color)
+                p.drawText(QPointF(x, baseline), new_ch)
+                x += new_w
+                continue
+            old_w = fm.horizontalAdvance(old_ch)
+            old_x = x + (new_w - old_w) / 2.0
+            p.setPen(color)
+            if self._text_style == "fade":
+                p.setOpacity(1.0 - t)
+                p.drawText(QPointF(old_x, baseline), old_ch)
+                p.setOpacity(t)
+                p.drawText(QPointF(x, baseline), new_ch)
+            elif self._text_style == "slide2":
+                slide_dy = dy * 1.45
+                p.setOpacity(1.0 - t)
+                p.drawText(QPointF(old_x, baseline - slide_dy * t), old_ch)
+                p.setOpacity(t)
+                p.drawText(QPointF(x, baseline + slide_dy * (1.0 - t)),
+                           new_ch)
+            else:
+                p.setOpacity(1.0 - t)
+                p.drawText(QPointF(old_x, baseline - dy * t), old_ch)
+                p.setOpacity(t)
+                p.drawText(QPointF(x, baseline + dy * (1.0 - t)), new_ch)
+            x += new_w
+
+
+class _SeekHoverTimeOverlay(QWidget):
+    """進度條 hover 秒數泡泡；不接滑鼠，避免擴大 SeekBar 點擊區。"""
+
+    def __init__(self, seek: SeekBar, parent=None):
+        super().__init__(parent)
+        self._seek = seek
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAutoFillBackground(False)
+
+    def paintEvent(self, _):
+        seek = self._seek
+        if seek is None or seek.isHidden() or seek._dur <= 0:
+            return
+        t = max(0.0, min(1.0, float(seek._hover_time_t)))
+        if t <= 0.001:
+            return
+        text = fmt_time(seek._hover_sec)
+        track_h = max(1.0, float(seek.height()))
+        font_px = max(7, round(track_h * 0.48))
+        font = ui_font(font_px, QFont.DemiBold)
+        fm = QFontMetricsF(font)
+        pad_x = max(5.0, track_h * 0.22)
+        pill_w = max(26.0, fm.horizontalAdvance(text) + pad_x * 2)
+        pill_h = max(13.0, track_h * 0.82)
+        sx = float(seek.x()) + max(0.0, min(float(seek.width()),
+                                            float(seek._hover_x)))
+        x = max(1.0, min(float(self.width()) - pill_w - 1.0,
+                         sx - pill_w / 2.0))
+        y = max(1.0, float(seek.y()) - pill_h - S(2)
+                - (1.0 - t) * S(3))
+        r = QRectF(x, y, pill_w, pill_h)
+        p = QPainter(self)
+        aa(p)
         p.setOpacity(t)
-        p.drawText(r.translated(0, dy * (1.0 - t)), align, self._new_text)
+        p.setPen(QPen(QColor(255, 255, 255, 34), 1.0))
+        p.setBrush(QColor(10, 10, 12, 176))
+        p.drawRoundedRect(r, pill_h / 2.0, pill_h / 2.0)
+        p.setFont(font)
+        p.setPen(QColor(255, 255, 255, 218))
+        p.drawText(r, Qt.AlignCenter, text)
 
 
 class _SourceLogo(QWidget):
@@ -384,6 +498,8 @@ class _SourceLogo(QWidget):
 class _WeatherLayer(QWidget):
     """卡片背景上的輕量降水層：雨線或飄雪，共用一組顯示面板控制。"""
 
+    _FPS_CAP = 72
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
@@ -410,6 +526,8 @@ class _WeatherLayer(QWidget):
         self._custom_image_path = ""
         self._custom_image: QImage | None = None
         self._custom_image_cache: dict[tuple[str, int, int], QPixmap] = {}
+        self._clip_path_cache: QPainterPath | None = None
+        self._clip_path_key = None
         self._fade = 0.0
         self._active_target = False
         self._fade_anim = Anim(self)
@@ -510,7 +628,8 @@ class _WeatherLayer(QWidget):
         self._fade_anim.start()
 
     def apply_fps(self):
-        fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
+        fps = max(FPS_MIN, min(FPS_MAX, int(SETTINGS.get("fps", 60))))
+        fps = min(self._FPS_CAP, fps)
         self._timer.setInterval(max(8, round(1000 / fps)))
 
     def _refresh_drop_settings(self):
@@ -631,7 +750,7 @@ class _WeatherLayer(QWidget):
             sway = 12.0 * self._intensity * (0.25 + depth)
             d["phase"] += dt * (1.1 + depth)
             d["x"] += (wind * (0.35 + depth * 0.9)
-                       + sway * self._rng.uniform(-0.18, 0.18)) * dt
+                       + sway * math.sin(d["phase"] * 1.7) * 0.18) * dt
             d["y"] += d["speed"] * dt
             if d["y"] - d["len"] > h or d["x"] > w + d["len"] * 2.4:
                 self._add_splash(d["x"])
@@ -677,7 +796,7 @@ class _WeatherLayer(QWidget):
         if img is None:
             return None
         dpr = max(1.0, self.devicePixelRatioF())
-        px_i = max(6, min(42, round(px)))
+        px_i = max(6, min(110, round(px)))
         dpr_i = max(1, round(dpr * 100))
         key = (self._custom_image_path, px_i, dpr_i)
         pm = self._custom_image_cache.get(key)
@@ -687,14 +806,14 @@ class _WeatherLayer(QWidget):
         pm = QPixmap.fromImage(img).scaled(
             side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         pm.setDevicePixelRatio(dpr)
-        if len(self._custom_image_cache) > 48:
+        if len(self._custom_image_cache) > 96:
             self._custom_image_cache.clear()
         self._custom_image_cache[key] = pm
         return pm
 
     def _snow_glyph_pixmap(self, glyph: str, px: float) -> QPixmap:
         dpr = max(1.0, self.devicePixelRatioF())
-        px_i = max(7, min(30, round(px)))
+        px_i = max(7, min(90, round(px)))
         dpr_i = max(1, round(dpr * 100))
         key = (glyph, px_i, dpr_i)
         pm = self._snow_cache.get(key)
@@ -712,10 +831,22 @@ class _WeatherLayer(QWidget):
         p.drawText(QRectF(0, 0, logical, logical),
                    Qt.AlignCenter, glyph)
         p.end()
-        if len(self._snow_cache) > 96:
+        if len(self._snow_cache) > 160:
             self._snow_cache.clear()
         self._snow_cache[key] = pm
         return pm
+
+    def _clip_path(self) -> QPainterPath:
+        radius = Sf(SETTINGS.get("radius", 15))
+        key = (self.width(), self.height(), round(radius * 100))
+        if self._clip_path_cache is not None and self._clip_path_key == key:
+            return self._clip_path_cache
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
+                            radius, radius)
+        self._clip_path_cache = path
+        self._clip_path_key = key
+        return path
 
     def paintEvent(self, _):
         if self._intensity <= 0.0005 or self._fade <= 0.001:
@@ -723,12 +854,10 @@ class _WeatherLayer(QWidget):
         p = QPainter(self)
         aa(p)
         p.setOpacity(self._fade)
-        radius = Sf(SETTINGS.get("radius", 15))
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
-                            radius, radius)
-        p.setClipPath(clip)
+        p.setClipPath(self._clip_path())
         if self._effect in ("snow", "custom"):
+            p.setRenderHint(QPainter.SmoothPixmapTransform,
+                            SETTINGS["antialias"])
             for d in self._drops:
                 depth = d["depth"]
                 alpha = round((48 + depth * 106)
@@ -736,22 +865,22 @@ class _WeatherLayer(QWidget):
                 if alpha <= 2:
                     continue
                 size = max(0.5, float(d.get("size", 2.0)))
+                angle = float(d.get("angle", 0.0))
                 if self._effect == "custom":
                     pm = self._custom_image_pixmap(
-                        max(7.0, min(36.0, size * 5.2)))
+                        max(7.0, min(96.0, size * 5.2)))
                 else:
                     pm = None
                 if pm is None:
-                    glyph_px = max(7.0, min(28.0, size * 4.2))
+                    glyph_px = max(7.0, min(72.0, size * 4.2))
                     pm = self._snow_glyph_pixmap(str(d.get("glyph", "❄")),
                                                  glyph_px)
                 dpr = max(1.0, pm.devicePixelRatioF())
                 pw, ph = pm.width() / dpr, pm.height() / dpr
                 p.save()
                 p.translate(d["x"], d["y"])
-                p.rotate(float(d.get("angle", 0.0)))
+                p.rotate(angle)
                 p.setOpacity(self._fade * min(1.0, alpha / 210.0))
-                p.setRenderHint(QPainter.SmoothPixmapTransform, True)
                 p.drawPixmap(QPointF(-pw / 2.0, -ph / 2.0), pm)
                 p.restore()
             return
@@ -812,7 +941,11 @@ class _LightningLayer(QWidget):
         self._active_interval = 50
         self._last = time.monotonic()
         self._flash = 0.0
+        self._screen_flash = 0.0
+        self._bolt_flash = 0.0
         self._life = 0.16
+        self._screen_life = 0.16
+        self._bolt_life = 0.16
         self._age = 0.0
         self._wait = 1.0
         self._size = 1.0
@@ -822,6 +955,8 @@ class _LightningLayer(QWidget):
         self._duration_random = False
         self._flash_peak = 0.0
         self._bolts: list[list[QPointF]] = []
+        self._clip_path_cache: QPainterPath | None = None
+        self._clip_path_key = None
         self.hide()
         self.apply_settings()
 
@@ -836,7 +971,8 @@ class _LightningLayer(QWidget):
         self._duration = max(
             0.05, min(1.5, float(SETTINGS.get("lightning_duration", 0.18))))
         self._duration_random = bool(
-            SETTINGS.get("lightning_duration_random", False))
+            SETTINGS.get("lightning_random_duration",
+                         SETTINGS.get("lightning_duration_random", False)))
         active = (bool(SETTINGS.get("lightning_enabled", False))
                   and self._intensity > 0.001)
         self.apply_fps()
@@ -851,13 +987,16 @@ class _LightningLayer(QWidget):
         else:
             self._timer.stop()
             self._flash = 0.0
+            self._screen_flash = 0.0
+            self._bolt_flash = 0.0
             self._bolts.clear()
             self.hide()
         self.update()
 
     def apply_fps(self):
-        fps = max(24, min(240, int(SETTINGS.get("fps", 60))))
-        self._active_interval = max(8, round(1000 / fps))
+        fps = max(FPS_MIN, min(FPS_MAX, int(SETTINGS.get("fps", 60))))
+        self._active_interval = (
+            0 if fps >= FPS_MAX else max(8, round(1000 / fps)))
         # 閃光中（高頻衰減動畫）才全速；等待期維持低頻省 CPU
         self._timer.setInterval(self._active_interval
                                 if self._flash > 0.001
@@ -903,13 +1042,26 @@ class _LightningLayer(QWidget):
                 bpts.append(QPointF(bx, by))
             bolts.append(bpts)
         self._bolts = bolts
-        self._life = (self._duration * self._rng.uniform(0.65, 1.50)
-                      if self._duration_random else self._duration)
+        base_life = (self._duration * self._rng.uniform(0.55, 1.85)
+                     if self._duration_random else self._duration)
+        self._life = base_life
+        self._bolt_life = max(0.10, base_life * 2.25)
+        self._screen_life = max(0.18, base_life * 4.69)
         self._age = 0.0
         self._flash_peak = 0.45 + 0.55 * self._intensity
+        self._screen_flash = self._flash_peak
+        self._bolt_flash = self._flash_peak
         self._flash = self._flash_peak
         self._wait = self._next_wait()
         self._timer.setInterval(self._active_interval)
+
+    @staticmethod
+    def _fade_out(t: float, hold: float = 0.08) -> float:
+        if t <= hold:
+            return 1.0
+        u = max(0.0, min(1.0, (t - hold) / max(0.001, 1.0 - hold)))
+        smooth = u * u * (3.0 - 2.0 * u)
+        return max(0.0, 1.0 - smooth)
 
     def _tick(self):
         now = time.monotonic()
@@ -917,12 +1069,17 @@ class _LightningLayer(QWidget):
         self._last = now
         if self._flash > 0.001:
             self._age += dt
-            t = max(0.0, min(1.0, self._age / max(0.03, self._life)))
-            tail = (1.0 - t)
-            flicker = 0.92 + 0.08 * math.sin(t * math.pi * 7.0)
-            self._flash = max(0.0, self._flash_peak * tail * tail * flicker)
-            if self._flash <= 0.001:
+            screen_t = max(0.0, min(1.0, self._age / max(0.03, self._screen_life)))
+            bolt_t = max(0.0, min(1.0, self._age / max(0.03, self._bolt_life)))
+            screen_fade = max(0.0, 1.0 - screen_t) ** 1.45
+            self._screen_flash = max(
+                0.0, self._flash_peak * screen_fade)
+            self._bolt_flash = max(
+                0.0, self._flash_peak * self._fade_out(bolt_t, 0.10))
+            self._flash = max(self._screen_flash, self._bolt_flash)
+            if self._bolt_flash <= 0.001:
                 self._bolts.clear()
+            if self._flash <= 0.001:
                 self._timer.setInterval(self._wait_interval)
             self.update()
             return
@@ -940,19 +1097,45 @@ class _LightningLayer(QWidget):
     def hideEvent(self, _):
         self._timer.stop()
 
+    def _clip_path(self) -> QPainterPath:
+        radius = Sf(SETTINGS.get("radius", 15))
+        key = (self.width(), self.height(), round(radius * 100))
+        if self._clip_path_cache is not None and self._clip_path_key == key:
+            return self._clip_path_cache
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
+                            radius, radius)
+        self._clip_path_cache = path
+        self._clip_path_key = key
+        return path
+
     def paintEvent(self, _):
-        if self._flash <= 0.001:
+        if self._screen_flash <= 0.001 and self._bolt_flash <= 0.001:
             return
         p = QPainter(self)
         aa(p)
-        radius = Sf(SETTINGS.get("radius", 15))
-        clip = QPainterPath()
-        clip.addRoundedRect(QRectF(0, 0, self.width(), self.height()),
-                            radius, radius)
-        p.setClipPath(clip)
-        flash = self._flash * (0.45 + self._intensity * 0.75)
-        flash_alpha = max(0, min(230, round(42 * flash)))
-        p.fillRect(self.rect(), QColor(210, 228, 255, flash_alpha))
+        p.setClipPath(self._clip_path())
+        bolt_flash = self._bolt_flash
+        flash = bolt_flash * (0.45 + self._intensity * 0.75)
+        # 全視窗白閃直接跟隨閃電生命週期，duration 拉長時會一起延長。
+        screen_flash = max(0.0, min(1.0, self._screen_flash * (
+            0.65 + self._intensity * 0.25)))
+        flash_alpha = max(0, min(76, round(72 * screen_flash)))
+        if flash_alpha > 0:
+            p.fillRect(self.rect(), QColor(255, 255, 255, flash_alpha))
+
+        pulse = min(1.0, flash)
+        if pulse > 0.002 and self._bolts:
+            main_pts = self._bolts[0]
+            center = main_pts[min(len(main_pts) - 1,
+                                  max(0, round((len(main_pts) - 1) * 0.42)))]
+            radius = max(float(self.width()), float(self.height())) * (
+                0.42 + 0.10 * self._size)
+            bg = QRadialGradient(center.x(), center.y(), radius)
+            bg.setColorAt(0.0, QColor(255, 255, 255, round(30 * pulse)))
+            bg.setColorAt(0.42, QColor(224, 238, 255, round(14 * pulse)))
+            bg.setColorAt(1.0, QColor(210, 226, 255, 0))
+            p.fillRect(self.rect(), bg)
         for i, pts in enumerate(self._bolts):
             if len(pts) < 2:
                 continue
@@ -961,9 +1144,14 @@ class _LightningLayer(QWidget):
                 path.lineTo(point)
             main = i == 0
             width = (1.15 if main else 0.72) * self._size * self._thickness
-            glow_alpha = max(0, min(255, round(145 * flash)))
+            aura_alpha = max(0, min(110, round((42 if main else 22) * flash)))
+            glow_alpha = max(0, min(255, round(132 * flash)))
             core_alpha = max(0, min(255, round(238 * flash)))
-            p.setPen(QPen(QColor(138, 185, 255, glow_alpha),
+            p.setPen(QPen(QColor(255, 255, 255, aura_alpha),
+                          width + 8.5 * self._thickness, Qt.SolidLine,
+                          Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
+            p.setPen(QPen(QColor(232, 242, 255, glow_alpha),
                           width + 2.2 * self._thickness, Qt.SolidLine, Qt.RoundCap,
                           Qt.RoundJoin))
             p.drawPath(path)
@@ -1093,8 +1281,18 @@ class Card(QWidget):
         self._art_img: QImage | None = None
         self._drag_off: QPoint | None = None
         self._bg: QPixmap | None = None      # 背景快取（漸層很貴，只畫一次）
+        self._bg_image_layer: QPixmap | None = None
+        self._bg_image_layer_key = None
+        self._bg_overlay: QPixmap | None = None
+        self._bg_overlay_key = None
+        self._bg_clip_path_cache: QPainterPath | None = None
+        self._bg_clip_path_key = None
         self._bg_image_path = ""
         self._bg_image: QImage | None = None
+        self._bg_theme_key = None
+        self._bg_dom: QColor | None = None
+        self._bg_grad: tuple[QColor, QColor] | None = None
+        self._accent = self.target_accent()
         self._bg_parallax = QPointF(0.0, 0.0)
         self._bg_parallax_from = QPointF(0.0, 0.0)
         self._bg_parallax_to = QPointF(0.0, 0.0)
@@ -1212,7 +1410,35 @@ class Card(QWidget):
         return QColor(self._accent)
 
     def target_accent(self) -> QColor:
-        return theme_color() or self._dom or QColor(SPOTIFY_GREEN)
+        explicit = theme_color()
+        if explicit is not None:
+            return explicit
+        if self._use_background_for_auto_theme():
+            bg_dom, _ = self._background_theme_source()
+            if bg_dom is not None:
+                return bg_dom
+        return self._dom or QColor(SPOTIFY_GREEN)
+
+    def _use_background_for_auto_theme(self) -> bool:
+        return (SETTINGS.get("theme") == "auto"
+                and not bool(SETTINGS.get("background_image_auto_theme", True))
+                and self._custom_bg_image() is not None)
+
+    def _background_theme_source(
+            self) -> tuple[QColor | None, tuple[QColor, QColor] | None]:
+        img = self._custom_bg_image()
+        if img is None:
+            return None, None
+        key = (self._bg_image_path, img.cacheKey())
+        if self._bg_theme_key != key:
+            self._bg_theme_key = key
+            self._bg_dom = dominant_color(img)
+            self._bg_grad = cover_gradient(img)
+        dom = QColor(self._bg_dom) if self._bg_dom is not None else None
+        grad = None
+        if self._bg_grad is not None:
+            grad = (QColor(self._bg_grad[0]), QColor(self._bg_grad[1]))
+        return dom, grad
 
     def _cover_scale_setting(self) -> float:
         return max(0.6, min(
@@ -1239,6 +1465,32 @@ class Card(QWidget):
         w = max(S(46), min(max_w, round(base_w * length)))
         x = round((self._W - w) / 2)
         return x, seek_y, w, S(18)
+
+    def _seek_bar_top_padding(self) -> int:
+        return 0
+
+    def _progress_time_font(self) -> QFont:
+        f = ui_font(S(10))
+        spacing = Sf(float(SETTINGS.get("progress_time_spacing", 0.0)))
+        f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
+        return f
+
+    def _progress_time_width(self) -> int:
+        spacing = max(0.0, float(SETTINGS.get("progress_time_spacing", 0.0)))
+        return S(42 + spacing * 5.0)
+
+    def apply_progress_time_spacing(self):
+        if hasattr(self, "t_now") and hasattr(self, "t_total"):
+            f = self._progress_time_font()
+            w = self._progress_time_width()
+            self.t_now.setFont(QFont(f))
+            self.t_total.setFont(QFont(f))
+            self.t_now.setGeometry(S(12), self.t_now.y(), w,
+                                   self.t_now.height())
+            self.t_total.setGeometry(self._W - S(12) - w, self.t_total.y(),
+                                     w, self.t_total.height())
+            self.t_now.update()
+            self.t_total.update()
 
     def _text_layout_rects(self, info_x: int, title_y: int,
                            artist_y: int, info_w: int):
@@ -1295,10 +1547,18 @@ class Card(QWidget):
         scale = self._control_button_scale()
         return max(1, S(glyph_px * scale)), max(1, S(diameter * scale))
 
+    def _source_offsets(self) -> tuple[int, int]:
+        return (S(float(SETTINGS.get("source_x_offset", 0.0))),
+                S(float(SETTINGS.get("source_y_offset", 0.0))))
+
     def apply_seek_length(self):
         if hasattr(self, "seek"):
             seek_y = S(self._base_h - (25 if self._compact else 30))
+            self.seek.set_top_padding(self._seek_bar_top_padding())
             self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
+            if hasattr(self, "seek_hover"):
+                self.seek_hover.setGeometry(0, 0, self._W, self._H)
+                self.seek_hover.raise_()
             self.seek.update()
 
     def set_progress_times(self, pos: float, dur: float,
@@ -1306,14 +1566,23 @@ class Card(QWidget):
                            animate_mode: bool = False):
         pos = max(0.0, float(pos))
         dur = max(0.0, float(dur))
+        number_anim = bool(SETTINGS.get("progress_time_anim_enabled", True))
+        text_style = str(SETTINGS.get("progress_time_anim_style", "fade"))
+        if text_style not in TimeLabel.TEXT_STYLES:
+            text_style = "fade"
+        now_transition = animate_mode or number_anim
+        now_style = text_style if number_anim else "slide"
         if SETTINGS.get("progress_time_mode") == "remaining" and dur > 0:
             self.t_now.set_seconds(max(0.0, dur - pos),
                                    animate=animate_now, prefix="-",
-                                   text_transition=animate_mode)
+                                   text_transition=now_transition,
+                                   transition_style=now_style)
         else:
             self.t_now.set_seconds(pos, animate=animate_now,
-                                   text_transition=animate_mode)
-        self.t_total.set_seconds(dur)
+                                   text_transition=now_transition,
+                                   transition_style=now_style)
+        self.t_total.set_seconds(dur, text_transition=number_anim,
+                                 transition_style=text_style)
 
     def _build(self):
         W = self._W
@@ -1356,15 +1625,19 @@ class Card(QWidget):
         # 來源標示
         logo_d = S(15)
         logo_gap = S(4)
+        source_dx, source_dy = self._source_offsets()
         self.source = QLabel("SPOTIFY", self)
         f = ui_font(S(9), QFont.DemiBold)
         f.setLetterSpacing(QFont.AbsoluteSpacing, Sf(1.6))
         self.source.setFont(f)
         self.source.setStyleSheet("color: rgba(255,255,255,110);")
-        self.source.setGeometry(info_x + logo_d + logo_gap, source_y,
+        self.source.setGeometry(info_x + logo_d + logo_gap + source_dx,
+                                source_y + source_dy,
                                 S(120), S(14))
         self.source_logo = _SourceLogo(self._src_spotify, self)
-        self.source_logo.setGeometry(info_x, source_y, logo_d, logo_d)
+        self.source_logo.setGeometry(info_x + source_dx,
+                                     source_y + source_dy,
+                                     logo_d, logo_d)
         self._source_eff = QGraphicsOpacityEffect(self.source)
         self._source_eff.setOpacity(self._source_op)
         self.source.setGraphicsEffect(self._source_eff)
@@ -1424,16 +1697,26 @@ class Card(QWidget):
         play_d = max(1, S(36 * self._control_button_scale()))
         self.btn_shuffle = IconButton(GLYPH_SHUFFLE, small_px, small_d,
                                       checkable=True, dot=True,
-                                      fx="lift",
+                                      press_scale=0.70, release_ms=285,
+                                      release_overshoot=2.05,
+                                      hover_ms_factor=2.0,
                                       parent=self.controls)
-        self.btn_prev = IconButton(GLYPH_PREV, nav_px, nav_d, nudge=-1,
+        self.btn_prev = IconButton(GLYPH_PREV, nav_px, nav_d,
+                                   press_scale=0.78, release_ms=260,
+                                   release_overshoot=1.7,
+                                   hover_ms_factor=2.0,
                                    parent=self.controls)
         self.btn_play = PlayButton(play_d, self.controls)
-        self.btn_next = IconButton(GLYPH_NEXT, nav_px, nav_d, nudge=1,
+        self.btn_next = IconButton(GLYPH_NEXT, nav_px, nav_d,
+                                   press_scale=0.78, release_ms=260,
+                                   release_overshoot=1.7,
+                                   hover_ms_factor=2.0,
                                    parent=self.controls)
         self.btn_repeat = IconButton(GLYPH_REPEAT_ALL, small_px, small_d,
                                      checkable=True, dot=True,
-                                     fx="lift",
+                                     press_scale=0.70, release_ms=285,
+                                     release_overshoot=2.05,
+                                     hover_ms_factor=2.0,
                                      parent=self.controls)
 
         ctrls = [self.btn_shuffle, self.btn_prev, self.btn_play,
@@ -1467,20 +1750,28 @@ class Card(QWidget):
 
         # 進度列（整張卡片底部）
         self.t_now = TimeLabel("0:00", self)
-        self.t_now.setFont(ui_font(S(10)))
+        self.t_now.setFont(self._progress_time_font())
         self.t_now.setStyleSheet("color: rgba(255,255,255,120);")
-        self.t_now.setGeometry(S(12), seek_y + S(2), S(40), S(14))
+        progress_time_w = self._progress_time_width()
+        self.t_now.setGeometry(S(12), seek_y + S(2), progress_time_w, S(14))
         self.t_total = TimeLabel("0:00", self)
-        self.t_total.setFont(ui_font(S(10)))
+        self.t_total.setFont(self._progress_time_font())
         self.t_total.setStyleSheet("color: rgba(255,255,255,120);")
         self.t_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.t_total.setGeometry(W - S(52), seek_y + S(2), S(40), S(14))
+        self.t_total.setGeometry(W - S(12) - progress_time_w,
+                                 seek_y + S(2), progress_time_w, S(14))
         self.seek = SeekBar(self)
+        self.seek.set_top_padding(self._seek_bar_top_padding())
         self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
+        self.seek_hover = _SeekHoverTimeOverlay(self.seek, self)
+        self.seek_hover.setGeometry(0, 0, self._W, self._H)
+        self.seek.set_hover_overlay(self.seek_hover)
+        self.seek_hover.raise_()
         if self._control_bar:
             self.t_now.hide()
             self.t_total.hide()
             self.seek.hide()
+            self.seek_hover.hide()
 
         self.fps_label = QLabel("0 FPS", self)
         self.fps_label.setFont(ui_font(S(9), QFont.DemiBold))
@@ -1490,6 +1781,11 @@ class Card(QWidget):
         self.fps_label.hide()
         self._fps_frames = 0
         self._fps_last = time.monotonic()
+        self._fps_prev_paint: float | None = None
+        self._fps_frame_ms_sum = 0.0
+        self._fps_frame_ms_count = 0
+        self._fps_paint_ms_sum = 0.0
+        self._fps_paint_ms_count = 0
         self._fps_timer = QTimer(self)
         self._fps_timer.setInterval(500)
         self._fps_timer.timeout.connect(self._update_fps_label)
@@ -1514,7 +1810,8 @@ class Card(QWidget):
 
         self._content = [self.art, self.source_logo, self.source,
                          self.title, self.artist, self.controls,
-                         self.t_now, self.t_total, self.seek]
+                         self.t_now, self.t_total, self.seek,
+                         self.seek_hover]
         self._empty = [self.empty_icon, self.empty_text, self.empty_btn]
         self._apply_cover_layout(self._cover_layout_data(self._cover_enabled))
         self.art.setVisible(False)
@@ -1566,6 +1863,7 @@ class Card(QWidget):
         source_y = S(10 if self._compact else 14)
         logo_d = S(15)
         logo_gap = S(4)
+        source_dx, source_dy = self._source_offsets()
         title_y = S(26 if self._compact else 34)
         artist_y = S(46 if self._compact else 56)
         (title_base, artist_base, title_focus, artist_focus,
@@ -1574,9 +1872,10 @@ class Card(QWidget):
         return {
             "art_pos": art_on if cover_enabled else art_off,
             "art_op": 1.0 if cover_enabled else 0.0,
-            "source_rect": QRectF(info_x + logo_d + logo_gap, source_y,
-                                  S(120), S(14)),
-            "logo_rect": QRectF(info_x, source_y, logo_d, logo_d),
+            "source_rect": QRectF(info_x + logo_d + logo_gap + source_dx,
+                                  source_y + source_dy, S(120), S(14)),
+            "logo_rect": QRectF(info_x + source_dx, source_y + source_dy,
+                                logo_d, logo_d),
             "title_base": title_base,
             "artist_base": artist_base,
             "title_focus": title_focus,
@@ -1850,6 +2149,10 @@ class Card(QWidget):
 
     def _on_controls_op(self, v):
         self._controls_op = max(0.0, min(1.0, float(v)))
+        if (self._controls_eff is None
+                or self.controls.graphicsEffect() is not self._controls_eff):
+            self._controls_eff = QGraphicsOpacityEffect(self.controls)
+            self.controls.setGraphicsEffect(self._controls_eff)
         self._controls_eff.setOpacity(self._controls_op)
         self.controls.setAttribute(
             Qt.WA_TransparentForMouseEvents,
@@ -2157,6 +2460,9 @@ class Card(QWidget):
             return pair
         if (SETTINGS.get("theme") == "auto"
                 and SETTINGS.get("auto_theme") == "gradient"):
+            if self._use_background_for_auto_theme():
+                _, bg_grad = self._background_theme_source()
+                return bg_grad or Card._auto_gradient(accent)
             return self._cover_grad or Card._auto_gradient(accent)
         return None
 
@@ -2172,7 +2478,11 @@ class Card(QWidget):
             return blend(neutral1, c0, strength), blend(neutral2, c1, strength)
         if (SETTINGS.get("theme") == "auto"
                 and SETTINGS.get("auto_theme") == "gradient"):
-            c0, c1 = self._cover_grad or Card._auto_gradient(accent)
+            if self._use_background_for_auto_theme():
+                _, bg_grad = self._background_theme_source()
+                c0, c1 = bg_grad or Card._auto_gradient(accent)
+            else:
+                c0, c1 = self._cover_grad or Card._auto_gradient(accent)
             c0 = blend(c0, neutral1, 0.42)
             c1 = blend(c1, neutral2, 0.50)
             return blend(neutral1, c0, strength), blend(neutral2, c1, strength)
@@ -2402,6 +2712,12 @@ class Card(QWidget):
 
     def invalidate_bg(self):
         self._bg = None
+        self._bg_image_layer = None
+        self._bg_image_layer_key = None
+        self._bg_overlay = None
+        self._bg_overlay_key = None
+        self._bg_clip_path_cache = None
+        self._bg_clip_path_key = None
         self.update()
 
     def _bg_parallax_config_enabled(self) -> bool:
@@ -2422,7 +2738,7 @@ class Card(QWidget):
         return max(16, round(1000 / self._bg_parallax_fps()))
 
     def _bg_parallax_shift(self) -> tuple[float, float, float]:
-        if not self._bg_parallax_drawing_enabled():
+        if self._bg_parallax_factor <= 0.001:
             return 0.0, 0.0, 0.0
         strength = min(2.0, max(0.0, float(self._bg_parallax_strength)))
         max_shift = min(self._W, self._H) * 0.045 * strength
@@ -2433,12 +2749,18 @@ class Card(QWidget):
 
     def _on_bg_parallax_factor(self, value):
         self._bg_parallax_factor = max(0.0, min(1.0, float(value)))
-        self.invalidate_bg()
+        self._bg = None
+        self._bg_image_layer = None
+        self._bg_image_layer_key = None
+        self.update()
 
     def _on_bg_parallax_strength(self, value):
         self._bg_parallax_strength = max(0.0, min(2.0, float(value)))
         if self._bg_parallax_factor > 0.001:
-            self.invalidate_bg()
+            self._bg = None
+            self._bg_image_layer = None
+            self._bg_image_layer_key = None
+            self.update()
 
     def _animate_bg_parallax_factor(self, target: float,
                                     animate: bool = True):
@@ -2485,7 +2807,7 @@ class Card(QWidget):
              + (self._bg_parallax_to.y() - self._bg_parallax_from.y()) * t)
         self._bg_parallax = QPointF(x, y)
         if self._bg_parallax_drawing_enabled():
-            self.invalidate_bg()
+            self.update()
 
     def _set_bg_parallax(self, value: QPointF, force: bool = False):
         x = max(-1.0, min(1.0, float(value.x())))
@@ -2512,7 +2834,7 @@ class Card(QWidget):
                     or self._bg_parallax.y() != self._bg_parallax_to.y()):
                 self._bg_parallax = QPointF(self._bg_parallax_to)
                 if self._bg_parallax_drawing_enabled():
-                    self.invalidate_bg()
+                    self.update()
             return False
         fps = self._bg_parallax_fps()
         alpha = max(0.04, min(0.152, 1.0 - math.exp(-1.0 / (fps * 0.275))))
@@ -2520,7 +2842,7 @@ class Card(QWidget):
             self._bg_parallax.x() + dx * alpha,
             self._bg_parallax.y() + dy * alpha)
         if self._bg_parallax_drawing_enabled():
-            self.invalidate_bg()
+            self.update()
         return True
 
     def _update_bg_parallax_from_cursor(self):
@@ -2703,8 +3025,11 @@ class Card(QWidget):
 
     def apply_marquee_setting(self):
         enabled = bool(SETTINGS.get("marquee_enabled", True))
+        edge_fade = bool(SETTINGS.get("marquee_edge_fade", True))
         self.title.set_marquee_enabled(enabled)
         self.artist.set_marquee_enabled(enabled)
+        self.title.set_marquee_edge_fade(edge_fade)
+        self.artist.set_marquee_edge_fade(edge_fade)
 
     def apply_fps_overlay(self):
         show = bool(SETTINGS.get("show_fps", False))
@@ -2713,6 +3038,11 @@ class Card(QWidget):
         if show:
             self._fps_frames = 0
             self._fps_last = time.monotonic()
+            self._fps_prev_paint = None
+            self._fps_frame_ms_sum = 0.0
+            self._fps_frame_ms_count = 0
+            self._fps_paint_ms_sum = 0.0
+            self._fps_paint_ms_count = 0
             if not self._fps_timer.isActive():
                 self._fps_timer.start()
         else:
@@ -2722,11 +3052,20 @@ class Card(QWidget):
         now = time.monotonic()
         dt = max(0.001, now - self._fps_last)
         fps = self._fps_frames / dt
+        frame_ms = (self._fps_frame_ms_sum / self._fps_frame_ms_count
+                    if self._fps_frame_ms_count else 0.0)
+        paint_ms = (self._fps_paint_ms_sum / self._fps_paint_ms_count
+                    if self._fps_paint_ms_count else 0.0)
         self._fps_frames = 0
         self._fps_last = now
-        self.fps_label.setText(f"{fps:.0f} FPS")
+        self._fps_frame_ms_sum = 0.0
+        self._fps_frame_ms_count = 0
+        self._fps_paint_ms_sum = 0.0
+        self._fps_paint_ms_count = 0
+        self.fps_label.setText(
+            f"{fps:.0f} FPS  frame {frame_ms:.1f}ms  paint {paint_ms:.1f}ms")
         self.fps_label.adjustSize()
-        self.fps_label.move(self._W - self.fps_label.width() - S(10), S(36))
+        self.fps_label.move(14, 4)
         self.fps_label.raise_()
 
     def apply_language(self, animate: bool = True):
@@ -2768,6 +3107,9 @@ class Card(QWidget):
         if path != self._bg_image_path:
             self._bg_image_path = path
             self._bg_image = QImage(path) if path else None
+            self._bg_theme_key = None
+            self._bg_dom = None
+            self._bg_grad = None
         if self._bg_image is None or self._bg_image.isNull():
             return None
         return self._bg_image
@@ -2831,13 +3173,196 @@ class Card(QWidget):
         p.restore()
         return True
 
+    def _bg_scale(self) -> float:
+        ss = 2 if SETTINGS["antialias"] else 1
+        return self.devicePixelRatioF() * ss
+
+    def _bg_clip_path(self) -> QPainterPath:
+        radius = Sf(SETTINGS["radius"])
+        key = (self._W, self._H, round(radius * 100))
+        if self._bg_clip_path_cache is not None and self._bg_clip_path_key == key:
+            return self._bg_clip_path_cache
+        ext = 0.6
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(-ext, -ext, self._W + ext * 2,
+                                   self._H + ext * 2),
+                            radius + ext, radius + ext)
+        self._bg_clip_path_cache = path
+        self._bg_clip_path_key = key
+        return path
+
+    @staticmethod
+    def _qcolor_key(c: QColor) -> tuple[int, int, int, int]:
+        return c.red(), c.green(), c.blue(), c.alpha()
+
+    def _bg_image_pixmap(self, extra: float) -> QPixmap | None:
+        img = self._custom_bg_image()
+        if img is None:
+            return None
+        iw, ih = img.width(), img.height()
+        if iw <= 0 or ih <= 0:
+            return None
+        scale = self._bg_scale()
+        mode = str(SETTINGS.get("background_image_mode", "cover"))
+        brightness = min(1.65, max(0.35, float(
+            SETTINGS.get("background_image_brightness", 1.0))))
+        extra_px = round(max(0.0, extra) * scale)
+        key = (self._bg_image_path, img.cacheKey(), self._W, self._H,
+               round(scale * 1000), SETTINGS["antialias"], mode,
+               round(brightness * 1000), extra_px)
+        if self._bg_image_layer is not None and self._bg_image_layer_key == key:
+            return self._bg_image_layer
+
+        logical_extra = extra_px / max(1.0, scale)
+        logical = QRectF(0, 0, self._W + logical_extra * 2,
+                         self._H + logical_extra * 2)
+        pm = QPixmap(max(1, round(logical.width() * scale)),
+                     max(1, round(logical.height() * scale)))
+        pm.setDevicePixelRatio(scale)
+        pm.fill(Qt.transparent)
+
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        drawn_rect = QRectF(logical)
+        if mode == "tile":
+            p.drawTiledPixmap(logical, QPixmap.fromImage(img), QPointF(0, 0))
+        elif mode == "stretch":
+            p.drawImage(logical, img, QRectF(0, 0, iw, ih))
+        elif mode == "contain":
+            img_scale = min(logical.width() / iw, logical.height() / ih)
+            tw, th = iw * img_scale, ih * img_scale
+            tr = QRectF(logical.center().x() - tw / 2.0,
+                        logical.center().y() - th / 2.0, tw, th)
+            drawn_rect = QRectF(tr)
+            p.drawImage(tr, img, QRectF(0, 0, iw, ih))
+        else:
+            target_ratio = logical.width() / max(1.0, logical.height())
+            src_ratio = iw / max(1, ih)
+            if src_ratio > target_ratio:
+                sw = ih * target_ratio
+                sx = (iw - sw) / 2.0
+                src = QRectF(sx, 0, sw, ih)
+            else:
+                sh = iw / target_ratio
+                sy = (ih - sh) / 2.0
+                src = QRectF(0, sy, iw, sh)
+            p.drawImage(logical, img, src)
+        if brightness < 0.999 or brightness > 1.001:
+            p.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+            if brightness < 0.999:
+                p.fillRect(drawn_rect, QColor(
+                    0, 0, 0, round(255 * (1.0 - brightness))))
+            else:
+                p.fillRect(drawn_rect, QColor(
+                    255, 255, 255,
+                    round(255 * ((brightness - 1.0) / brightness))))
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.end()
+
+        self._bg_image_layer = pm
+        self._bg_image_layer_key = key
+        return pm
+
+    def _bg_overlay_pixmap(self, has_bg_image: bool) -> QPixmap:
+        scale = self._bg_scale()
+        op = SETTINGS["bg_opacity"]
+        radius = Sf(SETTINGS["radius"])
+        glass = min(1.0, max(0.0, self._glass))
+        solid = 1.0 - glass
+        key = (self._W, self._H, round(scale * 1000), SETTINGS["antialias"],
+               round(radius * 100), round(op * 1000),
+               round(float(SETTINGS.get("brightness", 1.0)) * 1000),
+               round(glass * 1000), has_bg_image,
+               self._qcolor_key(self._bg1), self._qcolor_key(self._bg2),
+               self._qcolor_key(self._accent))
+        if self._bg_overlay is not None and self._bg_overlay_key == key:
+            return self._bg_overlay
+
+        pm = QPixmap(max(1, int(self._W * scale)),
+                     max(1, int(self._H * scale)))
+        pm.setDevicePixelRatio(scale)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        aa(p)
+        path = self._bg_clip_path()
+        brect = QRectF(0, 0, self._W, self._H).adjusted(0.5, 0.5, -0.5, -0.5)
+        brad = max(0.0, radius - 0.5)
+        border_path = QPainterPath()
+        border_path.addRoundedRect(brect, brad, brad)
+        overlay_factor = 0.55 if has_bg_image else 1.0
+        if has_bg_image:
+            p.fillPath(path, self._bright(QColor(0, 0, 0, int(82 * op))))
+
+        if solid > 0.001:
+            g = QLinearGradient(0, 0, self._W, self._H)
+            c1 = self._bright(QColor(self._bg1))
+            c2 = self._bright(QColor(self._bg2))
+            c1.setAlpha(int(255 * op * solid * overlay_factor))
+            c2.setAlpha(int(255 * op * solid * overlay_factor))
+            g.setColorAt(0.0, c1)
+            g.setColorAt(1.0, c2)
+            p.fillPath(path, g)
+
+        if glass > 0.001:
+            p.fillPath(path, self._bright(QColor(
+                24, 26, 33, int(72 * op * glass * overlay_factor))))
+            g = QLinearGradient(0, 0, self._W, self._H)
+            g.setColorAt(0.0, self._bright(QColor(
+                255, 255, 255, int(34 * op * glass * overlay_factor))))
+            g.setColorAt(0.45, self._bright(QColor(
+                255, 255, 255, int(9 * op * glass * overlay_factor))))
+            g.setColorAt(1.0, self._bright(QColor(
+                255, 255, 255, int(20 * op * glass * overlay_factor))))
+            p.fillPath(path, g)
+
+        glow = QRadialGradient(Sf(96), Sf(26), Sf(300))
+        gc = self._bright(QColor(self._accent))
+        gc.setAlpha(int((42 * solid + 26 * glass) * op
+                        * (0.75 if has_bg_image else 1.0)))
+        glow.setColorAt(0.0, gc)
+        gc2 = self._bright(QColor(self._accent))
+        gc2.setAlpha(0)
+        glow.setColorAt(1.0, gc2)
+        p.fillPath(path, glow)
+
+        border_a = round(max(12, int(20 * op)) * solid
+                         + int(38 + 52 * op) * glass)
+        p.setPen(QPen(self._bright(QColor(255, 255, 255, border_a)), 1))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(border_path)
+        p.end()
+        self._bg_overlay = pm
+        self._bg_overlay_key = key
+        return pm
+
+    def _paint_dynamic_bg(self, p: QPainter) -> bool:
+        if self._bg_parallax_factor <= 0.001:
+            return False
+        dx, dy, extra = self._bg_parallax_shift()
+        layer = self._bg_image_pixmap(extra)
+        if layer is None:
+            return False
+        overlay = self._bg_overlay_pixmap(True)
+        scale = self._bg_scale()
+        extra_px = round(max(0.0, extra) * scale)
+        logical_extra = extra_px / max(1.0, scale)
+        p.save()
+        p.setClipPath(self._bg_clip_path())
+        p.setOpacity(max(0.0, min(1.0, SETTINGS["bg_opacity"])))
+        dpr = max(1.0, layer.devicePixelRatioF())
+        logical_w = layer.width() / dpr
+        logical_h = layer.height() / dpr
+        p.drawPixmap(QRectF(-logical_extra + dx, -logical_extra + dy,
+                            logical_w, logical_h),
+                     layer, QRectF(layer.rect()))
+        p.restore()
+        p.drawPixmap(0, 0, overlay)
+        return True
+
     def _bg_pixmap(self) -> QPixmap:
         if self._bg is not None:
             return self._bg
-        dpr = self.devicePixelRatioF()
-        # 超取樣：圓角抗鋸齒在 2x 解析度取樣後再縮顯，邊緣半透明過渡帶更窄更銳利
-        ss = 2 if SETTINGS["antialias"] else 1
-        scale = dpr * ss
+        scale = self._bg_scale()
         pm = QPixmap(max(1, int(self._W * scale)),
                      max(1, int(self._H * scale)))
         pm.setDevicePixelRatio(scale)
@@ -2913,6 +3438,14 @@ class Card(QWidget):
         return pm
 
     def paintEvent(self, _):
+        show_metrics = bool(SETTINGS.get("show_fps", False))
+        paint_start = time.perf_counter() if show_metrics else 0.0
+        if show_metrics:
+            if self._fps_prev_paint is not None:
+                self._fps_frame_ms_sum += (
+                    paint_start - self._fps_prev_paint) * 1000.0
+                self._fps_frame_ms_count += 1
+            self._fps_prev_paint = paint_start
         p = QPainter(self)
         aa(p)
         if (self._bg_fade_old is not None and self._bg_fade_new is not None
@@ -2923,10 +3456,14 @@ class Card(QWidget):
             p.drawPixmap(0, 0, self._bg_fade_new)
             p.setOpacity(1.0)
         else:
-            p.drawPixmap(0, 0, self._bg_pixmap())
+            if not self._paint_dynamic_bg(p):
+                p.drawPixmap(0, 0, self._bg_pixmap())
 
-        if SETTINGS.get("show_fps", False):
+        if show_metrics:
             self._fps_frames += 1
+            self._fps_paint_ms_sum += (
+                time.perf_counter() - paint_start) * 1000.0
+            self._fps_paint_ms_count += 1
 
     # ---- 拖曳整個視窗 ----
     def mousePressEvent(self, e):
@@ -3523,7 +4060,8 @@ class PlayerWindow(QWidget):
             return
         bg_old = None
         bg_can_animate = False
-        if key in ("background_image", "background_image_mode") and self.card is not None:
+        bg_transition_keys = ("background_image", "background_image_mode")
+        if key in bg_transition_keys and self.card is not None:
             current_bg_image = SETTINGS.get("background_image", "")
             target_bg_image = (value if key == "background_image"
                                else current_bg_image)
@@ -3575,7 +4113,19 @@ class PlayerWindow(QWidget):
             self.card.invalidate_bg()
             if self._panel is not None and self._panel.isVisible():
                 self._panel.set_accent(self.card.accent(), force=True)
-        elif key in ("background_image", "background_image_mode"):
+        elif key == "background_image_auto_theme":
+            self.card.refresh_accent()
+            if self._panel is not None and self._panel.isVisible():
+                self._panel.set_accent(self.card.target_accent(), force=True)
+        elif key in bg_transition_keys:
+            if key == "background_image":
+                bg_drives_auto = (
+                    SETTINGS.get("theme") == "auto"
+                    and not bool(SETTINGS.get(
+                        "background_image_auto_theme", True)))
+                self.card.refresh_accent(animate=not bg_drives_auto)
+                if self._panel is not None and self._panel.isVisible():
+                    self._panel.set_accent(self.card.target_accent(), force=True)
             self.card.transition_background(bg_old, animate=bg_can_animate)
             self.card._sync_bg_parallax_timer()
         elif key in ("background_image_parallax",
@@ -3594,6 +4144,7 @@ class PlayerWindow(QWidget):
         elif key in ("lightning_enabled", "lightning_size",
                      "lightning_thickness",
                      "lightning_intensity", "lightning_duration",
+                     "lightning_random_duration",
                      "lightning_duration_random"):
             self.card.apply_lightning_settings()
         elif key in ("radius", "bg_opacity", "brightness",
@@ -3622,9 +4173,14 @@ class PlayerWindow(QWidget):
             self.card.seek.thumb_mode_changed()
         elif key in ("seek_thumb_shape", "seek_thumb_size"):
             self.card.seek.style_changed()
-        elif key == "progress_time_mode":
+        elif key in ("progress_time_mode", "progress_time_anim_enabled",
+                     "progress_time_anim_style"):
             dur = self.state.duration if self.state is not None else self.card.seek._dur
             self.card.set_progress_times(self._dpos, dur, animate_mode=True)
+        elif key == "progress_time_spacing":
+            self.card.apply_progress_time_spacing()
+        elif key == "seek_hover_time":
+            self.card.seek.hover_time_setting_changed()
         elif key == "auto_color_strength":
             self.card.refresh_accent()
             self.card.invalidate_bg()
@@ -3636,7 +4192,8 @@ class PlayerWindow(QWidget):
             self.card._sync_topbar_hover(animate=True)
         elif key in ("title_size", "artist_size",
                      "title_x_offset", "title_y_offset",
-                     "artist_x_offset", "artist_y_offset"):
+                     "artist_x_offset", "artist_y_offset",
+                     "source_x_offset", "source_y_offset"):
             self.card.apply_text_layout()
         elif key in ("control_button_size", "control_button_spacing"):
             self.card.apply_control_button_layout(animate=True)
@@ -3647,7 +4204,7 @@ class PlayerWindow(QWidget):
             self.card.apply_fps_overlay()
             if self._panel is not None:
                 self._panel.apply_fps_overlay()
-        elif key == "marquee_enabled":
+        elif key in ("marquee_enabled", "marquee_edge_fade"):
             self.card.apply_marquee_setting()
         elif key == "anim_enabled":
             apply_anim_fps()

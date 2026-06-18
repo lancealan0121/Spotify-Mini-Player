@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QAbstractButton, QGraphicsBlurEffect,
 from style import (GLYPH_NOTE, GLYPH_VOLUME_0, GLYPH_VOLUME_1,
                    GLYPH_VOLUME_2, GLYPH_VOLUME_3, SETTINGS, SPOTIFY_GREEN,
                    Anim, aa, adur, anim_full, anim_on, blend, fps_ms,
-                   icon_font, tr, ui_font)
+                   fmt_time, icon_font, tr, ui_font)
 
 
 class MarqueeLabel(QWidget):
@@ -35,6 +35,10 @@ class MarqueeLabel(QWidget):
         self._font.setHintingPreference(QFont.PreferNoHinting)
         self._color = QColor(color)
         self._marquee_enabled = bool(SETTINGS.get("marquee_enabled", True))
+        self._edge_fade = bool(SETTINGS.get("marquee_edge_fade", True))
+        self._edge_fade_op = 1.0 if self._edge_fade else 0.0
+        self._edge_fade_anim = Anim(self)
+        self._edge_fade_anim.valueChanged.connect(self._on_edge_fade)
         self._text = ""
         self._text_w = 0.0
         self._offset = 0.0
@@ -84,6 +88,28 @@ class MarqueeLabel(QWidget):
         self._hold = self.HOLD
         self._last = time.monotonic()
         self._sync_scroll_timer()
+        self.update()
+
+    def set_marquee_edge_fade(self, enabled: bool):
+        enabled = bool(enabled)
+        target = 1.0 if enabled else 0.0
+        if (enabled == self._edge_fade
+                and abs(self._edge_fade_op - target) < 0.001):
+            return
+        self._edge_fade = enabled
+        self._edge_fade_anim.stop()
+        ms = adur(180, 110)
+        if not anim_on() or ms <= 0 or not self.isVisible():
+            self._on_edge_fade(target)
+            return
+        self._edge_fade_anim.setStartValue(self._edge_fade_op)
+        self._edge_fade_anim.setEndValue(target)
+        self._edge_fade_anim.setDuration(ms)
+        self._edge_fade_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._edge_fade_anim.start()
+
+    def _on_edge_fade(self, value):
+        self._edge_fade_op = max(0.0, min(1.0, float(value)))
         self.update()
 
     def set_visual_scale(self, scale: float):
@@ -243,13 +269,81 @@ class MarqueeLabel(QWidget):
                 hi = mid - 1
         return text[:lo] + suffix
 
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.TextAntialiasing)
-        y = self._visual_y
-        h = self._visual_h or float(self.height())
-        scale = self._visual_scale
-        avail_w = self.width() / max(0.01, scale)
+    def _fade_clip_rect(self, y: float, h: float) -> QRectF:
+        w = float(self.width())
+        full_h = float(self.height())
+        if w <= 1.0 or full_h <= 1.0:
+            return QRectF()
+        top = float(y)
+        bottom = float(y) + float(h)
+        if self._tr < 1.0:
+            t = self._tr
+            rise = h * 0.55
+            top = min(y - rise * t, y + rise * (1.0 - t))
+            bottom = max(y - rise * t + h, y + rise * (1.0 - t) + h)
+        top = max(0.0, top)
+        bottom = min(full_h, bottom)
+        if bottom - top <= 1.0:
+            return QRectF(0.0, 0.0, w, full_h)
+        return QRectF(0.0, top, w, bottom - top)
+
+    def _fade_sides(self, avail_w: float, scale: float,
+                    clip: QRectF) -> tuple[bool, bool]:
+        if self._edge_fade_op <= 0.001 or not self._marquee_enabled:
+            return False, False
+        if clip.width() <= 4.0 or max(self._text_w, self._old_w) <= avail_w:
+            return False, False
+
+        segments: list[tuple[float, float]] = []
+        if self._tr < 1.0:
+            if self._old_text and self._old_w > avail_w:
+                segments.append((-self._old_off, self._old_w))
+            if self._text and self._text_w > avail_w:
+                segments.append((0.0, self._text_w))
+        elif self._text_w > avail_w:
+            x1 = -self._offset
+            segments.append((x1, self._text_w))
+            segments.append((x1 + self._text_w + self._gap, self._text_w))
+
+        left_edge = clip.left()
+        right_edge = clip.right()
+        fade_left = False
+        fade_right = False
+        for x, w in segments:
+            seg_l = x * scale
+            seg_r = (x + w) * scale
+            if seg_l < left_edge and seg_r > left_edge:
+                fade_left = True
+            if seg_l < right_edge and seg_r > right_edge:
+                fade_right = True
+        return fade_left, fade_right
+
+    def _apply_edge_fade(self, p: QPainter, clip: QRectF,
+                         fade_left: bool, fade_right: bool):
+        if clip.width() <= 4.0 or clip.height() <= 1.0:
+            return
+        if not fade_left and not fade_right:
+            return
+        fade = min(18.0, max(8.0, clip.width() * 0.08))
+        fade = min(fade, clip.width() * 0.5)
+        edge = fade / max(1.0, clip.width())
+        transparent = QColor(255, 255, 255,
+                             round(255 * (1.0 - self._edge_fade_op)))
+        opaque = QColor(255, 255, 255, 255)
+        mask = QLinearGradient(clip.left(), 0.0, clip.right(), 0.0)
+        mask.setColorAt(0.0, transparent if fade_left else opaque)
+        if fade_left:
+            mask.setColorAt(edge, opaque)
+        if fade_right:
+            mask.setColorAt(max(edge, 1.0 - edge), opaque)
+        mask.setColorAt(1.0, transparent if fade_right else opaque)
+        p.save()
+        p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        p.fillRect(clip, mask)
+        p.restore()
+
+    def _paint_text_contents(self, p: QPainter, y: float, h: float,
+                             scale: float, avail_w: float):
         if self._tr < 1.0:           # 換曲過渡：舊字上滑淡出、新字下滑入
             t = self._tr
             rise = h * 0.55
@@ -281,6 +375,34 @@ class MarqueeLabel(QWidget):
             self._draw_text_layer(p, self._text,
                                   -self._offset + self._text_w + self._gap,
                                   y, h, scale)
+
+    def paintEvent(self, _):
+        y = self._visual_y
+        h = self._visual_h or float(self.height())
+        scale = self._visual_scale
+        avail_w = self.width() / max(0.01, scale)
+        clip = self._fade_clip_rect(y, h)
+        fade_left, fade_right = self._fade_sides(avail_w, scale, clip)
+        if fade_left or fade_right:
+            dpr = max(1.0, self.devicePixelRatioF())
+            layer = QPixmap(max(1, round(self.width() * dpr)),
+                            max(1, round(self.height() * dpr)))
+            layer.setDevicePixelRatio(dpr)
+            layer.fill(Qt.transparent)
+            lp = QPainter(layer)
+            lp.setRenderHint(QPainter.TextAntialiasing)
+            self._paint_text_contents(lp, y, h, scale, avail_w)
+            self._apply_edge_fade(lp, clip, fade_left, fade_right)
+            lp.end()
+
+            p = QPainter(self)
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(0, 0, layer)
+            return
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.TextAntialiasing)
+        self._paint_text_contents(p, y, h, scale, avail_w)
 
 
 class ArtView(QWidget):
@@ -1516,9 +1638,10 @@ class ArtView(QWidget):
             halo_base = cover_outer_rad + gap + max_h * 0.40
             halo_amp = max_h * (0.10 + 0.30 * energy)
             steady_halo = bool(spectrum) and morph >= 0.999
+            ring_cos = math.cos(self._audio_ring_phase)
+            ring_sin = math.sin(self._audio_ring_phase)
+            halo_table = self._angle_table(halo_steps)
             for j in range(halo_steps):
-                aa0 = (-math.pi / 2.0 + self._audio_ring_phase
-                       + math.tau * j / halo_steps)
                 if spectrum:
                     idx = spectrum_index_for_slot(j, halo_steps)
                     spec_val = max(0.0, min(1.0, float(spectrum[idx])))
@@ -1537,8 +1660,10 @@ class ArtView(QWidget):
                     beat0 = 0.5 + 0.5 * math.sin(phase * 1.2 - j * 0.33)
                     val = 0.50 * wave0 + 0.32 * pulse0 + 0.18 * beat0
                 rr = halo_base + halo_amp * val
-                pt = QPointF(c.x() + math.cos(aa0) * rr,
-                             c.y() + math.sin(aa0) * rr)
+                base_x, base_y = halo_table[j]
+                x = base_x * ring_cos - base_y * ring_sin
+                y = base_y * ring_cos + base_x * ring_sin
+                pt = QPointF(c.x() + x * rr, c.y() + y * rr)
                 if j == 0:
                     halo_path.moveTo(pt)
                 else:
@@ -1878,6 +2003,8 @@ class _AnimButton(QAbstractButton):
 
     HOVER_GROW = 0.12     # hover 時放大比例
     PRESS_SCALE = 0.85    # 按壓縮小比例
+    RELEASE_MS = 240
+    RELEASE_OVERSHOOT = 1.8
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1895,6 +2022,7 @@ class _AnimButton(QAbstractButton):
         self._pa.valueChanged.connect(self._on_press)
         self.setCursor(Qt.PointingHandCursor)
         self._hover_pulse_phase = 0
+        self._hover_ms_factor = 1.0
 
     def _on_hov(self, v):
         self._hov = float(v)
@@ -1915,13 +2043,16 @@ class _AnimButton(QAbstractButton):
         anim.setEasingCurve(easing)
         anim.start()
 
+    def _hover_ms(self, full_ms: int, simple_ms: int) -> int:
+        return max(0, round(adur(full_ms, simple_ms) * self._hover_ms_factor))
+
     def suppress_next_hover_animation(self):
         self._suppress_next_hover = True
 
     def _hover_anim_done(self):
         if self._hover_pulse_phase == 1:
             self._hover_pulse_phase = 2
-            self._animate(self._ha, self._hov, 0.0, adur(170, 100),
+            self._animate(self._ha, self._hov, 0.0, self._hover_ms(170, 100),
                           QEasingCurve.OutCubic)
         elif self._hover_pulse_phase == 2:
             self._hover_pulse_phase = 0
@@ -1932,7 +2063,7 @@ class _AnimButton(QAbstractButton):
         self._enter_suppressed = False
         self._hover_pulse_phase = 0
         self._ha.stop()
-        ms = adur(150, 90)
+        ms = self._hover_ms(150, 90)
         if not anim_on() or ms <= 0:
             self._on_hov(0.0)
             return
@@ -1949,28 +2080,33 @@ class _AnimButton(QAbstractButton):
             self._ha.stop()
             self._on_hov(1.0)
             return
-        self._animate(self._ha, self._hov, 1.0, adur(150, 90),
+        self._animate(self._ha, self._hov, 1.0, self._hover_ms(150, 90),
                       QEasingCurve.OutCubic)
 
     def leaveEvent(self, e):
         self._suppress_next_hover = False
         self._enter_suppressed = False
         self._hover_pulse_phase = 0
-        self._animate(self._ha, self._hov, 0.0, adur(190, 110),
+        self._animate(self._ha, self._hov, 0.0, self._hover_ms(190, 110),
                       QEasingCurve.OutCubic)
 
     def mousePressEvent(self, e):
         super().mousePressEvent(e)
         if e.button() == Qt.LeftButton:
-            self._animate(self._pa, self._press, self.PRESS_SCALE,
+            press_scale = getattr(self, "_press_scale_override",
+                                  self.PRESS_SCALE)
+            self._animate(self._pa, self._press, press_scale,
                           adur(80, 60), QEasingCurve.OutQuad)
 
     def mouseReleaseEvent(self, e):
         super().mouseReleaseEvent(e)
         if anim_full():
             curve = QEasingCurve(QEasingCurve.OutBack)
-            curve.setOvershoot(1.8)
-            self._animate(self._pa, self._press, 1.0, 240, curve)
+            curve.setOvershoot(getattr(self, "_release_overshoot_override",
+                                       self.RELEASE_OVERSHOOT))
+            self._animate(self._pa, self._press, 1.0,
+                          getattr(self, "_release_ms_override",
+                                  self.RELEASE_MS), curve)
         else:
             self._animate(self._pa, self._press, 1.0, adur(130, 100),
                           QEasingCurve.OutCubic)
@@ -1999,12 +2135,19 @@ class IconButton(_AnimButton):
     """
 
     HOVER_GROW = 0.0      # 文字字形縮放會左右抖動，圖示鈕不做 hover 放大
+    RELEASE_MS = 220
+    RELEASE_OVERSHOOT = 1.25
 
     _VOL_SEQ = [GLYPH_VOLUME_0, GLYPH_VOLUME_1, GLYPH_VOLUME_2,
                 GLYPH_VOLUME_3]
 
     def __init__(self, glyph: str, glyph_px=13, diameter=26,
-                 checkable=False, dot=False, fx="", nudge=0, parent=None):
+                 checkable=False, dot=False, fx="", nudge=0,
+                 press_scale: float | None = None,
+                 release_ms: int | None = None,
+                 release_overshoot: float | None = None,
+                 hover_ms_factor: float | None = None,
+                 parent=None):
         super().__init__(parent)
         self._glyph = glyph
         self._px = glyph_px
@@ -2014,6 +2157,18 @@ class IconButton(_AnimButton):
         self._accent = QColor(SPOTIFY_GREEN)
         self._color_override: QColor | None = None
         self._extra_opacity = 1.0
+        self._glyph_cache = {}
+        if press_scale is not None:
+            self._press_scale_override = max(0.55, min(0.98,
+                                                       float(press_scale)))
+        if release_ms is not None:
+            self._release_ms_override = max(80, int(release_ms))
+        if release_overshoot is not None:
+            self._release_overshoot_override = max(
+                0.0, min(3.0, float(release_overshoot)))
+        if hover_ms_factor is not None:
+            self._hover_ms_factor = max(0.1, min(6.0,
+                                                 float(hover_ms_factor)))
         self.setCheckable(checkable)
         self.setFixedSize(diameter, diameter)
         self._check_t = 1.0 if self.isChecked() else 0.0
@@ -2032,6 +2187,7 @@ class IconButton(_AnimButton):
     def set_glyph(self, glyph: str):
         if glyph != self._glyph:
             self._glyph = glyph
+            self._glyph_cache.clear()
             self.update()
 
     def set_metrics(self, glyph_px: int, diameter: int):
@@ -2041,6 +2197,7 @@ class IconButton(_AnimButton):
         self._px = glyph_px
         if self.width() != diameter or self.height() != diameter:
             self.setFixedSize(diameter, diameter)
+            self._glyph_cache.clear()
         if changed:
             self.update()
 
@@ -2080,6 +2237,10 @@ class IconButton(_AnimButton):
 
     def _animate_check(self, checked: bool):
         target = 1.0 if checked else 0.0
+        if (self._check_anim.state() != Anim.Running
+                and abs(self._check_t - target) < 0.001):
+            self._check_t = target
+            return
         self._check_anim.stop()
         ms = adur(190, 110)
         if not anim_on() or ms <= 0 or not self.isVisible():
@@ -2171,7 +2332,17 @@ class IconButton(_AnimButton):
         p.drawText(QPointF(x, y), glyph)
 
     def _glyph_layer(self, glyph: str, col: QColor, rect: QRectF) -> QPixmap:
-        pm = QPixmap(self.size())
+        dpr = max(2.0, self.devicePixelRatioF())
+        key = (glyph, col.rgba(), self._px, self.width(), self.height(),
+               round(rect.x() * 100), round(rect.y() * 100),
+               round(rect.width() * 100), round(rect.height() * 100),
+               round(dpr * 100))
+        cached = self._glyph_cache.get(key)
+        if cached is not None:
+            return cached
+        pm = QPixmap(max(1, round(self.width() * dpr)),
+                     max(1, round(self.height() * dpr)))
+        pm.setDevicePixelRatio(dpr)
         pm.fill(Qt.transparent)
         gp = QPainter(pm)
         aa(gp)
@@ -2179,6 +2350,9 @@ class IconButton(_AnimButton):
         gp.setPen(col)
         self._draw_centered_glyph(gp, rect, glyph)
         gp.end()
+        self._glyph_cache[key] = pm
+        if len(self._glyph_cache) > 32:
+            self._glyph_cache.pop(next(iter(self._glyph_cache)))
         return pm
 
     # ---- 繪製 ----
@@ -2191,7 +2365,7 @@ class IconButton(_AnimButton):
         p.setOpacity(self._extra_opacity)
         dx = 0.0
         if self._na.state() == Anim.Running:
-            dx = math.sin(self._nud * math.pi) * 3.0 * self._nudge_dir
+            dx += math.sin(self._nud * math.pi) * 3.0 * self._nudge_dir
         dy = self._fx_dy()
         angle = self._fx_angle()
 
@@ -2218,13 +2392,11 @@ class IconButton(_AnimButton):
         p.setFont(icon_font(self._px))
         p.setPen(col)
         rect = QRectF(self.rect())
-        if self._dot:
-            lift = -2.0 * checked_t
-            rect = rect.adjusted(0, lift, 0, lift)
 
         glyph = self._draw_glyph()
+        scale_active = abs(self._scale() - 1.0) > 0.001
         stable_layer = (self._fx_kind in ("gear", "wiggle", "spin")
-                        or self._nudge_dir or self._dot)
+                        or self._nudge_dir or self._dot or scale_active)
         dot_drawn = False
         if stable_layer:
             pm = self._glyph_layer(glyph, col, rect)
@@ -2477,6 +2649,7 @@ class SeekBar(QWidget):
     THUMB_ANIM_FACTOR = 3.0
     HOVER_ANIM_FACTOR = 0.5   # seek_thumb=hover 滑過出現/消失再加速（疊在
                               # THUMB_ANIM_FACTOR 上）：只影響 hover 進出，不動其他
+    HOVER_TIME_DELAY_MS = 500
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2510,6 +2683,21 @@ class SeekBar(QWidget):
         self._pa = Anim(self)
         self._pa.valueChanged.connect(self._on_press)
 
+        # hover 進度條時顯示滑鼠位置時間；直接畫在 SeekBar 內避免額外 widget
+        # 造成 layout 或重繪順序抖動。
+        self._hover_x = 0.0
+        self._hover_sec = 0.0
+        self._hover_time_t = 0.0
+        self._hover_time_anim = Anim(self)
+        self._hover_time_anim.valueChanged.connect(self._on_hover_time)
+        self._hover_time_delay = QTimer(self)
+        self._hover_time_delay.setSingleShot(True)
+        self._hover_time_delay.setInterval(self.HOVER_TIME_DELAY_MS)
+        self._hover_time_delay.timeout.connect(
+            self._show_hover_time_after_delay)
+        self._top_pad = 0.0
+        self._hover_overlay = None
+
         # 波浪/流光相位（時間基準，速度與 fps 無關）
         self._style = SETTINGS.get("seek_style", "wave")
         self._phase = 0.0
@@ -2526,9 +2714,6 @@ class SeekBar(QWidget):
         # 設定切換時保留舊畫面，套用新樣式後用 crossfade 過渡。
         self._transition_pm: QPixmap | None = None
         self._transition_t = 1.0
-        # 波浪樣式的 2x 超取樣緩衝：重用同一張 pixmap（只在尺寸變更時重配），
-        # 避免高 fps 下每幀配置/釋放 QPixmap。
-        self._wave_buf: QPixmap | None = None
         self._transition_anim = Anim(self)
         self._transition_anim.valueChanged.connect(self._on_transition)
         self._transition_anim.finished.connect(self._transition_done)
@@ -2554,6 +2739,7 @@ class SeekBar(QWidget):
         self._enabled_seek = ok
         self.setCursor(Qt.PointingHandCursor if ok else Qt.ArrowCursor)
         self._sync_thumb()
+        self._sync_hover_time()
 
     def set_playing(self, playing: bool):
         if playing == self._playing:
@@ -2565,10 +2751,18 @@ class SeekBar(QWidget):
         # seek_style（plain/wave/glow）不走交叉淡化——波浪振幅 _amp 與流光
         # _glow 本來就是逐幀平滑過渡的。讓波浪「慢慢攤平」比 fade 一張凍結
         # 舊圖順得多。只在動畫關閉時直接歸位避免卡住。
+        old_style = self._style
         self._style = SETTINGS.get("seek_style", "wave")
         if not anim_on():
             self._amp = 1.0 if (self._style == "wave" and self._playing) else 0.0
             self._glow = 1.0 if (self._style == "glow" and self._playing) else 0.0
+        elif self._style == "glow":
+            # 保留 _amp 讓 wave -> glow 可以自然攤平，只預熱流光本身；
+            # 這樣第一幀不會像普通底條，也不會吃掉波浪到流光的過渡。
+            if self._playing:
+                self._glow = max(self._glow, 0.35)
+                if old_style != "glow":
+                    self._glow_phase = 0.22
         self._sync_fx()
         self._sync_thumb()
         self.update()
@@ -2637,6 +2831,15 @@ class SeekBar(QWidget):
     def apply_fps(self):
         self._fx.setInterval(fps_ms())
 
+    def set_top_padding(self, px: float):
+        self._top_pad = max(0.0, float(px))
+        self.update()
+
+    def set_hover_overlay(self, overlay):
+        self._hover_overlay = overlay
+        if overlay is not None:
+            overlay.update()
+
     def set_data(self, pos: float, dur: float):
         if self._drag:
             return
@@ -2644,7 +2847,13 @@ class SeekBar(QWidget):
         self._pos, self._dur = pos, dur
         if had_duration != (self._dur > 0):
             self._sync_thumb()
+            self._sync_hover_time()
+        elif self._hover_time_t > 0.001 and (self._hover or self._drag):
+            self._update_hover_time(self._hover_x)
         self.update()
+
+    def hover_time_setting_changed(self):
+        self._sync_hover_time()
 
     def animate_reset_to_start(self, old_pos: float | None = None,
                                old_dur: float | None = None):
@@ -2860,12 +3069,77 @@ class SeekBar(QWidget):
     def _sync_thumb(self):
         self._animate_thumb(self._thumb_should_show())
 
+    def _on_hover_time(self, v):
+        self._hover_time_t = max(0.0, min(1.0, float(v)))
+        if self._hover_overlay is not None:
+            self._hover_overlay.update()
+        self.update()
+
+    def _hover_time_should_show(self) -> bool:
+        return (bool(SETTINGS.get("seek_hover_time", True))
+                and self._enabled_seek and self._dur > 0
+                and (self._hover or self._drag))
+
+    def _animate_hover_time(self, show: bool):
+        target = 1.0 if show else 0.0
+        if (self._hover_time_anim.state() != Anim.Running
+                and abs(self._hover_time_t - target) < 0.001):
+            self._hover_time_t = target
+            self.update()
+            return
+        self._hover_time_anim.stop()
+        if not anim_on():
+            self._hover_time_t = target
+            self.update()
+            return
+        self._hover_time_anim.setStartValue(self._hover_time_t)
+        self._hover_time_anim.setEndValue(target)
+        if show:
+            self._hover_time_anim.setDuration(adur(170, 100))
+            self._hover_time_anim.setEasingCurve(QEasingCurve.OutCubic)
+        else:
+            self._hover_time_anim.setDuration(adur(140, 90))
+            self._hover_time_anim.setEasingCurve(QEasingCurve.InCubic)
+        self._hover_time_anim.start()
+
+    def _show_hover_time_after_delay(self):
+        if self._hover_time_should_show() and not self._drag:
+            self._update_hover_time(self._hover_x)
+            self._animate_hover_time(True)
+
+    def _sync_hover_time(self):
+        should_show = self._hover_time_should_show()
+        if should_show and self._drag:
+            self._hover_time_delay.stop()
+            self._update_hover_time(self._hover_x)
+            self._animate_hover_time(True)
+        elif should_show:
+            if self._hover_time_t > 0.001:
+                self._update_hover_time(self._hover_x)
+                self._animate_hover_time(True)
+            elif not self._hover_time_delay.isActive():
+                self._hover_time_delay.start()
+        else:
+            self._hover_time_delay.stop()
+            self._animate_hover_time(False)
+
+    def _update_hover_time(self, x: float):
+        if self.width() > 0:
+            pad = self._pad()
+            x = max(pad, min(float(self.width()) - pad, float(x)))
+        self._hover_x = float(x)
+        self._hover_sec = self._sec_from_x(self._hover_x)
+        if self._hover_time_t > 0.001:
+            if self._hover_overlay is not None:
+                self._hover_overlay.update()
+            self.update()
+
     def _thumb_size_factor(self) -> float:
         return max(0.2, min(
             1.5, float(SETTINGS.get("seek_thumb_size", 1.0))))
 
     def _thumb_radius(self, visible: float | None = None) -> float:
-        h = max(1.0, float(self.height()))
+        h = self._track_height()
         factor = self._thumb_size_factor()
         base = max(2.0, h * (4.6 / 18.0)) * factor
         # 按下放大走 _press 過渡（0~1），平滑而非瞬間跳大
@@ -2873,8 +3147,14 @@ class SeekBar(QWidget):
         return (base + drag) * (self._thumb if visible is None else visible)
 
     def _pad(self) -> float:
-        h = max(1.0, float(self.height()))
+        h = self._track_height()
         return max(self.PAD, h * (self.PAD / 18.0))
+
+    def _track_top(self) -> float:
+        return min(max(0.0, self._top_pad), max(0.0, float(self.height()) - 1.0))
+
+    def _track_height(self) -> float:
+        return max(1.0, float(self.height()) - self._track_top())
 
     def _animate_thumb(self, show: bool):
         target = 1.0 if show else 0.0
@@ -2921,12 +3201,15 @@ class SeekBar(QWidget):
 
     def enterEvent(self, e):
         self._hover = True
+        self._update_hover_time(e.position().x())
         self._sync_thumb()
+        self._sync_hover_time()
         self._sync_fx()
 
     def leaveEvent(self, e):
         self._hover = False
         self._sync_thumb()
+        self._sync_hover_time()
         self._sync_fx()
 
     def mousePressEvent(self, e):
@@ -2934,11 +3217,14 @@ class SeekBar(QWidget):
             self._drag = True
             self._animate_press(True)
             self._target = self._sec_from_x(e.position().x())
+            self._update_hover_time(e.position().x())
             self._sync_thumb()
+            self._sync_hover_time()
             self.previewed.emit(self._target)
             self._chase_to(self._target, adur(240, 130))
 
     def mouseMoveEvent(self, e):
+        self._update_hover_time(e.position().x())
         if self._drag:
             self._target = self._sec_from_x(e.position().x())
             self.previewed.emit(self._target)
@@ -2954,6 +3240,8 @@ class SeekBar(QWidget):
                     return
                 self._ca.stop()
             self._chase_to(self._target, 0)   # 拖曳直接跟手
+        else:
+            self._sync_hover_time()
 
     def mouseReleaseEvent(self, e):
         if self._drag:
@@ -2964,6 +3252,8 @@ class SeekBar(QWidget):
             if self._ca.state() != Anim.Running:
                 self._chase = None
             self._sync_thumb()
+            self._update_hover_time(e.position().x())
+            self._sync_hover_time()
             self.update()
 
     # ---- 繪製 ----
@@ -3041,8 +3331,17 @@ class SeekBar(QWidget):
         wave_amp = float(SETTINGS.get("seek_wave_amp", 1.0))
         amp = h * self.WAVE_AMP * wave_amp * self._amp
         k = 2 * math.pi / max(26.0, h * 1.9)
-        min_y = bar_h * 0.60
-        max_y = h - bar_h * 0.60
+        top = cy - h / 2.0
+        min_y = top + bar_h * 0.60
+        max_y = top + h - bar_h * 0.60
+
+        def wave_point(x: float) -> tuple[float, float]:
+            raw = cy + math.sin(x * k - self._phase) * amp
+            if raw <= min_y:
+                return min_y, 0.0
+            if raw >= max_y:
+                return max_y, 0.0
+            return raw, math.cos(x * k - self._phase) * amp * k
 
         def wy(x: float) -> float:
             y = cy + math.sin(x * k - self._phase) * amp
@@ -3050,17 +3349,23 @@ class SeekBar(QWidget):
 
         def wave_path(x0: float, x1: float) -> QPainterPath:
             path = QPainterPath()
-            # 步長依波長自適應：每個波長約 30 點，配合 2x 超取樣 + 抗鋸齒
-            # 視覺已足夠平滑。原本固定 0.75px（每波長近百點）在寬軌道 + 高
-            # fps 下每幀數百次 sin/lineTo，是純 CPU 光柵化的浪費。
+            # 用 cubic 段連接，保留低取樣成本，同時消掉頂/底端 lineTo
+            # 造成的折線感。
             step_px = max(1.5, max(26.0, h * 1.9) / 30.0)
             steps = max(3, math.ceil((x1 - x0) / step_px))
-            for i in range(steps + 1):
+            px = x0
+            py, ps = wave_point(px)
+            path.moveTo(px, py)
+            for i in range(1, steps + 1):
                 x = x0 + (x1 - x0) * i / steps
-                if i == 0:
-                    path.moveTo(x, wy(x))
-                else:
-                    path.lineTo(x, wy(x))
+                y, slope = wave_point(x)
+                dx = x - px
+                c1y = max(min_y, min(max_y, py + ps * dx / 3.0))
+                c2y = max(min_y, min(max_y, y - slope * dx / 3.0))
+                path.cubicTo(QPointF(px + dx / 3.0, c1y),
+                             QPointF(x - dx / 3.0, c2y),
+                             QPointF(x, y))
+                px, py, ps = x, y, slope
             return path
 
         def draw_segment(left: float, right: float, pen: QPen):
@@ -3110,31 +3415,6 @@ class SeekBar(QWidget):
         self._draw_thumb(p, QPointF(fill_w, wave_y), thumb_color)
         p.restore()
 
-    def _paint_wave_antialiased(self, p: QPainter, w: float, h: float,
-                                pad: float, tw: float, cy: float,
-                                bar_h: float, ratio: float, fill_w: float,
-                                grad, gray: QColor, thumb_color: QColor,
-                                draw_track: bool = True,
-                                content_opacity: float = 1.0):
-        ss = 2.0
-        bw = max(1, math.ceil(w * ss))
-        bh = max(1, math.ceil(h * ss))
-        pm = self._wave_buf
-        if pm is None or pm.width() != bw or pm.height() != bh:
-            pm = QPixmap(bw, bh)
-            self._wave_buf = pm
-        pm.fill(Qt.transparent)
-        pp = QPainter(pm)
-        aa(pp)
-        pp.scale(ss, ss)
-        self._draw_wave_track(pp, w, h, pad, tw, cy, bar_h,
-                              ratio, fill_w, grad, gray, thumb_color,
-                              draw_track=draw_track,
-                              content_opacity=content_opacity)
-        pp.end()
-        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        p.drawPixmap(QRectF(0, 0, w, h), pm, QRectF(pm.rect()))
-
     def _crossfade_pixmap(self, new_pm: QPixmap, old_pm: QPixmap,
                           t: float) -> QPixmap:
         # 整幀線性交叉淡化 buf = 新×t + 舊×(1−t)。每個權重各自以 Over 烘到
@@ -3165,10 +3445,12 @@ class SeekBar(QWidget):
         return buf
 
     def _paint_contents(self, p: QPainter, draw_track: bool = True):
-        w, h = self.width(), float(self.height())
+        w = self.width()
+        h = self._track_height()
+        top = self._track_top()
         pad = self._pad()
         tw = w - pad * 2                 # 軌道實際寬度
-        cy = h / 2
+        cy = top + h / 2
         bar_h = max(3.0, h * 0.22)
         style = self._style
 
@@ -3194,10 +3476,10 @@ class SeekBar(QWidget):
         wave_y = cy
         wavy = self._amp > 0.001
         if wavy:
-            self._paint_wave_antialiased(p, float(w), h, pad, tw, cy,
-                                         bar_h, ratio, fill_w, grad, gray,
-                                         thumb_color, draw_track=draw_track,
-                                         content_opacity=content_opacity)
+            self._draw_wave_track(p, float(w), h, pad, tw, cy,
+                                  bar_h, ratio, fill_w, grad, gray,
+                                  thumb_color, draw_track=draw_track,
+                                  content_opacity=content_opacity)
             return
 
         # 底軌
@@ -3244,6 +3526,41 @@ class SeekBar(QWidget):
         self._draw_thumb(p, QPointF(fill_w, wave_y), thumb_color)
         p.restore()
 
+    def _paint_hover_time(self, p: QPainter):
+        if self._hover_overlay is not None:
+            return
+        t = max(0.0, min(1.0, self._hover_time_t))
+        if t <= 0.001 or self._dur <= 0:
+            return
+        text = fmt_time(self._hover_sec)
+        track_h = self._track_height()
+        track_top = self._track_top()
+        font_px = max(7, round(track_h * 0.48))
+        font = ui_font(font_px, QFont.DemiBold)
+        fm = QFontMetricsF(font)
+        text_w = fm.horizontalAdvance(text)
+        pad_x = max(5.0, track_h * 0.22)
+        pill_w = max(26.0, text_w + pad_x * 2)
+        pill_h = max(13.0, min(track_h * 0.82, track_top - 2.0))
+        x = self._hover_x - pill_w / 2.0
+        x = max(1.0, min(float(self.width()) - pill_w - 1.0, x))
+        y = max(1.0, track_top - pill_h - track_h * 0.10
+                - (1.0 - t) * track_h * 0.22)
+        r = QRectF(x, y, pill_w, pill_h)
+
+        p.save()
+        aa(p)
+        p.setOpacity(t)
+        bg = QColor(10, 10, 12, 176)
+        stroke = QColor(255, 255, 255, 34)
+        p.setPen(QPen(stroke, 1.0))
+        p.setBrush(bg)
+        p.drawRoundedRect(r, pill_h / 2.0, pill_h / 2.0)
+        p.setFont(font)
+        p.setPen(QColor(255, 255, 255, 218))
+        p.drawText(r, Qt.AlignCenter, text)
+        p.restore()
+
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
@@ -3254,5 +3571,7 @@ class SeekBar(QWidget):
             p.setRenderHint(QPainter.SmoothPixmapTransform, True)
             p.drawPixmap(QRectF(0, 0, self.width(), float(self.height())),
                          buf, QRectF(buf.rect()))
+            self._paint_hover_time(p)
             return
         self._paint_contents(p)
+        self._paint_hover_time(p)

@@ -128,46 +128,6 @@ class AppVolume:
                 continue
 
 
-class AppAudioMeter:
-    """讀取指定進程音訊工作階段的目前峰值；不可用時回傳 None。"""
-
-    def __init__(self):
-        self._meters = []
-
-    @staticmethod
-    def available() -> bool:
-        return _METER_OK
-
-    def refresh(self, exe_names: list[str]) -> bool:
-        self._meters = []
-        if not _METER_OK or IAudioMeterInformation is None or not exe_names:
-            return False
-        targets = {n.lower() for n in exe_names}
-        try:
-            for s in AudioUtilities.GetAllSessions():
-                try:
-                    proc = s.Process
-                    if proc and proc.name().lower() in targets:
-                        self._meters.append(
-                            s._ctl.QueryInterface(IAudioMeterInformation))
-                except Exception:
-                    continue
-        except Exception:
-            return False
-        return bool(self._meters)
-
-    def peak(self) -> Optional[float]:
-        vals = []
-        for meter in self._meters:
-            try:
-                vals.append(float(meter.GetPeakValue()))
-            except Exception:
-                continue
-        if not vals:
-            return None
-        return max(0.0, min(1.0, max(vals)))
-
-
 class AppMasterAudioMeter:
     """讀取目前預設輸出裝置的總輸出峰值。"""
 
