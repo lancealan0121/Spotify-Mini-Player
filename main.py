@@ -12,6 +12,7 @@
     --shot <path>   啟動 1.5 秒後截圖存檔並退出（面板開啟時加存 *_panel）
 """
 import ctypes
+import json
 import math
 import os
 import random
@@ -27,16 +28,18 @@ from PySide6.QtCore import (QEvent, QEasingCurve, QPoint, QPointF, QRectF,
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetricsF, QIcon,
                            QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QGraphicsOpacityEffect, QLabel,
-                               QMenu, QSystemTrayIcon, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog,
+                               QGraphicsOpacityEffect, QLabel, QMenu,
+                               QSystemTrayIcon, QWidget)
 
 from settings_ui import SettingsPanel, VolumePopup, fade_in, fade_out
-from style import (ART_SIZE, CARD_H, CARD_W, FPS_MAX, FPS_MIN, GLYPH_CLOSE, GLYPH_GLOBE,
+from style import (ART_SIZE, CARD_H, CARD_W, CONFIG_PATH, FPS_MAX, FPS_MIN, GLYPH_CLOSE, GLYPH_GLOBE,
                    GLYPH_NEXT, GLYPH_NOTE, GLYPH_PIN, GLYPH_PREV,
                    GLYPH_REPEAT_ALL, GLYPH_REPEAT_ONE, GLYPH_SETTINGS,
                    GLYPH_SHUFFLE, GLYPH_VOLUME, MARGIN, S, SETTINGS,
                    SPOTIFY_GREEN, Anim, DEFAULTS, Sf, TEXT_DIM, aa, adur,
-                   anim_on, add_custom_theme, apply_anim_fps, blend,
+                   anim_on, add_custom_theme, apply_anim_fps,
+                   apply_settings_data, blend,
                    cover_gradient, dominant_color,
                    fmt_time, remove_custom_theme,
                    glass_theme, icon_font, install_font_substitutions,
@@ -4048,6 +4051,15 @@ class PlayerWindow(QWidget):
         if key == "settings_reset":
             self._reset_settings()
             return
+        if key == "settings_import":
+            self._import_settings()
+            return
+        if key == "settings_export":
+            self._export_settings()
+            return
+        if key == "settings_open_file":
+            self._open_settings_file_location()
+            return
         if key == "custom_theme_add":
             add_custom_theme(value)
             self._save_timer.start()
@@ -4654,17 +4666,21 @@ class PlayerWindow(QWidget):
         return super().nativeEvent(event_type, message)
 
     # ---- 設定面板 ----
+    def _create_settings_panel(self) -> SettingsPanel:
+        self._panel = SettingsPanel(self.card.target_accent())
+        self._panel.setting_changed.connect(self.apply_setting)
+        self._panel.position_committed.connect(
+            lambda _=None: self._save_panel_pos())
+        self._panel.closed.connect(self._save_panel_pos)
+        return self._panel
+
     def _toggle_panel(self):
         if self._panel is not None and self._panel.isVisible():
             self._panel.animated_close()
             return
         if self._panel is not None:
             self._panel.deleteLater()
-        self._panel = SettingsPanel(self.card.target_accent())
-        self._panel.setting_changed.connect(self.apply_setting)
-        self._panel.position_committed.connect(
-            lambda _=None: self._save_panel_pos())
-        self._panel.closed.connect(self._save_panel_pos)
+        panel = self._create_settings_panel()
         if "settings_x" in SETTINGS and "settings_y" in SETTINGS:
             pos = QPoint(int(SETTINGS["settings_x"]),
                          int(SETTINGS["settings_y"]))
@@ -4675,7 +4691,7 @@ class PlayerWindow(QWidget):
                 x = self.x() + self.width() - MARGIN
             y = min(self.y(), scr.bottom() - self._panel.height() + MARGIN)
             pos = QPoint(max(scr.left(), x), max(scr.top(), y))
-        self._panel.open_at(pos)
+        panel.open_at(pos)
 
     def _save_panel_pos(self):
         if self._panel is None:
@@ -4683,6 +4699,136 @@ class PlayerWindow(QWidget):
         SETTINGS["settings_x"] = self._panel.x()
         SETTINGS["settings_y"] = self._panel.y()
         self._save_timer.start()
+
+    def _settings_dialog_dir(self) -> str:
+        folder = os.path.dirname(CONFIG_PATH)
+        return folder if os.path.isdir(folder) else os.getcwd()
+
+    def _notify_settings_file(self, key: str, warning: bool = False):
+        if not hasattr(self, "tray"):
+            return
+        icon = (QSystemTrayIcon.Warning if warning
+                else QSystemTrayIcon.Information)
+        self.tray.showMessage("Spotify Mini", tr(key), icon, 2600)
+
+    def _export_settings(self):
+        self._save_timer.stop()
+        save_settings()
+        default = os.path.join(self._settings_dialog_dir(),
+                               "spotify_mini_settings.json")
+        parent = self._panel if self._panel is not None else self
+        path, _ = QFileDialog.getSaveFileName(
+            parent, tr("settings_export"), default,
+            "JSON (*.json);;All Files (*.*)")
+        if not path:
+            return
+        if not os.path.splitext(path)[1]:
+            path += ".json"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(SETTINGS, f, ensure_ascii=False, indent=1)
+        except OSError:
+            self._notify_settings_file("settings_export_failed", warning=True)
+            return
+        self._notify_settings_file("settings_export_done")
+
+    def _import_settings(self):
+        parent = self._panel if self._panel is not None else self
+        path, _ = QFileDialog.getOpenFileName(
+            parent, tr("settings_import"), self._settings_dialog_dir(),
+            "JSON (*.json);;All Files (*.*)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("settings"), dict):
+                data = data["settings"]
+            if not isinstance(data, dict):
+                raise ValueError("settings JSON must be an object")
+        except (OSError, json.JSONDecodeError, ValueError):
+            self._notify_settings_file("settings_import_failed", warning=True)
+            return
+
+        old_settings = dict(SETTINGS)
+        try:
+            self._apply_imported_settings(data)
+        except Exception:
+            apply_settings_data(old_settings)
+            save_settings()
+            self._request_rebuild()
+            self._notify_settings_file("settings_import_failed", warning=True)
+            return
+        self._notify_settings_file("settings_import_done")
+
+    def _apply_imported_settings(self, data: dict):
+        panel_was_visible = self._panel is not None and self._panel.isVisible()
+        panel_pos = QPoint(self._panel.pos()) if panel_was_visible else None
+
+        self._save_timer.stop()
+        apply_settings_data(data)
+        old_panel = self._panel
+        self._panel = None
+        if old_panel is not None:
+            old_panel.hide()
+            old_panel.deleteLater()
+        app = QApplication.instance()
+        if app is not None:
+            app.setFont(QFont(safe_font_family(SETTINGS.get("font"))))
+        save_settings()
+        sync_startup_entry()
+        self._unregister_hotkey()
+        self._register_hotkeys()
+        self._pending.clear()
+        self._seek_pending = None
+        self._cancel_source_switch()
+        if SETTINGS.get("art_mode") != "audio":
+            self._spectrum.stop()
+        apply_anim_fps()
+        _apply_timer_resolution()
+
+        was_visible = self.isVisible()
+        pos = self.pos()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint,
+                           bool(SETTINGS.get("pinned", True)))
+        self.move(pos)
+        if was_visible:
+            self.show()
+        self._set_shadow_visible(bool(SETTINGS.get("shadow", True)),
+                                 animate=False)
+        self._rebuild_timer.stop()
+        self._build_card()
+        self._place()
+        if hasattr(self, "tray"):
+            self.tray.setIcon(make_tray_icon(self.card.accent()))
+            self._sync_tray_text()
+        if hasattr(self, "bridge"):
+            self.bridge.poke()
+        if panel_was_visible:
+            panel = self._create_settings_panel()
+            panel.open_at(panel_pos if panel_pos is not None else self.pos())
+
+    def _open_settings_file_location(self):
+        self._save_timer.stop()
+        save_settings()
+        folder = os.path.dirname(CONFIG_PATH)
+        try:
+            if sys.platform.startswith("win"):
+                subprocess.Popen(["explorer.exe", "/select,",
+                                  os.path.normpath(CONFIG_PATH)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", CONFIG_PATH])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except OSError:
+            try:
+                if hasattr(os, "startfile"):
+                    os.startfile(folder)
+                else:
+                    raise OSError
+            except OSError:
+                self._notify_settings_file(
+                    "settings_open_file_failed", warning=True)
 
     # ---- 音量 ----
     def _clear_volume_popup(self, pop=None):

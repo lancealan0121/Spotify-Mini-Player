@@ -4615,9 +4615,12 @@ class SettingsPanel(QWidget):
                 0.0 if single_panel else self._advanced_t)
 
         foot_box = QWidget(body)
-        foot = QHBoxLayout(foot_box)
-        foot.setContentsMargins(panel_px(20), panel_px(10),
-                                panel_px(20), panel_px(18))
+        foot_outer = QVBoxLayout(foot_box)
+        foot_outer.setContentsMargins(panel_px(20), panel_px(10),
+                                      panel_px(20), panel_px(18))
+        foot_outer.setSpacing(panel_px(8))
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 0, 0)
         foot.setSpacing(panel_px(8))
         self.btn_reset = PanelButton(tr("reset_settings"), accent=self._accent)
         if single_panel:
@@ -4626,6 +4629,22 @@ class SettingsPanel(QWidget):
         else:
             foot.addWidget(self.btn_advanced, 1)
         foot.addWidget(self.btn_reset)
+        foot_outer.addLayout(foot)
+
+        file_foot = QHBoxLayout()
+        file_foot.setContentsMargins(0, 0, 0, 0)
+        file_foot.setSpacing(panel_px(8))
+        self.btn_settings_import = PanelButton(
+            tr("settings_import"), accent=self._accent)
+        self.btn_settings_export = PanelButton(
+            tr("settings_export"), accent=self._accent)
+        self.btn_settings_open = PanelButton(
+            tr("settings_open_file"), accent=self._accent)
+        for btn in (self.btn_settings_import, self.btn_settings_export,
+                    self.btn_settings_open):
+            btn.setMinimumWidth(panel_px(70))
+            file_foot.addWidget(btn, 1)
+        foot_outer.addLayout(file_foot)
         body.set_fixed_footer(foot_box)
 
         self.sw_theme.changed.connect(
@@ -4872,6 +4891,12 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("show_btn_repeat", v))
         self.btn_reset.clicked.connect(
             lambda: self.setting_changed.emit("settings_reset", True))
+        self.btn_settings_import.clicked.connect(
+            lambda: self.setting_changed.emit("settings_import", True))
+        self.btn_settings_export.clicked.connect(
+            lambda: self.setting_changed.emit("settings_export", True))
+        self.btn_settings_open.clicked.connect(
+            lambda: self.setting_changed.emit("settings_open_file", True))
         self.search.textChanged.connect(self._apply_search)
 
         self._body = body
@@ -6221,8 +6246,10 @@ class SettingsPanel(QWidget):
         self.kb_next.update()
         self.kb_vol_up.update()
         self.kb_vol_down.update()
-        self.btn_reset._text = tr("reset_settings")
-        self.btn_reset.update()
+        self.btn_reset.set_text(tr("reset_settings"))
+        self.btn_settings_import.set_text(tr("settings_import"))
+        self.btn_settings_export.set_text(tr("settings_export"))
+        self.btn_settings_open.set_text(tr("settings_open_file"))
         if hasattr(self, "bg_image"):
             self.bg_image.refresh_language()
         if hasattr(self, "custom_image"):
@@ -6418,6 +6445,8 @@ class SettingsPanel(QWidget):
                     self.sg_art_mode, self.sg_cover_shape,
                     self.sg_audio_shape,
                     self.sg_lang, self.btn_advanced, self.btn_reset,
+                    self.btn_settings_import, self.btn_settings_export,
+                    self.btn_settings_open,
                     self.btn_advanced_close, self.fp_font,
                     self.bg_image, self.custom_image, self.cp_font_color,
                     self.cp_source_text_color, self.cp_number_color,

@@ -12,7 +12,9 @@ from PySide6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication,
 from PySide6.QtCore import (QEasingCurve, QObject, QRectF, Qt, QTimer,
                             Signal, qInstallMessageHandler)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__)))
+RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
 SPOTIFY_GREEN = QColor("#1DB954")
@@ -236,7 +238,7 @@ BACKGROUND_IMAGE_MODES = [
     ("tile", "平鋪"),
 ]
 
-I18N_PATH = os.path.join(BASE_DIR, "i18n.json")
+I18N_PATH = os.path.join(RESOURCE_DIR, "i18n.json")
 
 
 def _load_i18n() -> dict:
@@ -520,12 +522,10 @@ def _migrate_legacy_custom_theme():
     SETTINGS["theme"] = entry["key"]
 
 
-def load_settings():
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+def apply_settings_data(data=None):
+    if not isinstance(data, dict):
         data = {}
+    SETTINGS.clear()
     SETTINGS.update(DEFAULTS)
     SETTINGS.update(data)
     for key in ("vinyl_style", "cover_reflection",
@@ -793,6 +793,15 @@ def load_settings():
             and _held_theme_spec() is None):
         SETTINGS["theme"] = "auto"
     return SETTINGS
+
+
+def load_settings():
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    return apply_settings_data(data)
 
 
 def tr(key: str) -> str:
