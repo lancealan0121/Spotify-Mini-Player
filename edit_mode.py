@@ -8,7 +8,7 @@ from PySide6.QtGui import (QColor, QFont, QGuiApplication, QPainter,
                            QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import QWidget
 
-from style import (GLYPH_EDIT, SETTINGS, Anim, S, Sf, aa, adur, anim_on,
+from style import (GLYPH_EDIT, SETTINGS, Anim, S, aa, adur, anim_on,
                    fps_ms, icon_font, ui_font)
 
 
@@ -88,18 +88,26 @@ class _EditLayoutOverlay(QWidget):
             if rr.isValid() and rop > 0.001:
                 p.save()
                 p.setOpacity(op * rop)
-                p.setPen(QPen(QColor(255, 255, 255, 220), max(1, S(1.1)),
-                              Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-                p.setBrush(Qt.NoBrush)
-                gap = S(3.0)
-                h_len = S(5.5)
-                v_len = S(5.5)
                 corner = r.topRight()
-                path = QPainterPath()
-                path.moveTo(corner.x() - h_len, corner.y() - gap)
-                path.quadTo(corner.x() + gap, corner.y() - gap,
-                            corner.x() + gap, corner.y() + v_len)
-                p.drawPath(path)
+                node = QPointF(corner.x() + S(7), corner.y() - S(7))
+                nr = S(4.3)
+                # 連接莖（細、淡）
+                p.setPen(QPen(QColor(255, 255, 255, 70), max(1, S(1.0))))
+                p.drawLine(corner, node)
+                # 圓形把手：白底 + 深色描邊（設計工具風）
+                p.setPen(QPen(QColor(0, 0, 0, 95), max(1, S(1.0))))
+                p.setBrush(QColor(255, 255, 255, 242))
+                p.drawEllipse(node, nr, nr)
+                # 內嵌旋轉箭頭弧
+                arc = QRectF(node.x() - nr * 0.5, node.y() - nr * 0.5,
+                             nr, nr)
+                p.setBrush(Qt.NoBrush)
+                p.setPen(QPen(QColor(34, 36, 42, 235), max(1, S(0.9)),
+                              Qt.SolidLine, Qt.RoundCap))
+                ap = QPainterPath()
+                ap.arcMoveTo(arc, 50)
+                ap.arcTo(arc, 50, 255)
+                p.drawPath(ap)
                 p.restore()
                 p.setPen(pen)
                 p.setBrush(Qt.NoBrush)
@@ -108,19 +116,20 @@ class _EditLayoutOverlay(QWidget):
             if hr.isValid() and hop > 0.001:
                 p.save()
                 p.setOpacity(op * hop)
-                p.setPen(QPen(QColor(255, 255, 255, 230), max(1, S(1.2))))
-                p.setBrush(Qt.NoBrush)
-                pad = S(1.5)
-                corner = hr.adjusted(pad, pad, -pad, -pad)
-                p.drawLine(QPointF(corner.right(), corner.top()),
-                           QPointF(corner.right(), corner.bottom()))
-                p.drawLine(QPointF(corner.left(), corner.bottom()),
-                           QPointF(corner.right(), corner.bottom()))
-                p.setBrush(QColor(255, 255, 255, 150))
-                dot = S(2.4)
-                p.drawEllipse(QRectF(corner.right() - dot / 2,
-                                     corner.bottom() - dot / 2,
-                                     dot, dot))
+                # 圓角方形把手：白底深框 + 內部對角抓握紋（設計工具風）
+                c = hr.center()
+                gs = S(5.0)
+                grip = QRectF(c.x() - gs, c.y() - gs, gs * 2, gs * 2)
+                p.setPen(QPen(QColor(0, 0, 0, 95), max(1, S(1.0))))
+                p.setBrush(QColor(255, 255, 255, 242))
+                p.drawRoundedRect(grip, S(1.7), S(1.7))
+                p.setPen(QPen(QColor(34, 36, 42, 215), max(1, S(0.9)),
+                              Qt.SolidLine, Qt.RoundCap))
+                inr = grip.adjusted(S(1.7), S(1.7), -S(1.7), -S(1.7))
+                p.drawLine(QPointF(inr.left(), inr.bottom()),
+                           QPointF(inr.right(), inr.top()))
+                p.drawLine(QPointF(inr.center().x(), inr.bottom()),
+                           QPointF(inr.right(), inr.center().y()))
                 p.restore()
                 p.setPen(pen)
                 p.setBrush(Qt.NoBrush)
@@ -172,6 +181,8 @@ class _EditLibrary(QWidget):
         self._press_pos = QPoint()
         self._press_global = QPoint()
         self._panel_start = QPoint()
+        # 獨立視窗：首次放置後就鎖住位置，卡片移動/縮放都不再把它拉回去。
+        self._placed = False
         self._op = 0.0
         self._target = 0.0
         self._scroll = 0.0
@@ -227,28 +238,22 @@ class _EditLibrary(QWidget):
     def _card_origin(self) -> QPoint:
         return self.card.mapToGlobal(QPoint(0, 0))
 
-    def _relative_from_global(self, pos: QPoint) -> QPoint:
-        return pos - self._card_origin()
-
     def _global_from_relative(self, pos: QPoint) -> QPoint:
         return self._card_origin() + pos
 
     def _default_relative_pos(self, w: int, _h: int) -> QPoint:
         return QPoint(-w - S(8), S(8))
 
-    def _saved_pos(self, w: int, h: int) -> QPoint:
+    def _saved_global_pos(self, w: int, h: int) -> QPoint:
+        # 完全自由浮動：位置存絕對螢幕座標（gx/gy），與卡片解耦。舊格式
+        # （相對卡片的 x/y）或首次開啟則回退到卡片右上角的預設位置。
         raw = SETTINGS.get("edit_library_pos", {})
-        if isinstance(raw, dict) and raw:
+        if isinstance(raw, dict) and "gx" in raw and "gy" in raw:
             try:
-                x = round(Sf(float(raw.get("x", 0.0))))
-                y = round(Sf(float(raw.get("y", 0.0))))
+                return QPoint(round(float(raw["gx"])), round(float(raw["gy"])))
             except (TypeError, ValueError):
-                pos = self._default_relative_pos(w, h)
-                x, y = pos.x(), pos.y()
-        else:
-            pos = self._default_relative_pos(w, h)
-            x, y = pos.x(), pos.y()
-        return QPoint(x, y)
+                pass
+        return self._global_from_relative(self._default_relative_pos(w, h))
 
     def _clamp_global_pos(self, pos: QPoint, w: int, h: int) -> QPoint:
         app = QGuiApplication.instance()
@@ -266,18 +271,22 @@ class _EditLibrary(QWidget):
         return QPoint(x, y)
 
     def _store_pos(self):
-        scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
-        rel = self._relative_from_global(self.pos())
-        SETTINGS["edit_library_pos"] = {
-            "x": max(-360.0, min(700.0, rel.x() / scale)),
-            "y": max(-240.0, min(520.0, rel.y() / scale)),
-        }
+        # 存絕對螢幕座標：卡片移動不再拖著它跑，也不夾在視窗附近。
+        # _clamp_global_pos 只保證留在螢幕內可抓取。
+        p = self.pos()
+        SETTINGS["edit_library_pos"] = {"gx": float(p.x()), "gy": float(p.y())}
         self.card.layout_edit_changed.emit()
 
     def _apply_geometry(self):
         w, h = self._target_size()
-        rel = self._saved_pos(w, h)
-        pos = self._clamp_global_pos(self._global_from_relative(rel), w, h)
+        if self._placed:
+            # 已放置：當成完全獨立的視窗，維持目前位置——卡片移動/app 縮放
+            # 都不把它拉回去；尺寸變化（展開/收合/scale）原地調整，只夾回
+            # 螢幕內以防完全跑出畫面。
+            pos = self._clamp_global_pos(self.pos(), w, h)
+        else:
+            pos = self._clamp_global_pos(self._saved_global_pos(w, h), w, h)
+            self._placed = True
         self.setGeometry(pos.x(), pos.y(), w, h)
         self._scroll = min(self._scroll, self._max_scroll())
         self._target_scroll = min(self._target_scroll, self._max_scroll())

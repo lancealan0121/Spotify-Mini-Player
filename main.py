@@ -3122,8 +3122,17 @@ class Card(QWidget):
         return None
 
     def _target_key_at(self, pos: QPointF) -> str | None:
+        # 命中測試要在元件自身的未旋轉座標系做（旋轉只是視覺，Qt 的矩形仍是
+        # 軸對齊的）。先把游標反旋轉回元件本地座標再 contains，旋轉元件突出
+        # 的部分（含較亮的填色區）才點得到。額外給 slop 讓細元件（如進度條）
+        # 好選。
+        slop = S(3)
         for key in reversed(self.edit_target_keys()):
-            if self.edit_target_rect(key).contains(pos):
+            r = self.edit_target_rect(key)
+            if not r.isValid() or r.width() < 2 or r.height() < 2:
+                continue
+            if r.adjusted(-slop, -slop, slop, slop).contains(
+                    self._unrotate_edit_pos(key, pos)):
                 return key
         return None
 
@@ -5908,6 +5917,14 @@ class Card(QWidget):
                 target_key = self._target_key_at(e.position())
                 if target_key is None:
                     self._set_edit_selection(None, additive=False)
+                else:
+                    # 點在元件上（含旋轉視覺的突出/亮區，這些不會落到 widget 的
+                    # eventFilter）：直接選取並起拖，跟 eventFilter 路徑一致。
+                    self._begin_edit_drag(
+                        target_key, e.globalPosition().toPoint(),
+                        bool(e.modifiers() & Qt.ShiftModifier))
+                    e.accept()
+                    return
             win = self.window()
             if hasattr(win, "_stop_keep_on_screen_anim"):
                 win._stop_keep_on_screen_anim()
