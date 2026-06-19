@@ -104,7 +104,6 @@ if not exist "app.ico" (
     --exclude-module unittest ^
     --exclude-module pytest ^
     --exclude-module IPython ^
-    --exclude-module numpy ^
     --exclude-module pandas ^
     --exclude-module matplotlib ^
     --exclude-module PIL ^
