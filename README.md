@@ -1,63 +1,66 @@
+**日本語** | [繁體中文](README.zh-TW.md)
+
 # Spotify Mini
 
-桌面迷你播放器，**不需要 Spotify API**。透過 Windows 媒體傳輸控制（SMTC）讀取並遙控
-Spotify 桌面版，也支援瀏覽器等其他媒體來源。封面主色自動上色、全自繪 UI、時間基準動畫，
-追求高 FPS 與低 CPU 佔用。
+デスクトップ向けミニプレイヤー。**Spotify API 不要**。Windows のメディア統合トランスポート
+コントロール（SMTC）経由で Spotify デスクトップ版を読み取り・操作します。ブラウザなど他の
+メディアソースにも対応。カバーアートからの自動配色、フル自前描画 UI、時間ベースのアニメーション
+により、高 FPS と低 CPU 使用率を両立します。
 
 <p align="center">
-  <img src="assets/player.png" width="640" alt="播放介面">
+  <img src="assets/player.png" width="640" alt="プレイヤー画面">
 </p>
 
-## 特色
+## 特徴
 
-- 讀取目前播放的歌曲、封面、進度，並可遙控上一首／下一首／播放暫停／隨機／循環／音量。
-- 來源可選 Spotify、瀏覽器或自動挑選正在播放的工作階段。
-- 主題：封面自動取色、玻璃透明、自訂漸層、固定色票或雙色漸層。
-- 大量視覺特效（封面視覺化、波浪進度條、降水特效等）與可調 FPS（24–144）。
-- 即時縮放、圓角、字體、動畫強度切換；多語系（繁中／日／英）。
-- 系統匣常駐、單一實例、編輯模式自由排版。
+- 再生中の曲・カバー・進捗を読み取り、前/次の曲・再生/一時停止・シャッフル・リピート・音量を操作。
+- ソースは Spotify / ブラウザ / 再生中セッションの自動選択 から選べます。
+- テーマ：カバー自動抽出 / すりガラス透過 / カスタムグラデーション / 単色スウォッチ / 2色グラデーション。
+- 豊富なビジュアルエフェクト（カバービジュアライザー、波形シークバー、降水エフェクトなど）と FPS 調整（24–144）。
+- 拡大率・角丸・フォント・アニメーション強度をリアルタイム切り替え。多言語対応（日本語 / 繁体字中国語 / 英語）。
+- タスクトレイ常駐、単一インスタンス、編集モードによる自由レイアウト。
 
 <p align="center">
-  <img src="assets/settings.png" width="720" alt="設定介面">
+  <img src="assets/settings.png" width="720" alt="設定画面">
 </p>
 
-## 系統需求
+## 動作環境
 
 - Windows 10 / 11
-- 安裝 Spotify 桌面版（播放需求；DRM 在客戶端，無法不開 Spotify 播歌）
-- 從原始碼執行需 Python 3.10+
+- Spotify デスクトップ版のインストール（再生に必要。DRM はクライアント側のため、Spotify を起動せずに再生はできません）
+- ソースから実行する場合は Python 3.10+
 
-## 從原始碼執行（uv）
+## ソースから実行（uv）
 
 ```bash
-# 安裝 uv（若尚未安裝）
+# uv のインストール（未導入の場合）
 powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# 取得程式碼
+# コードを取得
 git clone https://github.com/lancealan0121/spotify_mini.git
 cd spotify_mini
 
-# 建立虛擬環境並安裝相依套件
+# 仮想環境を作成して依存関係をインストール
 uv venv
 uv pip install -r requirements.txt
 
-# 執行
+# 実行
 uv run python main.py
 ```
 
-亦可直接用 `run.bat`（以 `pythonw` 無主控台啟動）。
+`run.bat` でも起動できます（`pythonw` でコンソールなし起動）。
 
-## 打包成單一執行檔
+## 単一実行ファイルへのビルド
 
 ```bash
 build.bat
 ```
 
-會以 PyInstaller 產生 `dist\MiniSP_<日期>.exe`（首次執行會自動安裝 PyInstaller）。
+PyInstaller で `dist\MiniSP_<日付>.exe` を生成します（初回は PyInstaller を自動インストール）。
 
-## 授權
+## ライセンス
 
-本專案以 [MIT License](LICENSE) 釋出。
+本プロジェクトは [MIT License](LICENSE) で公開されています。
 
-Spotify 為 Spotify AB 的商標，本專案與 Spotify AB 無任何隸屬或背書關係；
-`spt.png` 商標素材僅作來源標示之用。
+Spotify は Spotify AB の商標です。本プロジェクトは Spotify AB と提携・承認関係にありません。
+`spt.png` の商標素材はソース表示の目的でのみ使用しています。
