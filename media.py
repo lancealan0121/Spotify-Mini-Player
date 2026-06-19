@@ -65,6 +65,9 @@ def _pick_session(sessions):
 
     spotify = [s for s in sessions if "spotify" in app_id(s)]
     if mode == "spotify":
+        for s in spotify:
+            if _is_playing(s):
+                return s
         return spotify[0] if spotify else None
 
     if mode == "browser":

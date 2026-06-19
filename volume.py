@@ -201,6 +201,13 @@ class SystemSpectrumAnalyzer:
             self._write_pos = 0
             self._window = np.hanning(self.FFT_SIZE).astype(np.float32)
             self._smooth = np.zeros(self.BAR_COUNT, dtype=np.float32)
+            # 快取上次 rfft 算出的原始頻帶量值（_raw）與其對應的寫入時刻
+            # （_fft_at）。渲染以 240fps 拉 bars()，但音訊 callback 僅 ~86Hz
+            # （blocksize 512 @ 44.1kHz）；兩次 callback 間 buffer 內容不變，
+            # rfft 結果位元級相同。故 _last_write_t 未變就重用 _raw，跳過昂貴
+            # 的 2048 點 rfft（每幀仍照算平滑＋正規化，視覺零差異）。
+            self._raw = np.zeros(self.BAR_COUNT, dtype=np.float32)
+            self._fft_at = None
             self._edges = np.geomspace(20.0, 16000.0, self.BAR_COUNT + 1)
             self._freqs = np.fft.rfftfreq(self.FFT_SIZE, 1.0 / self.SAMPLE_RATE)
             self._groups = self._build_groups()
@@ -486,22 +493,28 @@ class SystemSpectrumAnalyzer:
             # 峰值同步衰減，下次有音樂時才能立刻重新正規化到滿幅。
             self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), 1e-6)
             return self._smooth.tolist()
-        with self._lock:
-            pos = self._write_pos
-            if pos >= self.FFT_SIZE:
-                samples = self._buffer[pos - self.FFT_SIZE:pos].copy()
-            else:
-                samples = np.concatenate((
-                    self._buffer[pos - self.FFT_SIZE:],
-                    self._buffer[:pos])).copy()
-        samples -= float(np.mean(samples))
-        spectrum = np.abs(np.fft.rfft(samples * self._window))
-        # 頻帶中心對小數 bin 做線性內插（向量化），低頻不再黏成同值
-        raw = np.interp(self._band_centers,
-                        np.arange(spectrum.size), spectrum).astype(np.float32)
-        raw *= self._tilt
-        raw = np.log1p(raw * 8.0)
-
+        new_audio = last_write != self._fft_at
+        if new_audio:
+            # 有新音訊才做昂貴的 rfft + 頻帶內插，結果快取到 _raw
+            self._fft_at = last_write
+            with self._lock:
+                pos = self._write_pos
+                if pos >= self.FFT_SIZE:
+                    samples = self._buffer[pos - self.FFT_SIZE:pos].copy()
+                else:
+                    samples = np.concatenate((
+                        self._buffer[pos - self.FFT_SIZE:],
+                        self._buffer[:pos])).copy()
+            samples -= float(np.mean(samples))
+            spectrum = np.abs(np.fft.rfft(samples * self._window))
+            # 頻帶中心對小數 bin 做線性內插（向量化），低頻不再黏成同值
+            raw = np.interp(self._band_centers,
+                            np.arange(spectrum.size), spectrum).astype(np.float32)
+            raw *= self._tilt
+            self._raw = np.log1p(raw * 8.0)
+        # 以下每幀皆算（吃 dt 的平滑與峰值衰減）：buffer 未更新時 _raw 不變，
+        # 等同對相同 rfft 結果重跑——輸出與每幀都做 rfft 位元級一致。
+        raw = self._raw
         mx = float(raw.max()) if raw.size else 0.0
         self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), mx, 1e-6)
         norm = np.clip(raw / self._peak, 0.0, 1.0)

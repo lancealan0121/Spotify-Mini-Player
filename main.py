@@ -32,10 +32,12 @@ from PySide6.QtWidgets import (QApplication, QFileDialog,
                                QGraphicsOpacityEffect, QLabel, QMenu,
                                QSystemTrayIcon, QWidget)
 
+from edit_mode import (_EditGhostLayer, _EditLayoutOverlay, _EditLibrary,
+                       _EditReplica)
 from settings_ui import SettingsPanel, VolumePopup, fade_in, fade_out
-from style import (ART_SIZE, CARD_H, CARD_W, CONFIG_PATH, FPS_MAX, FPS_MIN, GLYPH_CLOSE, GLYPH_GLOBE,
+from style import (ART_SIZE, CARD_H, CARD_W, CONFIG_PATH, FPS_MAX, FPS_MIN, GLYPH_CLOSE, GLYPH_EDIT, GLYPH_GLOBE,
                    GLYPH_NEXT, GLYPH_NOTE, GLYPH_PIN, GLYPH_PREV,
-                   GLYPH_REPEAT_ALL, GLYPH_REPEAT_ONE, GLYPH_SETTINGS,
+                   GLYPH_REPEAT_ALL, GLYPH_REPEAT_ONE, GLYPH_RESET, GLYPH_SETTINGS,
                    GLYPH_SHUFFLE, GLYPH_VOLUME, MARGIN, S, SETTINGS,
                    SPOTIFY_GREEN, Anim, DEFAULTS, Sf, TEXT_DIM, aa, adur,
                    anim_on, add_custom_theme, apply_anim_fps,
@@ -143,22 +145,30 @@ def parse_hotkey(seq: str) -> tuple[int, int] | None:
 
 
 # 官方 Spotify 圖示（spt.png：綠圓 + 鏤空波浪，畫在深色卡片上即官方深色版）
-_LOGO_CACHE: dict[int, QPixmap] = {}
+_LOGO_CACHE: dict[tuple[int, int], QPixmap] = {}
+_LOGO_SRC: QImage | None = None
 
 
 def spotify_logo_pixmap(d: float, dpr: float) -> QPixmap | None:
+    global _LOGO_SRC
     px = max(1, round(d * dpr))
-    pm = _LOGO_CACHE.get(px)
+    bucket = max(1, int(round(px / 8.0) * 8))
+    dpr_key = max(1, round(dpr * 100))
+    key = (bucket, dpr_key)
+    pm = _LOGO_CACHE.get(key)
     if pm is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "spt.png")
-        img = QImage(path)
-        if img.isNull():
-            return None
+        if _LOGO_SRC is None:
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "spt.png")
+            img = QImage(path)
+            if img.isNull():
+                return None
+            _LOGO_SRC = img
         pm = QPixmap.fromImage(
-            img.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            _LOGO_SRC.scaled(bucket, bucket, Qt.KeepAspectRatio,
+                             Qt.SmoothTransformation))
         pm.setDevicePixelRatio(dpr)
-        _LOGO_CACHE[px] = pm
+        _LOGO_CACHE[key] = pm
     return pm
 
 
@@ -247,6 +257,21 @@ class TimeLabel(QLabel):
         self._text_anim = Anim(self)
         self._text_anim.valueChanged.connect(self._on_text_t)
         self._text_anim.finished.connect(self._text_done)
+        self._edit_angle = 0.0
+
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
+
+    def _apply_edit_rotation(self, p: QPainter):
+        if abs(self._edit_angle) < 0.01:
+            return
+        p.translate(self.width() / 2.0, self.height() / 2.0)
+        p.rotate(self._edit_angle)
+        p.translate(-self.width() / 2.0, -self.height() / 2.0)
 
     def _text_for(self, sec: float, prefix: str | None = None) -> str:
         return f"{self._prefix if prefix is None else prefix}{fmt_time(sec)}"
@@ -332,10 +357,24 @@ class TimeLabel(QLabel):
 
     def paintEvent(self, e):
         if self._text_t >= 0.999:
-            super().paintEvent(e)
+            if abs(self._edit_angle) < 0.01:
+                super().paintEvent(e)
+                return
+            p = QPainter(self)
+            aa(p)
+            self._apply_edit_rotation(p)
+            p.setFont(self.font())
+            col = self.palette().color(self.foregroundRole())
+            if not col.isValid():
+                col = QColor(255, 255, 255, 120)
+            p.setPen(col)
+            p.drawText(QRectF(self.rect()),
+                       self.alignment() or (Qt.AlignLeft | Qt.AlignVCenter),
+                       self.text())
             return
         p = QPainter(self)
         aa(p)
+        self._apply_edit_rotation(p)
         p.setFont(self.font())
         col = self.palette().color(self.foregroundRole())
         if not col.isValid():
@@ -463,8 +502,24 @@ class _SourceLogo(QWidget):
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._spotify = bool(spotify)
         self._color = QColor(255, 255, 255, 170)
+        self._edit_angle = 0.0
+
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
+
+    def _apply_edit_rotation(self, p: QPainter):
+        if abs(self._edit_angle) < 0.01:
+            return
+        p.translate(self.width() / 2.0, self.height() / 2.0)
+        p.rotate(self._edit_angle)
+        p.translate(-self.width() / 2.0, -self.height() / 2.0)
 
     def set_spotify(self, spotify: bool):
         spotify = bool(spotify)
@@ -480,6 +535,7 @@ class _SourceLogo(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
+        self._apply_edit_rotation(p)
         d = max(1.0, min(self.width(), self.height()) - 2.0)
         r = QRectF((self.width() - d) / 2.0, (self.height() - d) / 2.0,
                    d, d)
@@ -496,6 +552,39 @@ class _SourceLogo(QWidget):
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(SPOTIFY_GREEN))
             p.drawEllipse(r)
+
+
+class _RotatingLabel(QLabel):
+    """Simple QLabel variant used by edit mode angle controls."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._edit_angle = 0.0
+
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
+
+    def paintEvent(self, e):
+        if abs(self._edit_angle) < 0.01:
+            super().paintEvent(e)
+            return
+        p = QPainter(self)
+        aa(p)
+        p.translate(self.width() / 2.0, self.height() / 2.0)
+        p.rotate(self._edit_angle)
+        p.translate(-self.width() / 2.0, -self.height() / 2.0)
+        p.setFont(self.font())
+        col = self.palette().color(self.foregroundRole())
+        if not col.isValid():
+            col = QColor(255, 255, 255, 140)
+        p.setPen(col)
+        p.drawText(QRectF(self.rect()),
+                   self.alignment() or (Qt.AlignLeft | Qt.AlignVCenter),
+                   self.text())
 
 
 class _WeatherLayer(QWidget):
@@ -861,58 +950,71 @@ class _WeatherLayer(QWidget):
         if self._effect in ("snow", "custom"):
             p.setRenderHint(QPainter.SmoothPixmapTransform,
                             SETTINGS["antialias"])
+            fade = self._fade
+            k_alpha = 0.38 + self._intensity * 0.66
+            is_custom = self._effect == "custom"
+            custom_pm = self._custom_image_pixmap
+            glyph_pm = self._snow_glyph_pixmap
+            p_save, p_restore = p.save, p.restore
+            p_translate, p_rotate = p.translate, p.rotate
+            p_setop, p_drawpm = p.setOpacity, p.drawPixmap
             for d in self._drops:
                 depth = d["depth"]
-                alpha = round((48 + depth * 106)
-                              * (0.38 + self._intensity * 0.66))
+                alpha = round((48 + depth * 106) * k_alpha)
                 if alpha <= 2:
                     continue
-                size = max(0.5, float(d.get("size", 2.0)))
-                angle = float(d.get("angle", 0.0))
-                if self._effect == "custom":
-                    pm = self._custom_image_pixmap(
-                        max(7.0, min(96.0, size * 5.2)))
-                else:
-                    pm = None
+                size = d.get("size", 2.0)
+                if size < 0.5:
+                    size = 0.5
+                pm = None
+                if is_custom:
+                    pm = custom_pm(max(7.0, min(96.0, size * 5.2)))
                 if pm is None:
-                    glyph_px = max(7.0, min(72.0, size * 4.2))
-                    pm = self._snow_glyph_pixmap(str(d.get("glyph", "❄")),
-                                                 glyph_px)
-                dpr = max(1.0, pm.devicePixelRatioF())
+                    pm = glyph_pm(d.get("glyph", "❄"),
+                                  max(7.0, min(72.0, size * 4.2)))
+                dpr = pm.devicePixelRatioF()
+                if dpr < 1.0:
+                    dpr = 1.0
                 pw, ph = pm.width() / dpr, pm.height() / dpr
-                p.save()
-                p.translate(d["x"], d["y"])
-                p.rotate(angle)
-                p.setOpacity(self._fade * min(1.0, alpha / 210.0))
-                p.drawPixmap(QPointF(-pw / 2.0, -ph / 2.0), pm)
-                p.restore()
+                p_save()
+                p_translate(d["x"], d["y"])
+                p_rotate(d.get("angle", 0.0))
+                p_setop(fade * min(1.0, alpha / 210.0))
+                p_drawpm(QPointF(-pw / 2.0, -ph / 2.0), pm)
+                p_restore()
             return
         drift_k = math.tan(math.radians(self._direction))
         line_col = QColor(214, 232, 255)
         pen = QPen(line_col, 1.0)
         pen.setCapStyle(Qt.RoundCap)
         hi_col = QColor(255, 255, 255)
-        hi_pen = QPen(hi_col, max(0.25, 0.45 * self._thickness_scale))
+        tw = self._thickness_scale
+        hi_pen = QPen(hi_col, max(0.25, 0.45 * tw))
+        k_alpha = 0.42 + self._intensity * 0.72
+        set_pen, draw_line = p.setPen, p.drawLine
+        pen_color, pen_width = pen.setColor, pen.setWidthF
+        line_alpha = line_col.setAlpha
+        hi_alpha, hi_color = hi_col.setAlpha, hi_pen.setColor
         for d in self._drops:
             depth = d["depth"]
-            alpha = round((26 + depth * 92) * (0.42 + self._intensity * 0.72))
+            alpha = round((26 + depth * 92) * k_alpha)
             if alpha <= 2:
                 continue
             length = d["len"]
             drift = drift_k * length
-            line_col.setAlpha(min(150, alpha))
-            pen.setColor(line_col)
-            pen.setWidthF((0.45 + depth * 1.15) * self._thickness_scale)
-            p.setPen(pen)
-            p.drawLine(QPointF(d["x"], d["y"]),
-                       QPointF(d["x"] - drift, d["y"] - length))
+            dx, dy = d["x"], d["y"]
+            line_alpha(150 if alpha > 150 else alpha)
+            pen_color(line_col)
+            pen_width((0.45 + depth * 1.15) * tw)
+            set_pen(pen)
+            draw_line(QPointF(dx, dy), QPointF(dx - drift, dy - length))
             if depth > 0.62:
-                hi_col.setAlpha(min(70, alpha // 2))
-                hi_pen.setColor(hi_col)
-                p.setPen(hi_pen)
-                p.drawLine(QPointF(d["x"] + 0.8, d["y"] - length * 0.1),
-                           QPointF(d["x"] - drift * 0.42,
-                                   d["y"] - length * 0.62))
+                ha = alpha // 2
+                hi_alpha(70 if ha > 70 else ha)
+                hi_color(hi_col)
+                set_pen(hi_pen)
+                draw_line(QPointF(dx + 0.8, dy - length * 0.1),
+                          QPointF(dx - drift * 0.42, dy - length * 0.62))
         sp_col = QColor(225, 240, 255)
         sp_pen = QPen(sp_col, max(0.3, 0.75 * self._thickness_scale))
         for s in self._splashes:
@@ -1250,6 +1352,7 @@ class Card(QWidget):
     """播放器卡片本體：背景漸層（快取）、所有子元件、空狀態。"""
 
     drag_finished = Signal()
+    layout_edit_changed = Signal()
     accent_changed = Signal(QColor)   # 主題色過渡的每一幀（設定面板跟著變）
     wheel_volume = Signal(int)        # 卡片上滾滾輪調音量（原始 angleDelta）
 
@@ -1265,17 +1368,19 @@ class Card(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_NoSystemBackground)
         self.setAutoFillBackground(False)
+        self.setMouseTracking(True)
         preset = SETTINGS.get("card_preset", "standard")
         base_w, base_h, base_art = self._PRESET_METRICS.get(
             preset, self._PRESET_METRICS["standard"])
         self._preset = preset
+        self._base_w = base_w
         self._base_h = base_h
         self._compact = preset in ("mini", "controls")
         self._control_bar = preset == "controls"
         self._cover_enabled = (preset != "mini"
                                and bool(SETTINGS.get("show_cover", True)))
         self._art_size = S(base_art)
-        self._W, self._H = S(base_w), S(base_h)
+        self._W, self._H = self._window_size_px()
         self.setFixedSize(self._W, self._H)
         self._dom: QColor | None = None      # 封面萃取的主色
         self._cover_grad: tuple[QColor, QColor] | None = None
@@ -1283,6 +1388,37 @@ class Card(QWidget):
         self._art_pm: QPixmap | None = None
         self._art_img: QImage | None = None
         self._drag_off: QPoint | None = None
+        self._edit_mode = False
+        self._edit_drag: dict | None = None
+        self._edit_filter_targets: dict[QWidget, str] = {}
+        self._edit_hover_key: str | None = None
+        self._edit_selected_keys: set[str] = set()
+        self._edit_select_ops: dict[str, float] = {}
+        self._edit_select_targets: dict[str, float] = {}
+        self._edit_select_anims: dict[str, Anim] = {}
+        self._edit_instance_widgets: dict[str, QWidget] = {}
+        self._audio_level_provider = None
+        self._art_playing = False
+        self._window_resize_drag: dict | None = None
+        self._edit_reset_from: dict[str, tuple[float, float]] = {}
+        self._edit_reset_size_from: dict[str, tuple[float, float]] = {}
+        self._edit_reset_angle_from: dict[str, float] = {}
+        self._edit_reset_window_from: tuple[float, float] = (0.0, 0.0)
+        self._edit_reset_hidden_keys: tuple[str, ...] = ()
+        self._edit_reset_abort = False
+        self._edit_reset_anim = Anim(self)
+        self._edit_reset_anim.valueChanged.connect(self._on_layout_reset)
+        self._edit_reset_anim.finished.connect(self._layout_reset_done)
+        self._edit_overlay_op = 0.0
+        self._edit_overlay_target = 0.0
+        self._edit_overlay_anim = Anim(self)
+        self._edit_overlay_anim.valueChanged.connect(self._on_edit_overlay_op)
+        self._edit_overlay_anim.finished.connect(self._edit_overlay_done)
+        self._edit_handle_ops: dict[str, float] = {}
+        self._edit_handle_targets: dict[str, float] = {}
+        self._edit_handle_anims: dict[str, Anim] = {}
+        self._ctrl_layout_min = QPointF(0.0, 0.0)
+        self._ctrl_nominal_size = (0, 0)
         self._bg: QPixmap | None = None      # 背景快取（漸層很貴，只畫一次）
         self._bg_image_layer: QPixmap | None = None
         self._bg_image_layer_key = None
@@ -1327,6 +1463,17 @@ class Card(QWidget):
         self._source_anim = Anim(self)
         self._source_anim.valueChanged.connect(self._on_source_op)
         self._source_anim.finished.connect(self._source_done)
+        self._edit_button_op = (
+            1.0 if SETTINGS.get("show_edit_button", True) else 0.0)
+        self._edit_button_target = self._edit_button_op
+        self._edit_button_anim = Anim(self)
+        self._edit_button_anim.valueChanged.connect(self._on_edit_button_op)
+        self._edit_button_anim.finished.connect(self._edit_button_done)
+        self._reset_button_op = 0.0
+        self._reset_button_target = 0.0
+        self._reset_button_anim = Anim(self)
+        self._reset_button_anim.valueChanged.connect(self._on_reset_button_op)
+        self._reset_button_anim.finished.connect(self._reset_button_done)
         self._ctrl_anim = Anim(self)
         self._ctrl_anim.valueChanged.connect(self._on_ctrl_move)
         self._ctrl_anim.finished.connect(self._ctrl_done)
@@ -1357,6 +1504,7 @@ class Card(QWidget):
         self._art_size_anim = Anim(self)
         self._art_size_anim.valueChanged.connect(self._on_art_size_layout)
         self._art_size_anim.finished.connect(self._art_size_layout_done)
+        self._art_size_refresh_pixmap = True
         self._art_scale_from = (self._cover_scale_setting(),
                                 self._vinyl_scale_setting())
         self._art_scale_to = self._art_scale_from
@@ -1387,6 +1535,8 @@ class Card(QWidget):
         self._seek_fill_gradient: tuple[QColor, QColor] | None = None
         self._topbar_override = False
         self._topbar_override_to = False
+        self._progress_pos = 0.0
+        self._progress_dur = 0.0
         self._bg_fade_old: QPixmap | None = None
         self._bg_fade_new: QPixmap | None = None
         self._bg_fade_t = 1.0
@@ -1444,12 +1594,14 @@ class Card(QWidget):
         return dom, grad
 
     def _cover_scale_setting(self) -> float:
+        delta = self._art_edit_delta_scale()
         return max(0.6, min(
-            1.4, float(SETTINGS.get("art_cover_size", 1.0))))
+            1.4, float(SETTINGS.get("art_cover_size", 1.0)) + delta))
 
     def _vinyl_scale_setting(self) -> float:
+        delta = self._art_edit_delta_scale()
         return max(0.7, min(
-            1.35, float(SETTINGS.get("art_vinyl_size", 1.0))))
+            1.35, float(SETTINGS.get("art_vinyl_size", 1.0)) + delta))
 
     def _cover_visual_size(self) -> int:
         return max(1, round(self._art_size * self._cover_scale_setting()))
@@ -1472,53 +1624,302 @@ class Card(QWidget):
     def _seek_bar_top_padding(self) -> int:
         return 0
 
-    def _progress_time_font(self) -> QFont:
-        f = ui_font(S(10))
+    def _source_scale(self) -> float:
+        return max(0.65, min(1.8, 1.0 + self._edit_scale_delta(
+            "source", 70.0)))
+
+    def _source_font(self) -> QFont:
+        f = ui_font(max(1, S(9 * self._source_scale())), QFont.DemiBold)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, Sf(1.6))
+        return f
+
+    def _apply_source_font(self):
+        if not hasattr(self, "source"):
+            return
+        f = self._source_font()
+        cur = self.source.font()
+        if cur.pixelSize() != f.pixelSize():
+            self.source.setFont(f)
+
+    def _progress_time_scale(self, key: str) -> float:
+        return max(0.65, min(1.8, 1.0 + self._edit_scale_delta(key, 58.0)))
+
+    def _progress_time_font(self, key: str = "time_now") -> QFont:
+        f = ui_font(max(1, S(10 * self._progress_time_scale(key))))
         spacing = Sf(float(SETTINGS.get("progress_time_spacing", 0.0)))
         f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
         return f
 
-    def _progress_time_width(self) -> int:
+    def _progress_time_width(self, key: str = "time_now") -> int:
+        scale = self._progress_time_scale(key)
         spacing = max(0.0, float(SETTINGS.get("progress_time_spacing", 0.0)))
-        return S(42 + spacing * 5.0)
+        return max(S(24), S((42 + spacing * 5.0) * scale))
+
+    def _layout_positions(self) -> dict:
+        positions = SETTINGS.get("edit_layout_positions", {})
+        if not isinstance(positions, dict):
+            positions = {}
+            SETTINGS["edit_layout_positions"] = positions
+        return positions
+
+    def _layout_sizes(self) -> dict:
+        sizes = SETTINGS.get("edit_layout_sizes", {})
+        if not isinstance(sizes, dict):
+            sizes = {}
+            SETTINGS["edit_layout_sizes"] = sizes
+        return sizes
+
+    def _layout_angles(self) -> dict:
+        angles = SETTINGS.get("edit_layout_angles", {})
+        if not isinstance(angles, dict):
+            angles = {}
+            SETTINGS["edit_layout_angles"] = angles
+        return angles
+
+    def _normalize_edit_angle(self, angle: float) -> float:
+        return ((float(angle) + 180.0) % 360.0) - 180.0
+
+    def _window_size_logic(self) -> tuple[float, float]:
+        raw = SETTINGS.get("edit_window_size", {})
+        if not isinstance(raw, dict):
+            return 0.0, 0.0
+        try:
+            return float(raw.get("w", 0.0)), float(raw.get("h", 0.0))
+        except (TypeError, ValueError):
+            return 0.0, 0.0
+
+    def _set_window_size_logic(self, w: float, h: float):
+        w = min(500.0, max(-300.0, float(w)))
+        h = min(400.0, max(-120.0, float(h)))
+        if abs(w) < 0.01 and abs(h) < 0.01:
+            SETTINGS["edit_window_size"] = {}
+        else:
+            SETTINGS["edit_window_size"] = {"w": w, "h": h}
+
+    def _window_size_px(self) -> tuple[int, int]:
+        w, h = self._window_size_logic()
+        return (
+            max(S(220), round(S(self._base_w) + Sf(w))),
+            max(S(84), round(S(self._base_h) + Sf(h))),
+        )
+
+    def _edit_offset_logic(self, key: str) -> tuple[float, float]:
+        raw = self._layout_positions().get(key, {})
+        if not isinstance(raw, dict):
+            return 0.0, 0.0
+        try:
+            return float(raw.get("x", 0.0)), float(raw.get("y", 0.0))
+        except (TypeError, ValueError):
+            return 0.0, 0.0
+
+    def _edit_offset_px(self, key: str) -> QPointF:
+        x, y = self._edit_offset_logic(key)
+        return QPointF(Sf(x), Sf(y))
+
+    def _set_edit_offset_logic(self, key: str, x: float, y: float):
+        x = min(300.0, max(-300.0, float(x)))
+        y = min(300.0, max(-300.0, float(y)))
+        positions = self._layout_positions()
+        if abs(x) < 0.01 and abs(y) < 0.01:
+            positions.pop(key, None)
+        else:
+            positions[key] = {"x": x, "y": y}
+
+    def _edit_size_logic(self, key: str) -> tuple[float, float]:
+        raw = self._layout_sizes().get(key, {})
+        if not isinstance(raw, dict):
+            return 0.0, 0.0
+        try:
+            return float(raw.get("w", 0.0)), float(raw.get("h", 0.0))
+        except (TypeError, ValueError):
+            return 0.0, 0.0
+
+    def _edit_size_px(self, key: str) -> QPointF:
+        if key not in self._resizable_edit_keys():
+            return QPointF(0.0, 0.0)
+        w, h = self._edit_size_logic(key)
+        return QPointF(Sf(w), Sf(h))
+
+    def _set_edit_size_logic(self, key: str, w: float, h: float):
+        w = min(300.0, max(-300.0, float(w)))
+        h = min(300.0, max(-300.0, float(h)))
+        sizes = self._layout_sizes()
+        if abs(w) < 0.01 and abs(h) < 0.01:
+            sizes.pop(key, None)
+        else:
+            sizes[key] = {"w": w, "h": h}
+
+    def _edit_angle_logic(self, key: str) -> float:
+        try:
+            return self._normalize_edit_angle(
+                float(self._layout_angles().get(key, 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _set_edit_angle_logic(self, key: str, angle: float):
+        angle = self._normalize_edit_angle(angle)
+        angles = self._layout_angles()
+        if abs(angle) < 0.01:
+            angles.pop(key, None)
+        else:
+            angles[key] = angle
+
+    def _effective_edit_angle(self, key: str) -> float:
+        angle = self._edit_angle_logic(key)
+        if key.startswith("ctrl_"):
+            angle += self._edit_angle_logic("controls")
+        return self._normalize_edit_angle(angle)
+
+    def edit_target_angle(self, key: str) -> float:
+        return self._effective_edit_angle(key)
+
+    def _set_widget_edit_angle(self, widget: QWidget | None, angle: float):
+        if widget is None:
+            return
+        setter = getattr(widget, "set_edit_angle", None)
+        if callable(setter):
+            setter(angle)
+
+    def _apply_edit_angle(self, key: str):
+        if key == "controls":
+            for ctrl_key in ("ctrl_shuffle", "ctrl_prev", "ctrl_play",
+                             "ctrl_next", "ctrl_repeat"):
+                self._apply_edit_angle(ctrl_key)
+            return
+        angle = self._effective_edit_angle(key)
+        for widget in self._edit_target_widgets(key):
+            self._set_widget_edit_angle(widget, angle)
+
+    def _apply_edit_angles(self):
+        for key in self.edit_target_keys():
+            self._apply_edit_angle(key)
+
+    def _art_edit_delta_scale(self) -> float:
+        if "art" not in self._resizable_edit_keys():
+            return 0.0
+        w, h = self._edit_size_logic("art")
+        return max(w, h) / max(1.0, float(self._PRESET_METRICS.get(
+            self._preset, self._PRESET_METRICS["standard"])[2]))
+
+    def _edit_scale_delta(self, key: str, base: float) -> float:
+        w, h = self._edit_size_logic(key)
+        if abs(w) >= abs(h):
+            delta = w
+        else:
+            delta = h
+        return delta / max(1.0, float(base))
+
+    def _resizable_edit_keys(self) -> tuple[str, ...]:
+        keys = [
+            "source_logo", "source", "title", "artist", "controls",
+            "ctrl_shuffle", "ctrl_prev", "ctrl_play", "ctrl_next",
+            "ctrl_repeat",
+            "top_edit", "top_reset", "top_volume", "top_settings",
+            "top_pin", "top_close",
+            "seek", "time_now", "time_total",
+        ]
+        if (self._cover_enabled and hasattr(self, "art")
+                and not self.art.isHidden()):
+            keys.insert(0, "art")
+        return tuple(keys) + tuple(self._edit_instance_widgets)
+
+    def _min_edit_size(self, key: str) -> tuple[float, float]:
+        if key == "seek":
+            return S(28), S(8)
+        if key in ("title", "artist", "source", "time_now", "time_total"):
+            return S(18), S(8)
+        if key == "source_logo":
+            return S(8), S(8)
+        if key == "controls":
+            return S(28), S(18)
+        if key.startswith("ctrl_"):
+            return S(12), S(12)
+        if key.startswith("top_"):
+            return S(10), S(10)
+        if self._is_edit_instance_key(key):
+            return S(12), S(12)
+        if key.startswith("empty"):
+            return S(16), S(10)
+        return S(14), S(14)
+
+    def _offset_rect(self, key: str, rect: QRectF) -> QRectF:
+        r = QRectF(rect)
+        off = self._edit_offset_px(key)
+        size = self._edit_size_px(key)
+        r.translate(off.x(), off.y())
+        min_w, min_h = self._min_edit_size(key)
+        r.setWidth(max(min_w, r.width() + size.x()))
+        r.setHeight(max(min_h, r.height() + size.y()))
+        return r
+
+    def _offset_point(self, key: str, point: QPointF) -> QPointF:
+        off = self._edit_offset_px(key)
+        return QPointF(point.x() + off.x(), point.y() + off.y())
+
+    def _unoffset_rect(self, key: str, rect: QRectF) -> QRectF:
+        r = QRectF(rect)
+        off = self._edit_offset_px(key)
+        size = self._edit_size_px(key)
+        r.translate(-off.x(), -off.y())
+        r.setWidth(max(1.0, r.width() - size.x()))
+        r.setHeight(max(1.0, r.height() - size.y()))
+        return r
+
+    def _unoffset_point(self, key: str, point: QPointF) -> QPointF:
+        off = self._edit_offset_px(key)
+        return QPointF(point.x() - off.x(), point.y() - off.y())
+
+    def _offset_geometry(self, key: str, geo: tuple[int, int, int, int]):
+        off = self._edit_offset_px(key)
+        size = self._edit_size_px(key)
+        min_w, min_h = self._min_edit_size(key)
+        return (round(geo[0] + off.x()), round(geo[1] + off.y()),
+                round(max(min_w, geo[2] + size.x())),
+                round(max(min_h, geo[3] + size.y())))
+
+    def _progress_time_geometries(self, seek_y: int):
+        now_w = self._progress_time_width("time_now")
+        total_w = self._progress_time_width("time_total")
+        now_h = max(S(14), S(14 * self._progress_time_scale("time_now")))
+        total_h = max(S(14), S(14 * self._progress_time_scale("time_total")))
+        return (
+            (S(12), seek_y + S(2), now_w, now_h),
+            (self._W - S(12) - total_w, seek_y + S(2), total_w, total_h),
+        )
 
     def apply_progress_time_spacing(self):
         if hasattr(self, "t_now") and hasattr(self, "t_total"):
-            f = self._progress_time_font()
-            w = self._progress_time_width()
-            self.t_now.setFont(QFont(f))
-            self.t_total.setFont(QFont(f))
-            self.t_now.setGeometry(S(12), self.t_now.y(), w,
-                                   self.t_now.height())
-            self.t_total.setGeometry(self._W - S(12) - w, self.t_total.y(),
-                                     w, self.t_total.height())
+            seek_y = S(self._base_h - (25 if self._compact else 30))
+            now_geo, total_geo = self._progress_time_geometries(seek_y)
+            self.t_now.setFont(self._progress_time_font("time_now"))
+            self.t_total.setFont(self._progress_time_font("time_total"))
+            self.t_now.setGeometry(*self._offset_geometry("time_now", now_geo))
+            self.t_total.setGeometry(
+                *self._offset_geometry("time_total", total_geo))
             self.t_now.update()
             self.t_total.update()
+            self._update_edit_overlay()
 
     def _text_layout_rects(self, info_x: int, title_y: int,
                            artist_y: int, info_w: int):
         title_scale = max(0.6, min(
-            1.8, float(SETTINGS.get("title_size", 1.0))))
+            1.8, float(SETTINGS.get("title_size", 1.0))
+            + self._edit_scale_delta("title", 90.0)))
         artist_scale = max(0.6, min(
-            1.8, float(SETTINGS.get("artist_size", 1.0))))
+            1.8, float(SETTINGS.get("artist_size", 1.0))
+            + self._edit_scale_delta("artist", 80.0)))
         self._title_px_base = max(1, S(15 * title_scale))
         self._artist_px_base = max(1, S(11 * artist_scale))
         self._title_scale_focus = 1.22
         self._artist_scale_focus = 1.17
 
-        title_dx = S(float(SETTINGS.get("title_x_offset", 0.0)))
-        title_dy = S(float(SETTINGS.get("title_y_offset", 0.0)))
-        artist_dx = S(float(SETTINGS.get("artist_x_offset", 0.0)))
-        artist_dy = S(float(SETTINGS.get("artist_y_offset", 0.0)))
         title_h = max(S(14), round(self._title_px_base * 1.42))
         artist_h = max(S(12), round(self._artist_px_base * 1.46))
-        title_w = max(S(60), info_w - max(0, title_dx))
-        artist_w = max(S(60), info_w - max(0, artist_dx))
+        title_w = max(S(60), info_w)
+        artist_w = max(S(60), info_w)
 
-        title_base = QRectF(info_x + title_dx, title_y + title_dy,
-                            title_w, title_h)
-        artist_base = QRectF(info_x + artist_dx, artist_y + artist_dy,
-                             artist_w, artist_h)
+        title_base = QRectF(info_x, title_y, title_w, title_h)
+        artist_base = QRectF(info_x, artist_y, artist_w, artist_h)
         focus_title_h = max(title_h, round(title_h * 1.28))
         focus_artist_h = max(artist_h, round(artist_h * 1.25))
         pair_h = focus_title_h + S(4) + focus_artist_h
@@ -1528,8 +1929,8 @@ class Card(QWidget):
         artist_focus = QRectF(artist_base)
         title_focus.setHeight(focus_title_h)
         artist_focus.setHeight(focus_artist_h)
-        title_focus.moveTop(focus_top + title_dy)
-        artist_focus.moveTop(focus_top + focus_title_h + S(4) + artist_dy)
+        title_focus.moveTop(focus_top)
+        artist_focus.moveTop(focus_top + focus_title_h + S(4))
         title_canvas = QRectF(title_base).united(title_focus).adjusted(
             0, -S(4), 0, S(4))
         artist_canvas = QRectF(artist_base).united(artist_focus).adjusted(
@@ -1539,7 +1940,11 @@ class Card(QWidget):
 
     def _control_button_scale(self) -> float:
         return max(0.7, min(
-            1.6, float(SETTINGS.get("control_button_size", 1.0))))
+            1.6, float(SETTINGS.get("control_button_size", 1.0))
+            + self._edit_scale_delta("controls", 100.0)))
+
+    def _button_edit_scale(self, key: str, base: float = 42.0) -> float:
+        return max(0.55, min(2.0, 1.0 + self._edit_scale_delta(key, base)))
 
     def _control_button_gap(self) -> int:
         spacing = max(0.4, min(
@@ -1550,42 +1955,67 @@ class Card(QWidget):
         scale = self._control_button_scale()
         return max(1, S(glyph_px * scale)), max(1, S(diameter * scale))
 
-    def _source_offsets(self) -> tuple[int, int]:
-        return (S(float(SETTINGS.get("source_x_offset", 0.0))),
-                S(float(SETTINGS.get("source_y_offset", 0.0))))
-
     def apply_seek_length(self):
         if hasattr(self, "seek"):
             seek_y = S(self._base_h - (25 if self._compact else 30))
             self.seek.set_top_padding(self._seek_bar_top_padding())
-            self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
+            self.seek.setGeometry(
+                *self._offset_geometry("seek", self._seek_bar_geometry(seek_y)))
             if hasattr(self, "seek_hover"):
                 self.seek_hover.setGeometry(0, 0, self._W, self._H)
                 self.seek_hover.raise_()
             self.seek.update()
+            self._update_edit_overlay()
 
-    def set_progress_times(self, pos: float, dur: float,
-                           animate_now: bool = False,
-                           animate_mode: bool = False):
-        pos = max(0.0, float(pos))
-        dur = max(0.0, float(dur))
+    def _set_progress_time_label(self, label: TimeLabel, source: str,
+                                 pos: float, dur: float,
+                                 animate_now: bool = False,
+                                 animate_mode: bool = False):
         number_anim = bool(SETTINGS.get("progress_time_anim_enabled", True))
         text_style = str(SETTINGS.get("progress_time_anim_style", "fade"))
         if text_style not in TimeLabel.TEXT_STYLES:
             text_style = "fade"
         now_transition = animate_mode or number_anim
         now_style = text_style if number_anim else "slide"
-        if SETTINGS.get("progress_time_mode") == "remaining" and dur > 0:
-            self.t_now.set_seconds(max(0.0, dur - pos),
-                                   animate=animate_now, prefix="-",
-                                   text_transition=now_transition,
-                                   transition_style=now_style)
-        else:
-            self.t_now.set_seconds(pos, animate=animate_now,
-                                   text_transition=now_transition,
-                                   transition_style=now_style)
-        self.t_total.set_seconds(dur, text_transition=number_anim,
-                                 transition_style=text_style)
+        if source == "time_now":
+            if SETTINGS.get("progress_time_mode") == "remaining" and dur > 0:
+                label.set_seconds(max(0.0, dur - pos),
+                                  animate=animate_now, prefix="-",
+                                  text_transition=now_transition,
+                                  transition_style=now_style)
+            else:
+                label.set_seconds(pos, animate=animate_now,
+                                  text_transition=now_transition,
+                                  transition_style=now_style)
+        elif source == "time_total":
+            label.set_seconds(dur, text_transition=number_anim,
+                              transition_style=text_style)
+
+    def _sync_progress_time_instances(self, animate_now: bool = False,
+                                      animate_mode: bool = False):
+        for key, widget in tuple(self._edit_instance_widgets.items()):
+            if not isinstance(widget, TimeLabel):
+                continue
+            source = self._edit_instance_source(key)
+            self._set_progress_time_label(
+                widget, source, self._progress_pos, self._progress_dur,
+                animate_now=animate_now, animate_mode=animate_mode)
+
+    def set_progress_times(self, pos: float, dur: float,
+                           animate_now: bool = False,
+                           animate_mode: bool = False):
+        pos = max(0.0, float(pos))
+        dur = max(0.0, float(dur))
+        self._progress_pos = pos
+        self._progress_dur = dur
+        self._set_progress_time_label(
+            self.t_now, "time_now", pos, dur,
+            animate_now=animate_now, animate_mode=animate_mode)
+        self._set_progress_time_label(
+            self.t_total, "time_total", pos, dur,
+            animate_now=False, animate_mode=animate_mode)
+        self._sync_progress_time_instances(
+            animate_now=animate_now, animate_mode=animate_mode)
 
     def _build(self):
         W = self._W
@@ -1628,18 +2058,15 @@ class Card(QWidget):
         # 來源標示
         logo_d = S(15)
         logo_gap = S(4)
-        source_dx, source_dy = self._source_offsets()
-        self.source = QLabel("SPOTIFY", self)
-        f = ui_font(S(9), QFont.DemiBold)
-        f.setLetterSpacing(QFont.AbsoluteSpacing, Sf(1.6))
-        self.source.setFont(f)
+        self.source = _RotatingLabel("SPOTIFY", self)
+        self.source.setFont(self._source_font())
         self.source.setStyleSheet("color: rgba(255,255,255,110);")
-        self.source.setGeometry(info_x + logo_d + logo_gap + source_dx,
-                                source_y + source_dy,
+        self.source.setGeometry(info_x + logo_d + logo_gap,
+                                source_y,
                                 S(120), S(14))
         self.source_logo = _SourceLogo(self._src_spotify, self)
-        self.source_logo.setGeometry(info_x + source_dx,
-                                     source_y + source_dy,
+        self.source_logo.setGeometry(info_x,
+                                     source_y,
                                      logo_d, logo_d)
         self._source_eff = QGraphicsOpacityEffect(self.source)
         self._source_eff.setOpacity(self._source_op)
@@ -1648,8 +2075,27 @@ class Card(QWidget):
         self._source_logo_eff.setOpacity(self._source_op)
         self.source_logo.setGraphicsEffect(self._source_logo_eff)
 
-        # 右上角：音量、設定、釘選、隱藏
-        self.btn_vol = IconButton(GLYPH_VOLUME, S(11), S(22), fx="volume",
+        # 右上角：編輯、重設、音量、設定、釘選、隱藏
+        self.btn_edit = IconButton(GLYPH_EDIT, S(10), S(22),
+                                   checkable=True, fx="wiggle", parent=self)
+        self.btn_edit.move(W - S(128), S(10))
+        self.btn_edit.set_extra_opacity(self._edit_button_op)
+        self.btn_edit.setVisible(self._edit_button_op > 0.001)
+        self.btn_edit.setAttribute(
+            Qt.WA_TransparentForMouseEvents,
+            self._edit_button_op <= 0.02)
+        self.btn_reset_layout = IconButton(GLYPH_RESET, S(10), S(22),
+                                           fx="spin", parent=self)
+        self.btn_reset_layout.move(W - S(152), S(10))
+        self.btn_reset_layout.set_extra_opacity(self._reset_button_op)
+        self.btn_reset_layout.setAttribute(
+            Qt.WA_TransparentForMouseEvents,
+            self._reset_button_op <= 0.02)
+        self.btn_reset_layout.hide()
+        self.btn_vol = IconButton(GLYPH_VOLUME, S(11), S(22),
+                                  press_scale=0.78, release_ms=260,
+                                  release_overshoot=1.7,
+                                  hover_ms_factor=2.0,
                                   parent=self)
         self.btn_vol.move(W - S(104), S(10))
         self.btn_settings = IconButton(GLYPH_SETTINGS, S(11), S(22),
@@ -1661,8 +2107,21 @@ class Card(QWidget):
         self.btn_close = IconButton(GLYPH_CLOSE, S(10), S(22), fx="spin",
                                     parent=self)
         self.btn_close.move(W - S(32), S(10))
-        self._topbar_buttons = (self.btn_vol, self.btn_settings,
+        self._topbar_buttons = (self.btn_edit, self.btn_reset_layout,
+                                self.btn_vol, self.btn_settings,
                                 self.btn_pin, self.btn_close)
+        self._topbar_edit_specs = {
+            "top_edit": (self.btn_edit, 10, 22),
+            "top_reset": (self.btn_reset_layout, 10, 22),
+            "top_volume": (self.btn_vol, 11, 22),
+            "top_settings": (self.btn_settings, 11, 22),
+            "top_pin": (self.btn_pin, 11, 22),
+            "top_close": (self.btn_close, 10, 22),
+        }
+        self._topbar_edit_base_geometries = {
+            key: QRectF(btn.geometry())
+            for key, (btn, _, _) in self._topbar_edit_specs.items()
+        }
         self._topbar_effects = []
         for b in self._topbar_buttons:
             eff = QGraphicsOpacityEffect(b)
@@ -1725,6 +2184,16 @@ class Card(QWidget):
         ctrls = [self.btn_shuffle, self.btn_prev, self.btn_play,
                  self.btn_next, self.btn_repeat]
         self._ctrls = ctrls
+        self._control_edit_specs = {
+            "ctrl_shuffle": (self.btn_shuffle, 12, 24, False),
+            "ctrl_prev": (self.btn_prev, 14, 28, False),
+            "ctrl_play": (self.btn_play, 0, 36, True),
+            "ctrl_next": (self.btn_next, 14, 28, False),
+            "ctrl_repeat": (self.btn_repeat, 12, 24, False),
+        }
+        self._control_edit_keys_by_button = {
+            btn: key for key, (btn, _, _, _) in self._control_edit_specs.items()
+        }
         self._button_keys = {
             self.btn_shuffle: "show_btn_shuffle",
             self.btn_prev: "show_btn_prev",
@@ -1753,19 +2222,20 @@ class Card(QWidget):
 
         # 進度列（整張卡片底部）
         self.t_now = TimeLabel("0:00", self)
-        self.t_now.setFont(self._progress_time_font())
+        self.t_now.setFont(self._progress_time_font("time_now"))
         self.t_now.setStyleSheet("color: rgba(255,255,255,120);")
-        progress_time_w = self._progress_time_width()
-        self.t_now.setGeometry(S(12), seek_y + S(2), progress_time_w, S(14))
+        now_geo, total_geo = self._progress_time_geometries(seek_y)
+        self.t_now.setGeometry(*self._offset_geometry("time_now", now_geo))
         self.t_total = TimeLabel("0:00", self)
-        self.t_total.setFont(self._progress_time_font())
+        self.t_total.setFont(self._progress_time_font("time_total"))
         self.t_total.setStyleSheet("color: rgba(255,255,255,120);")
         self.t_total.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.t_total.setGeometry(W - S(12) - progress_time_w,
-                                 seek_y + S(2), progress_time_w, S(14))
+        self.t_total.setGeometry(
+            *self._offset_geometry("time_total", total_geo))
         self.seek = SeekBar(self)
         self.seek.set_top_padding(self._seek_bar_top_padding())
-        self.seek.setGeometry(*self._seek_bar_geometry(seek_y))
+        self.seek.setGeometry(
+            *self._offset_geometry("seek", self._seek_bar_geometry(seek_y)))
         self.seek_hover = _SeekHoverTimeOverlay(self.seek, self)
         self.seek_hover.setGeometry(0, 0, self._W, self._H)
         self.seek.set_hover_overlay(self.seek_hover)
@@ -1795,28 +2265,43 @@ class Card(QWidget):
         self.apply_fps_overlay()
 
         # ---- 空狀態（沒偵測到媒體來源） ----
-        self.empty_icon = QLabel(GLYPH_NOTE, self)
+        self.empty_icon = _RotatingLabel(GLYPH_NOTE, self)
         self.empty_icon.setFont(icon_font(S(30)))
         self.empty_icon.setStyleSheet("color: rgba(255,255,255,70);")
         self.empty_icon.setAlignment(Qt.AlignCenter)
-        self.empty_icon.setGeometry(0, S(14 if self._compact else 22),
-                                    W, S(36))
-        self.empty_text = QLabel(empty_text("spotify"), self)
+        self.empty_icon.setGeometry(*self._offset_geometry(
+            "empty_icon", (0, S(14 if self._compact else 22), W, S(36))))
+        self.empty_text = _RotatingLabel(empty_text("spotify"), self)
         self.empty_text.setFont(ui_font(S(12)))
         self.empty_text.setStyleSheet("color: rgba(255,255,255,140);")
         self.empty_text.setAlignment(Qt.AlignCenter)
-        self.empty_text.setGeometry(0, S(50 if self._compact else 62),
-                                    W, S(18))
+        self.empty_text.setGeometry(*self._offset_geometry(
+            "empty_text", (0, S(50 if self._compact else 62), W, S(18))))
         self.empty_btn = LaunchButton(tr("launch_spotify"), S(12), S(30), self)
-        self.empty_btn.move((W - self.empty_btn.width()) // 2,
-                            S(74 if self._compact else 92) - self.empty_btn.pad)
+        self._empty_btn_base_size = (
+            self.empty_btn.width(), self.empty_btn.height())
+        empty_base = ((W - self.empty_btn.width()) // 2,
+                      S(74 if self._compact else 92) - self.empty_btn.pad,
+                      self._empty_btn_base_size[0],
+                      self._empty_btn_base_size[1])
+        x, y, bw, bh = self._offset_geometry("empty_button", empty_base)
+        self.empty_btn.setFixedSize(bw, bh)
+        self.empty_btn.move(x, y)
 
         self._content = [self.art, self.source_logo, self.source,
                          self.title, self.artist, self.controls,
                          self.t_now, self.t_total, self.seek,
                          self.seek_hover]
         self._empty = [self.empty_icon, self.empty_text, self.empty_btn]
+        self._edit_overlay = _EditLayoutOverlay(self)
+        self._edit_overlay.setGeometry(0, 0, self._W, self._H)
+        self._edit_overlay.hide()
+        self._edit_ghost = _EditGhostLayer(self)
+        self._edit_library = _EditLibrary(self)
+        self._install_edit_target_filters()
+        self._build_edit_instances()
         self._apply_cover_layout(self._cover_layout_data(self._cover_enabled))
+        self._apply_edit_angles()
         self.art.setVisible(False)
 
     def _layout_control_rail(self):
@@ -1826,20 +2311,59 @@ class Card(QWidget):
         if not visible:
             visible = [self.btn_play]
             self.btn_play.show()
-        total = (sum(b.width() for b in visible)
-                 + gap * (len(visible) - 1))
-        h = max(b.height() for b in visible)
-        self.controls.setFixedSize(total, h)
+        nominal_w = (sum(b.width() for b in visible)
+                     + gap * (len(visible) - 1))
+        nominal_h = max(b.height() for b in visible)
+        items = []
         x = 0
-        cy = h / 2
+        cy = nominal_h / 2
         for b in visible:
-            b.move(round(x), round(cy - b.height() / 2))
+            key = self._control_edit_keys_by_button.get(b)
+            off = self._edit_offset_px(key) if key else QPointF()
+            bx = float(x) + off.x()
+            by = cy - b.height() / 2 + off.y()
+            items.append((b, bx, by))
             x += b.width() + gap
+        group_angle = self._edit_angle_logic("controls")
+        if abs(group_angle) >= 0.01 and items:
+            min_x0 = min(bx for _, bx, _ in items)
+            min_y0 = min(by for _, _, by in items)
+            max_x0 = max(bx + b.width() for b, bx, _ in items)
+            max_y0 = max(by + b.height() for b, _, by in items)
+            cx0 = (min_x0 + max_x0) / 2.0
+            cy0 = (min_y0 + max_y0) / 2.0
+            rad = math.radians(group_angle)
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            rotated = []
+            for b, bx, by in items:
+                bc_x = bx + b.width() / 2.0
+                bc_y = by + b.height() / 2.0
+                dx = bc_x - cx0
+                dy = bc_y - cy0
+                rc_x = cx0 + dx * cos_a - dy * sin_a
+                rc_y = cy0 + dx * sin_a + dy * cos_a
+                rotated.append((b, rc_x - b.width() / 2.0,
+                                rc_y - b.height() / 2.0))
+            items = rotated
+        min_x = min((bx for _, bx, _ in items), default=0.0)
+        min_y = min((by for _, _, by in items), default=0.0)
+        max_x = max((bx + b.width() for b, bx, _ in items),
+                    default=float(nominal_w))
+        max_y = max((by + b.height() for b, _, by in items),
+                    default=float(nominal_h))
+        self._ctrl_layout_min = QPointF(min_x, min_y)
+        self._ctrl_nominal_size = (nominal_w, nominal_h)
+        self.controls.setFixedSize(max(1, round(max_x - min_x)),
+                                   max(1, round(max_y - min_y)))
+        for b, bx, by in items:
+            b.move(round(bx - min_x), round(by - min_y))
 
     def _control_position(self) -> QPointF:
         """控制列容器位置（依 controls_align 設定靠左/置中/靠右）。"""
         info_x, info_w = self._ctrl_span
-        total = self.controls.width()
+        total = self._ctrl_nominal_size[0] or self.controls.width()
+        nominal_h = self._ctrl_nominal_size[1] or self.controls.height()
         align = SETTINGS["controls_align"]
         if align == "left":
             x = info_x
@@ -1847,7 +2371,11 @@ class Card(QWidget):
             x = info_x + info_w - total
         else:
             x = info_x + (info_w - total) // 2
-        return QPointF(float(x), self._controls_y - self.controls.height() / 2)
+        layout_min = getattr(self, "_ctrl_layout_min", QPointF(0.0, 0.0))
+        return self._offset_point(
+            "controls",
+            QPointF(float(x) + layout_min.x(),
+                    self._controls_y - nominal_h / 2 + layout_min.y()))
 
     def _cover_layout_data(self, cover_enabled: bool) -> dict:
         art_x = S(12 if self._compact else 16)
@@ -1866,7 +2394,6 @@ class Card(QWidget):
         source_y = S(10 if self._compact else 14)
         logo_d = S(15)
         logo_gap = S(4)
-        source_dx, source_dy = self._source_offsets()
         title_y = S(26 if self._compact else 34)
         artist_y = S(46 if self._compact else 56)
         (title_base, artist_base, title_focus, artist_focus,
@@ -1875,10 +2402,9 @@ class Card(QWidget):
         return {
             "art_pos": art_on if cover_enabled else art_off,
             "art_op": 1.0 if cover_enabled else 0.0,
-            "source_rect": QRectF(info_x + logo_d + logo_gap + source_dx,
-                                  source_y + source_dy, S(120), S(14)),
-            "logo_rect": QRectF(info_x + source_dx, source_y + source_dy,
-                                logo_d, logo_d),
+            "source_rect": QRectF(info_x + logo_d + logo_gap, source_y,
+                                  S(120), S(14)),
+            "logo_rect": QRectF(info_x, source_y, logo_d, logo_d),
             "title_base": title_base,
             "artist_base": artist_base,
             "title_focus": title_focus,
@@ -1890,10 +2416,12 @@ class Card(QWidget):
 
     def _current_layout_data(self) -> dict:
         return {
-            "art_pos": QPointF(self.art.pos()),
+            "art_pos": self._unoffset_point("art", QPointF(self.art.pos())),
             "art_op": float(self._art_eff.opacity()),
-            "source_rect": QRectF(self.source.geometry()),
-            "logo_rect": QRectF(self.source_logo.geometry()),
+            "source_rect": self._unoffset_rect(
+                "source", QRectF(self.source.geometry())),
+            "logo_rect": self._unoffset_rect(
+                "source_logo", QRectF(self.source_logo.geometry())),
             "title_base": QRectF(self._title_base),
             "artist_base": QRectF(self._artist_base),
             "title_focus": QRectF(self._title_focus),
@@ -1937,16 +2465,20 @@ class Card(QWidget):
             ),
         }
 
-    def _apply_cover_layout(self, data: dict):
-        ap = data["art_pos"]
-        self.art.move(round(ap.x()), round(ap.y()))
-        self._art_eff.setOpacity(max(0.0, min(1.0, float(data["art_op"]))))
-        sr = data["source_rect"]
+    def _apply_source_layout(self, source_rect: QRectF, logo_rect: QRectF):
+        sr = self._offset_rect("source", source_rect)
         self.source.setGeometry(round(sr.x()), round(sr.y()),
                                 round(sr.width()), round(sr.height()))
-        lr = data["logo_rect"]
+        lr = self._offset_rect("source_logo", logo_rect)
         self.source_logo.setGeometry(round(lr.x()), round(lr.y()),
                                      round(lr.width()), round(lr.height()))
+        self._apply_source_font()
+
+    def _apply_cover_layout(self, data: dict):
+        ap = self._offset_point("art", data["art_pos"])
+        self.art.move(round(ap.x()), round(ap.y()))
+        self._art_eff.setOpacity(max(0.0, min(1.0, float(data["art_op"]))))
+        self._apply_source_layout(data["source_rect"], data["logo_rect"])
         self._title_base = QRectF(data["title_base"])
         self._artist_base = QRectF(data["artist_base"])
         self._title_focus = QRectF(data["title_focus"])
@@ -1955,14 +2487,16 @@ class Card(QWidget):
         self._artist_canvas = QRectF(data["artist_canvas"])
         self.title.set_font_px(self._title_px_base)
         self.artist.set_font_px(self._artist_px_base)
-        self.title.setGeometry(round(self._title_canvas.x()),
-                               round(self._title_canvas.y()),
-                               round(self._title_canvas.width()),
-                               round(self._title_canvas.height()))
-        self.artist.setGeometry(round(self._artist_canvas.x()),
-                                round(self._artist_canvas.y()),
-                                round(self._artist_canvas.width()),
-                                round(self._artist_canvas.height()))
+        title_canvas = self._offset_rect("title", self._title_canvas)
+        artist_canvas = self._offset_rect("artist", self._artist_canvas)
+        self.title.setGeometry(round(title_canvas.x()),
+                               round(title_canvas.y()),
+                               round(title_canvas.width()),
+                               round(title_canvas.height()))
+        self.artist.setGeometry(round(artist_canvas.x()),
+                                round(artist_canvas.y()),
+                                round(artist_canvas.width()),
+                                round(artist_canvas.height()))
         self._ctrl_span = data["ctrl_span"]
         self._on_info_focus(self._info_focus)
         self._layout_control_rail()
@@ -1972,6 +2506,1733 @@ class Card(QWidget):
         if self._ctrl_overlay is not None:
             self._ctrl_overlay.hide()
         self.controls.move(round(target.x()), round(target.y()))
+        self._update_edit_overlay()
+
+    def layout_edit_mode(self) -> bool:
+        return bool(self._edit_mode)
+
+    def _base_edit_target_keys(self):
+        return ("art", "source_logo", "source", "title", "artist", "controls",
+                "ctrl_shuffle", "ctrl_prev", "ctrl_play", "ctrl_next",
+                "ctrl_repeat",
+                "top_edit", "top_reset", "top_volume", "top_settings",
+                "top_pin", "top_close",
+                "seek", "time_now", "time_total",
+                "empty_icon", "empty_text", "empty_button")
+
+    def edit_target_keys(self):
+        return self._base_edit_target_keys() + tuple(self._edit_instance_widgets)
+
+    def _is_edit_instance_key(self, key: str) -> bool:
+        return isinstance(key, str) and key.startswith("inst:")
+
+    @staticmethod
+    def _edit_instance_key(iid: str) -> str:
+        return f"inst:{iid}"
+
+    def _edit_instances(self) -> list[dict]:
+        raw = SETTINGS.get("edit_library_instances", [])
+        if not isinstance(raw, list):
+            raw = []
+            SETTINGS["edit_library_instances"] = raw
+        return raw
+
+    def _edit_instance_data(self, key: str) -> dict | None:
+        if not self._is_edit_instance_key(key):
+            return None
+        iid = key.split(":", 1)[1]
+        for item in self._edit_instances():
+            if isinstance(item, dict) and item.get("id") == iid:
+                return item
+        return None
+
+    def _edit_instance_source(self, key: str) -> str:
+        data = self._edit_instance_data(key)
+        if not isinstance(data, dict):
+            return ""
+        return str(data.get("source", ""))
+
+    def edit_library_rows(self) -> list[tuple[str, str, str]]:
+        rows: list[tuple[str, str, str]] = [
+            ("art:cover", "Elements", "Cover"),
+            ("art:vinyl", "Elements", "Vinyl"),
+            ("art:audio", "Elements", "Audio feedback"),
+            ("art:pulse", "Elements", "Pulse cover"),
+        ]
+        for key in self._base_edit_target_keys():
+            if key in ("art", "seek"):
+                continue
+            rows.append((f"new:{key}", "Elements", self.edit_label(key)))
+        for key in self.hidden_edit_keys():
+            rows.append((f"hidden:{key}", "Hidden", self.edit_label(key)))
+        return rows
+
+    def edit_library_default_drop_pos(self) -> QPointF:
+        x = min(self.width() - S(44), S(176))
+        y = min(self.height() - S(44), S(72))
+        return QPointF(max(S(32), x), max(S(32), y))
+
+    def _new_edit_instance_id(self) -> str:
+        used = {
+            str(item.get("id", "")) for item in self._edit_instances()
+            if isinstance(item, dict)
+        }
+        while True:
+            iid = f"{int(time.time() * 1000):x}{random.randrange(0x1000):03x}"
+            if iid not in used:
+                return iid
+
+    def _instance_default_size_logic(self, row_key: str) -> float:
+        if row_key.startswith("art:"):
+            return 72.0
+        if row_key.startswith("new:"):
+            src = row_key.split(":", 1)[1]
+            r = self.edit_target_rect(src)
+            if r.isValid():
+                scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+                return max(26.0, min(150.0, max(r.width(), r.height()) / scale))
+        return 64.0
+
+    def create_edit_library_instance(self, row_key: str,
+                                     drop_pos: QPointF | None = None):
+        if not row_key or row_key.startswith("hidden:"):
+            return
+        if drop_pos is None:
+            drop_pos = self.edit_library_default_drop_pos()
+        scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+        size_logic = self._instance_default_size_logic(row_key)
+        data = {
+            "id": self._new_edit_instance_id(),
+            "x": max(-80.0, min(500.0, drop_pos.x() / scale - size_logic / 2)),
+            "y": max(-80.0, min(400.0, drop_pos.y() / scale - size_logic / 2)),
+            "size": size_logic,
+        }
+        if row_key.startswith("art:"):
+            mode = row_key.split(":", 1)[1]
+            data.update({
+                "kind": "art",
+                "mode": mode if mode in ("cover", "vinyl", "pulse", "audio") else "cover",
+            })
+        elif row_key.startswith("new:"):
+            src = row_key.split(":", 1)[1]
+            if src not in self._base_edit_target_keys():
+                return
+            data.update({"kind": "element", "source": src})
+            if src in ("time_now", "time_total"):
+                r = self.edit_target_rect(src)
+                if r.isValid():
+                    data["w"] = max(24.0, min(180.0, r.width() / scale))
+                    data["h"] = max(12.0, min(80.0, r.height() / scale))
+        else:
+            return
+        self._edit_instances().append(data)
+        key = self._edit_instance_key(data["id"])
+        self._create_edit_instance_widget(data)
+        self._apply_edit_instance_layout(key)
+        self._fade_edit_key_in(key)
+        self._set_edit_selection(key, additive=False)
+        self._sync_edit_library()
+        self._update_edit_overlay()
+        self.layout_edit_changed.emit()
+
+    def _edit_button_source_spec(self, source: str):
+        if source in getattr(self, "_control_edit_specs", {}):
+            _, glyph_base, diam_base, is_play = self._control_edit_specs[source]
+            if is_play:
+                return {"kind": "play", "diameter": 36}
+            glyph = {
+                "ctrl_shuffle": GLYPH_SHUFFLE,
+                "ctrl_prev": GLYPH_PREV,
+                "ctrl_next": GLYPH_NEXT,
+                "ctrl_repeat": GLYPH_REPEAT_ALL,
+            }.get(source)
+            if glyph is None:
+                return None
+            return {
+                "kind": "icon",
+                "glyph": glyph,
+                "glyph_base": glyph_base,
+                "diam_base": diam_base,
+                "checkable": source in ("ctrl_shuffle", "ctrl_repeat"),
+                "dot": source in ("ctrl_shuffle", "ctrl_repeat"),
+                "fx": "",
+            }
+        top_specs = getattr(self, "_topbar_edit_specs", {})
+        if source in top_specs:
+            _, glyph_base, diam_base = top_specs[source]
+            data = {
+                "top_edit": (GLYPH_EDIT, True, "wiggle"),
+                "top_reset": (GLYPH_RESET, False, "spin"),
+                "top_volume": (GLYPH_VOLUME, False, ""),
+                "top_settings": (GLYPH_SETTINGS, False, "gear"),
+                "top_pin": (GLYPH_PIN, True, "wiggle"),
+                "top_close": (GLYPH_CLOSE, False, "spin"),
+            }.get(source)
+            if data is None:
+                return None
+            glyph, checkable, fx = data
+            return {
+                "kind": "icon",
+                "glyph": glyph,
+                "glyph_base": glyph_base,
+                "diam_base": diam_base,
+                "checkable": checkable,
+                "dot": False,
+                "fx": fx,
+                "press_scale": 0.78 if source == "top_volume" else None,
+                "release_ms": 260 if source == "top_volume" else None,
+                "release_overshoot": 1.7 if source == "top_volume" else None,
+                "hover_ms_factor": 2.0 if source == "top_volume" else None,
+            }
+        return None
+
+    def _invoke_window_method(self, name: str, *args):
+        win = self.window()
+        func = getattr(win, name, None)
+        if callable(func):
+            func(*args)
+
+    def _invoke_window_command(self, name: str):
+        win = self.window()
+        func = getattr(win, "_cmd", None)
+        if callable(func):
+            func(name)
+
+    def _connect_edit_instance_action(self, widget: QWidget, source: str):
+        if source == "ctrl_play":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_method("_toggle_play"))
+        elif source == "ctrl_prev":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_command("prev_track"))
+        elif source == "ctrl_next":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_command("next_track"))
+        elif source == "ctrl_shuffle":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_method("_toggle_shuffle"))
+        elif source == "ctrl_repeat":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_method("_cycle_repeat"))
+        elif source == "top_edit":
+            widget.clicked.connect(
+                lambda checked=False, w=widget:
+                self.set_layout_edit_mode(bool(w.isChecked())))
+        elif source == "top_reset":
+            widget.clicked.connect(
+                lambda _=False: self.reset_layout_positions())
+        elif source == "top_volume":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_method("_show_volume"))
+        elif source == "top_settings":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_method("_toggle_panel"))
+        elif source == "top_pin":
+            widget.clicked.connect(
+                lambda checked=False, w=widget:
+                self.btn_pin.setChecked(bool(w.isChecked())))
+        elif source == "top_close":
+            widget.clicked.connect(
+                lambda _=False: self._invoke_window_method("hide_animated"))
+
+    def _create_edit_element_widget(self, source: str) -> QWidget | None:
+        if source in ("time_now", "time_total"):
+            widget = TimeLabel("0:00", self)
+            widget.setAlignment(
+                Qt.AlignRight | Qt.AlignVCenter
+                if source == "time_total" else Qt.AlignLeft | Qt.AlignVCenter)
+            self._set_progress_time_label(
+                widget, source, self._progress_pos, self._progress_dur,
+                animate_now=False, animate_mode=False)
+            return widget
+        spec = self._edit_button_source_spec(source)
+        if spec is None:
+            return _EditReplica(self, source, self)
+        if spec["kind"] == "play":
+            widget = PlayButton(S(spec["diameter"]), self)
+        else:
+            widget = IconButton(
+                spec["glyph"], S(spec["glyph_base"]), S(spec["diam_base"]),
+                checkable=bool(spec.get("checkable", False)),
+                dot=bool(spec.get("dot", False)),
+                fx=str(spec.get("fx", "")),
+                press_scale=spec.get("press_scale"),
+                release_ms=spec.get("release_ms"),
+                release_overshoot=spec.get("release_overshoot"),
+                hover_ms_factor=spec.get("hover_ms_factor"),
+                parent=self)
+            widget.set_accent(self._accent)
+        self._connect_edit_instance_action(widget, source)
+        return widget
+
+    def _create_edit_instance_widget(self, data: dict) -> QWidget | None:
+        iid = str(data.get("id", ""))
+        if not iid:
+            return None
+        key = self._edit_instance_key(iid)
+        old = self._edit_instance_widgets.pop(key, None)
+        if old is not None:
+            old.hide()
+            old.deleteLater()
+        kind = data.get("kind")
+        if kind == "art":
+            size = max(1, S(float(data.get("size", 72.0))))
+            widget = ArtView(size, self._cover_radius_for_size(size), self)
+            widget.set_mode(str(data.get("mode", "cover")), animate=False)
+            widget.set_border(SETTINGS.get("cover_border", False),
+                              SETTINGS.get("cover_border_width", 2.0),
+                              SETTINGS.get("cover_border_opacity", 0.85),
+                              animate=False)
+            widget.set_accent(self._accent)
+            widget.set_audio_level_provider(self._audio_level_provider)
+            widget.set_playing(getattr(self, "_art_playing", False))
+        elif kind in ("element", "replica"):
+            source = str(data.get("source", ""))
+            if source not in self._base_edit_target_keys():
+                return None
+            widget = self._create_edit_element_widget(source)
+        else:
+            return None
+        if widget is None:
+            return None
+        widget.setMouseTracking(True)
+        widget.installEventFilter(self)
+        self._edit_filter_targets[widget] = key
+        self._edit_instance_widgets[key] = widget
+        widget.show()
+        widget.raise_()
+        if isinstance(widget, ArtView):
+            self._refresh_edit_instance_art(key, animate=False)
+        self._sync_edit_instance_element_states()
+        return widget
+
+    def _build_edit_instances(self):
+        for widget in self._edit_instance_widgets.values():
+            widget.hide()
+            widget.deleteLater()
+        self._edit_instance_widgets.clear()
+        for data in list(self._edit_instances()):
+            if isinstance(data, dict):
+                self._create_edit_instance_widget(data)
+        self._apply_edit_instance_layouts()
+
+    def _apply_edit_instance_layout(self, key: str):
+        data = self._edit_instance_data(key)
+        widget = self._edit_instance_widgets.get(key)
+        if data is None or widget is None:
+            return
+        try:
+            base_size = float(data.get("size", 72.0))
+            x = float(data.get("x", 40.0))
+            y = float(data.get("y", 40.0))
+        except (TypeError, ValueError):
+            return
+        dw, dh = self._edit_size_logic(key)
+        size_logic = max(24.0, min(220.0, base_size + max(dw, dh)))
+        if isinstance(widget, ArtView):
+            size_px = max(1, S(size_logic))
+            widget.set_base_size(size_px, self._cover_radius_for_size(size_px))
+            widget.set_border(SETTINGS.get("cover_border", False),
+                              SETTINGS.get("cover_border_width", 2.0),
+                              SETTINGS.get("cover_border_opacity", 0.85),
+                              animate=False)
+            self._refresh_edit_instance_art(key, animate=False)
+        elif isinstance(widget, PlayButton):
+            widget.set_diameter(max(S(18), S(size_logic)))
+        elif isinstance(widget, IconButton):
+            source = str(data.get("source", ""))
+            spec = self._edit_button_source_spec(source) or {}
+            diam_base = max(1.0, float(spec.get("diam_base", 22.0)))
+            glyph_base = max(1.0, float(spec.get("glyph_base", 10.0)))
+            side = max(S(18), S(size_logic))
+            glyph_px = max(1, round(side * glyph_base / diam_base))
+            widget.set_metrics(glyph_px, side)
+        elif isinstance(widget, TimeLabel):
+            source = str(data.get("source", "time_now"))
+            try:
+                base_w = float(data.get("w", data.get("size", 42.0)))
+                base_h = float(data.get("h", 14.0))
+            except (TypeError, ValueError):
+                base_w, base_h = 42.0, 14.0
+            dw, dh = self._edit_size_logic(key)
+            w = max(S(24), round(Sf(base_w + dw)))
+            h = max(S(12), round(Sf(base_h + dh)))
+            widget.setFixedSize(w, h)
+            f = ui_font(max(1, round(h * 0.72)))
+            spacing = Sf(float(SETTINGS.get("progress_time_spacing", 0.0)))
+            f.setLetterSpacing(QFont.AbsoluteSpacing, spacing)
+            widget.setFont(f)
+            widget.setAlignment(
+                Qt.AlignRight | Qt.AlignVCenter
+                if source == "time_total" else Qt.AlignLeft | Qt.AlignVCenter)
+            if hasattr(self, "t_now"):
+                widget.setStyleSheet(self.t_now.styleSheet())
+            self._set_progress_time_label(
+                widget, source, self._progress_pos, self._progress_dur,
+                animate_now=False, animate_mode=False)
+        else:
+            side = max(S(18), S(size_logic))
+            widget.setFixedSize(side, side)
+        off = self._edit_offset_px(key)
+        widget.move(round(Sf(x) + off.x()), round(Sf(y) + off.y()))
+        widget.raise_()
+        if isinstance(widget, _EditReplica):
+            widget._capture_items()
+        self._apply_edit_angle(key)
+
+    def _apply_edit_instance_layouts(self):
+        for key in tuple(self._edit_instance_widgets):
+            self._apply_edit_instance_layout(key)
+
+    def _refresh_edit_instance_art(self, key: str, animate: bool = True):
+        widget = self._edit_instance_widgets.get(key)
+        if not isinstance(widget, ArtView):
+            return
+        radius = self._cover_radius_for_size(widget.cover_size())
+        widget.set_radius(radius, animate=animate)
+        if self._art_img is None or self._art_img.isNull():
+            widget.set_pixmap(None, animate=animate)
+            return
+        pm = rounded_pixmap(
+            self._art_img, widget.cover_size(),
+            radius, self.devicePixelRatioF())
+        widget.set_pixmap(pm, animate=animate)
+
+    def _refresh_edit_instance_art_all(self, animate: bool = True):
+        for key in tuple(self._edit_instance_widgets):
+            self._refresh_edit_instance_art(key, animate=animate)
+
+    def _art_widgets(self) -> tuple[ArtView, ...]:
+        widgets: list[ArtView] = []
+        if hasattr(self, "art") and isinstance(self.art, ArtView):
+            widgets.append(self.art)
+        widgets.extend(
+            widget for widget in self._edit_instance_widgets.values()
+            if isinstance(widget, ArtView)
+        )
+        return tuple(widgets)
+
+    def _sync_edit_instance_element_states(self):
+        for key, widget in tuple(self._edit_instance_widgets.items()):
+            data = self._edit_instance_data(key)
+            if not isinstance(data, dict) or data.get("kind") not in (
+                    "element", "replica"):
+                continue
+            source = str(data.get("source", ""))
+            if isinstance(widget, TimeLabel) and source in (
+                    "time_now", "time_total"):
+                self._set_progress_time_label(
+                    widget, source, self._progress_pos, self._progress_dur,
+                    animate_now=False, animate_mode=False)
+            elif isinstance(widget, PlayButton) and source == "ctrl_play":
+                widget.set_playing(getattr(self.btn_play, "_playing", False))
+                widget.setEnabled(self.btn_play.isEnabled())
+            elif isinstance(widget, IconButton):
+                source_widgets = self._edit_target_widgets(source)
+                original = source_widgets[0] if source_widgets else None
+                if original is not None:
+                    widget.setEnabled(original.isEnabled())
+                widget.set_accent(self._accent)
+                if source == "ctrl_shuffle":
+                    widget.setChecked(self.btn_shuffle.isChecked())
+                elif source == "ctrl_repeat":
+                    widget.setChecked(self.btn_repeat.isChecked())
+                    widget.set_glyph(getattr(self.btn_repeat, "_glyph",
+                                             GLYPH_REPEAT_ALL))
+                elif source == "top_pin":
+                    widget.setChecked(self.btn_pin.isChecked())
+                elif source == "top_edit":
+                    widget.setChecked(self._edit_mode)
+
+    def _remove_edit_instance(self, key: str, animate: bool = True):
+        widget = self._edit_instance_widgets.get(key)
+        if widget is None:
+            return
+
+        def done():
+            w = self._edit_instance_widgets.pop(key, None)
+            if w is not None:
+                self._edit_filter_targets.pop(w, None)
+                w.hide()
+                w.deleteLater()
+            iid = key.split(":", 1)[1]
+            SETTINGS["edit_library_instances"] = [
+                item for item in self._edit_instances()
+                if not (isinstance(item, dict) and item.get("id") == iid)
+            ]
+            self._layout_positions().pop(key, None)
+            self._layout_sizes().pop(key, None)
+            self._layout_angles().pop(key, None)
+            self._edit_selected_keys.discard(key)
+            self._sync_edit_selection_fades()
+            self._sync_edit_library()
+            self._update_edit_overlay()
+
+        if animate and hasattr(self, "_edit_ghost") and not widget.isHidden():
+            self._edit_ghost.start((widget,), 1.0, 0.0, done_callback=done,
+                                   animate=True, hide_source=True)
+        else:
+            done()
+
+    def _text_edit_target_rect(self, key: str) -> QRectF:
+        if key == "title":
+            base = getattr(self, "_title_base", QRectF())
+            focus = getattr(self, "_title_focus", QRectF())
+        elif key == "artist":
+            base = getattr(self, "_artist_base", QRectF())
+            focus = getattr(self, "_artist_focus", QRectF())
+        else:
+            return QRectF()
+        if not base.isValid():
+            return QRectF()
+        t = max(0.0, min(1.0, float(getattr(self, "_info_focus", 0.0))))
+        rect = QRectF(
+            base.x() + (focus.x() - base.x()) * t,
+            base.y() + (focus.y() - base.y()) * t,
+            base.width() + (focus.width() - base.width()) * t,
+            base.height() + (focus.height() - base.height()) * t,
+        )
+        return self._offset_rect(key, rect)
+
+    def _edit_target_widgets(self, key: str) -> tuple[QWidget, ...]:
+        if self._is_edit_instance_key(key):
+            widget = self._edit_instance_widgets.get(key)
+            return (widget,) if widget is not None else ()
+        if hasattr(self, "_control_edit_specs") and key in self._control_edit_specs:
+            return (self._control_edit_specs[key][0],)
+        if hasattr(self, "_topbar_edit_specs") and key in self._topbar_edit_specs:
+            return (self._topbar_edit_specs[key][0],)
+        if key == "source":
+            return (self.source,)
+        if key == "source_logo":
+            return (self.source_logo,)
+        if key == "controls":
+            return (self.controls,)
+        attr = {
+            "art": "art",
+            "title": "title",
+            "artist": "artist",
+            "seek": "seek",
+            "time_now": "t_now",
+            "time_total": "t_total",
+            "empty_icon": "empty_icon",
+            "empty_text": "empty_text",
+            "empty_button": "empty_btn",
+        }.get(key)
+        if not attr or not hasattr(self, attr):
+            return ()
+        return (getattr(self, attr),)
+
+    def edit_target_rect(self, key: str) -> QRectF:
+        if key in self._hidden_edit_key_set():
+            return QRectF()
+        if key in ("title", "artist"):
+            return self._text_edit_target_rect(key)
+        rect = QRectF()
+        first = True
+        for widget in self._edit_target_widgets(key):
+            if widget is None or widget.isHidden():
+                continue
+            if widget.parentWidget() is self:
+                wr = QRectF(widget.geometry())
+            else:
+                top_left = widget.mapTo(self, QPoint(0, 0))
+                wr = QRectF(QPointF(top_left), QSizeF(
+                    widget.width(), widget.height()))
+            rect = wr if first else rect.united(wr)
+            first = False
+        return rect
+
+    def _unrotate_edit_pos(self, key: str, pos: QPointF) -> QPointF:
+        angle = self.edit_target_angle(key)
+        if abs(angle) < 0.01:
+            return QPointF(pos)
+        r = self.edit_target_rect(key)
+        if not r.isValid():
+            return QPointF(pos)
+        c = r.center()
+        rad = math.radians(-angle)
+        dx = pos.x() - c.x()
+        dy = pos.y() - c.y()
+        return QPointF(c.x() + dx * math.cos(rad) - dy * math.sin(rad),
+                       c.y() + dx * math.sin(rad) + dy * math.cos(rad))
+
+    def edit_resize_handle_rect(self, key: str) -> QRectF:
+        if key not in self._resizable_edit_keys():
+            return QRectF()
+        active = (self._edit_drag or {}).get("key")
+        if (self._edit_hover_key != key and active != key
+                and self._edit_handle_ops.get(key, 0.0) <= 0.001):
+            return QRectF()
+        r = self.edit_target_rect(key)
+        if not r.isValid() or r.width() < 2 or r.height() < 2:
+            return QRectF()
+        d = S(7)
+        return QRectF(r.right() - d + S(1), r.bottom() - d + S(1), d, d)
+
+    def edit_rotate_handle_rect(self, key: str) -> QRectF:
+        if key not in self.edit_target_keys():
+            return QRectF()
+        active = (self._edit_drag or {}).get("key")
+        if (self._edit_hover_key != key and active != key
+                and self._edit_handle_ops.get(key, 0.0) <= 0.001):
+            return QRectF()
+        r = self.edit_target_rect(key)
+        if not r.isValid() or r.width() < 2 or r.height() < 2:
+            return QRectF()
+        d = S(16)
+        return QRectF(r.right() - d * 0.45, r.top() - d * 0.55, d, d)
+
+    def edit_resize_handle_opacity(self, key: str) -> float:
+        if key not in self._resizable_edit_keys():
+            return 0.0
+        active = (self._edit_drag or {}).get("key")
+        if active == key:
+            return 1.0
+        return max(0.0, min(1.0, self._edit_handle_ops.get(key, 0.0)))
+
+    def edit_rotate_handle_opacity(self, key: str) -> float:
+        if key not in self.edit_target_keys():
+            return 0.0
+        active = (self._edit_drag or {}).get("key")
+        if active == key:
+            return 1.0
+        return max(0.0, min(1.0, self._edit_handle_ops.get(key, 0.0)))
+
+    def _resize_key_at(self, pos: QPointF) -> str | None:
+        for key in reversed(self._resizable_edit_keys()):
+            r = self.edit_target_rect(key)
+            if not r.isValid():
+                continue
+            d = S(10)
+            hit = QRectF(r.right() - d + S(2), r.bottom() - d + S(2), d, d)
+            if hit.contains(self._unrotate_edit_pos(key, pos)):
+                return key
+        return None
+
+    def _rotate_key_at(self, pos: QPointF) -> str | None:
+        for key in reversed(self.edit_target_keys()):
+            r = self.edit_target_rect(key)
+            if not r.isValid():
+                continue
+            d = S(18)
+            hit = QRectF(r.right() - d * 0.5, r.top() - d * 0.6, d, d)
+            if hit.contains(self._unrotate_edit_pos(key, pos)):
+                return key
+        return None
+
+    def _target_key_at(self, pos: QPointF) -> str | None:
+        for key in reversed(self.edit_target_keys()):
+            if self.edit_target_rect(key).contains(pos):
+                return key
+        return None
+
+    def _set_edit_hover_key(self, key: str | None):
+        if key in self._hidden_edit_key_set():
+            key = None
+        if key == self._edit_hover_key:
+            return
+        self._edit_hover_key = key
+        self._sync_edit_handle_fades()
+        self._update_edit_overlay()
+
+    def edit_key_selected(self, key: str) -> bool:
+        return key in self._edit_selected_keys
+
+    def edit_selection_opacity(self, key: str) -> float:
+        if key in self._edit_selected_keys:
+            return max(0.0, min(1.0, self._edit_select_ops.get(key, 1.0)))
+        return max(0.0, min(1.0, self._edit_select_ops.get(key, 0.0)))
+
+    def _ensure_edit_select_anim(self, key: str) -> Anim:
+        anim = self._edit_select_anims.get(key)
+        if anim is None:
+            anim = Anim(self)
+            anim.valueChanged.connect(
+                lambda value, k=key: self._on_edit_select_op(k, value))
+            anim.finished.connect(
+                lambda k=key: self._edit_select_anim_done(k))
+            self._edit_select_anims[key] = anim
+        return anim
+
+    def _on_edit_select_op(self, key: str, value):
+        self._edit_select_ops[key] = max(0.0, min(1.0, float(value)))
+        self._update_edit_overlay()
+
+    def _edit_select_anim_done(self, key: str):
+        if self._edit_select_targets.get(key, 0.0) <= 0.001:
+            self._edit_select_ops.pop(key, None)
+            self._edit_select_targets.pop(key, None)
+        self._update_edit_overlay()
+
+    def _fade_edit_selection(self, key: str, target: float,
+                             animate: bool = True):
+        target = 1.0 if target > 0.5 else 0.0
+        if self._edit_select_targets.get(key) == target:
+            return
+        self._edit_select_targets[key] = target
+        anim = self._ensure_edit_select_anim(key)
+        anim.stop()
+        start = self.edit_selection_opacity(key)
+        ms = adur(130 if target > start else 170, 90)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._on_edit_select_op(key, target)
+            self._edit_select_anim_done(key)
+            return
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+
+    def _sync_edit_selection_fades(self, animate: bool = True):
+        keys = set(self.edit_target_keys())
+        keys.update(self._edit_select_ops)
+        keys.update(self._edit_select_targets)
+        for key in keys:
+            self._fade_edit_selection(
+                key, 1.0 if key in self._edit_selected_keys else 0.0,
+                animate=animate)
+
+    def hidden_edit_keys(self) -> list[str]:
+        raw = SETTINGS.get("edit_hidden_keys", [])
+        if not isinstance(raw, list):
+            raw = []
+            SETTINGS["edit_hidden_keys"] = raw
+        valid = set(self._base_edit_target_keys())
+        return [k for k in raw if k in valid]
+
+    def _hidden_edit_key_set(self) -> set[str]:
+        return set(self.hidden_edit_keys())
+
+    def edit_label(self, key: str) -> str:
+        data = self._edit_instance_data(key)
+        if data is not None:
+            if data.get("kind") == "art":
+                mode = str(data.get("mode", "cover"))
+                return {
+                    "cover": "Cover",
+                    "vinyl": "Vinyl",
+                    "pulse": "Pulse cover",
+                    "audio": "Audio feedback",
+                }.get(mode, "Art")
+            src = str(data.get("source", ""))
+            return self.edit_label(src)
+        labels = {
+            "art": "Cover",
+            "source_logo": "Source icon",
+            "source": "Source text",
+            "title": "Title",
+            "artist": "Artist",
+            "controls": "Controls",
+            "ctrl_shuffle": "Shuffle",
+            "ctrl_prev": "Previous",
+            "ctrl_play": "Play",
+            "ctrl_next": "Next",
+            "ctrl_repeat": "Repeat",
+            "top_edit": "Edit",
+            "top_reset": "Reset",
+            "top_volume": "Volume",
+            "top_settings": "Settings",
+            "top_pin": "Pin",
+            "top_close": "Close",
+            "seek": "Seek",
+            "time_now": "Time now",
+            "time_total": "Time total",
+            "empty_icon": "Empty icon",
+            "empty_text": "Empty text",
+            "empty_button": "Launch",
+        }
+        return labels.get(key, key)
+
+    def _visible_edit_widgets(self, key: str) -> tuple[QWidget, ...]:
+        return tuple(w for w in self._edit_target_widgets(key)
+                     if w is not None and not w.isHidden()
+                     and w.width() > 0 and w.height() > 0)
+
+    def _fade_edit_key_out(self, key: str, animate: bool = True):
+        widgets = self._visible_edit_widgets(key)
+        if widgets and hasattr(self, "_edit_ghost"):
+            self._edit_ghost.start(widgets, 1.0, 0.0, animate=animate)
+            self._update_edit_overlay()
+            self._sync_edit_library(animate=False)
+
+    def _fade_edit_key_in(self, key: str, animate: bool = True):
+        widgets = self._visible_edit_widgets(key)
+        if not widgets or not hasattr(self, "_edit_ghost"):
+            return
+
+        def done():
+            self._restore_edit_key_visibility(key)
+            self._apply_edit_hidden_visibility()
+            self._update_edit_overlay()
+            self._sync_edit_library(animate=False)
+
+        self._edit_ghost.start(widgets, 0.0, 1.0, done_callback=done,
+                               animate=animate, hide_source=True)
+        self._update_edit_overlay()
+        self._sync_edit_library(animate=False)
+
+    def _fade_edit_keys_in(self, keys: tuple[str, ...] | list[str],
+                           animate: bool = True):
+        keys = tuple(k for k in keys if k in self.edit_target_keys())
+        if not keys or not hasattr(self, "_edit_ghost"):
+            return
+        for key in keys:
+            self._restore_edit_key_visibility(key)
+        self._apply_edit_hidden_visibility()
+        widgets: list[QWidget] = []
+        seen: set[QWidget] = set()
+        for key in keys:
+            for widget in self._visible_edit_widgets(key):
+                if widget not in seen:
+                    seen.add(widget)
+                    widgets.append(widget)
+        if not widgets:
+            self._update_edit_overlay()
+            self._sync_edit_library(animate=False)
+            return
+
+        def done():
+            for key in keys:
+                self._restore_edit_key_visibility(key)
+            self._apply_edit_hidden_visibility()
+            self._update_edit_overlay()
+            self._sync_edit_library(animate=False)
+
+        self._edit_ghost.start(widgets, 0.0, 1.0, done_callback=done,
+                               animate=animate, hide_source=True)
+        self._update_edit_overlay()
+        self._sync_edit_library(animate=False)
+
+    def _hide_edit_keys_without_setting(self, keys: tuple[str, ...] | list[str]):
+        for key in keys:
+            for widget in self._edit_target_widgets(key):
+                if widget is not None:
+                    widget.hide()
+
+    def _set_edit_key_hidden(self, key: str, hidden: bool):
+        if self._is_edit_instance_key(key):
+            if hidden:
+                self._remove_edit_instance(key)
+            return
+        keys = self.hidden_edit_keys()
+        if hidden:
+            if key not in keys:
+                self._fade_edit_key_out(key)
+                keys.append(key)
+        else:
+            keys = [k for k in keys if k != key]
+        SETTINGS["edit_hidden_keys"] = keys
+        self._edit_selected_keys.discard(key)
+        self._sync_edit_selection_fades()
+        if not hidden:
+            self._restore_edit_key_visibility(key)
+        self._apply_edit_hidden_visibility()
+        self._sync_edit_library()
+        self._update_edit_overlay()
+
+    def _delete_edit_keys(self, keys: tuple[str, ...] | list[str]):
+        valid = [k for k in keys if k in self.edit_target_keys()]
+        if not valid and self._edit_hover_key in self.edit_target_keys():
+            valid = [self._edit_hover_key]
+        for key in valid:
+            if self._is_edit_instance_key(key):
+                self._remove_edit_instance(key)
+            else:
+                self._set_edit_key_hidden(key, True)
+        if valid:
+            self.layout_edit_changed.emit()
+
+    def restore_hidden_edit_key(self, key: str, drop_pos: QPointF | None = None):
+        if key not in self.edit_target_keys():
+            return
+        self._set_edit_key_hidden(key, False)
+        self._apply_layout_position_offsets()
+        if drop_pos is not None:
+            r = self.edit_target_rect(key)
+            if r.isValid():
+                scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+                ox, oy = self._edit_offset_logic(key)
+                delta = drop_pos - r.center()
+                self._set_edit_offset_logic(
+                    key, ox + delta.x() / scale, oy + delta.y() / scale)
+                self._apply_layout_position_offsets()
+        self._fade_edit_key_in(key)
+        self._set_edit_selection(key, additive=False)
+        self._sync_edit_library()
+        self.layout_edit_changed.emit()
+
+    def _restore_edit_key_visibility(self, key: str):
+        widgets = self._edit_target_widgets(key)
+        if self._is_edit_instance_key(key):
+            for w in widgets:
+                w.show()
+        elif key == "art":
+            self.art.setVisible((not self._empty_state) and self._cover_enabled)
+        elif key in ("source", "source_logo"):
+            visible = (not self._empty_state
+                       and bool(SETTINGS.get("show_source", True)))
+            for w in widgets:
+                w.setVisible(visible)
+        elif key in ("title", "artist", "controls"):
+            for w in widgets:
+                w.setVisible(not self._empty_state)
+        elif key.startswith("ctrl_"):
+            self.apply_button_visibility(relayout=True, animate=False)
+        elif key.startswith("top_"):
+            if key == "top_edit":
+                self.apply_edit_button_visible(animate=False)
+            elif key == "top_reset":
+                self._fade_reset_button(self._edit_mode, animate=False)
+            else:
+                for w in widgets:
+                    w.show()
+        elif key in ("seek", "time_now", "time_total"):
+            for w in widgets:
+                w.setVisible((not self._empty_state) and not self._control_bar)
+        elif key.startswith("empty"):
+            for w in widgets:
+                w.setVisible(self._empty_state)
+
+    def _apply_edit_hidden_visibility(self):
+        hidden = self._hidden_edit_key_set()
+        for key in self.edit_target_keys():
+            if key in hidden:
+                if key == "top_edit" and not self._edit_mode:
+                    continue
+                for widget in self._edit_target_widgets(key):
+                    widget.hide()
+
+    def _restore_all_edit_key_visibility(self):
+        for key in self.edit_target_keys():
+            self._restore_edit_key_visibility(key)
+
+    def _sync_edit_library(self, animate: bool = True):
+        if hasattr(self, "_edit_library"):
+            self._edit_library.sync(animate=animate)
+
+    def _set_edit_selection(self, key: str | None, additive: bool = False):
+        if key is None or key not in self.edit_target_keys():
+            if not additive:
+                self._edit_selected_keys.clear()
+            self._sync_edit_selection_fades()
+            self._update_edit_overlay()
+            return
+        if additive:
+            if key in self._edit_selected_keys:
+                self._edit_selected_keys.discard(key)
+            else:
+                self._edit_selected_keys.add(key)
+        else:
+            self._edit_selected_keys = set() if key in self._edit_selected_keys else {key}
+        self._sync_edit_selection_fades()
+        self._update_edit_overlay()
+
+    def _active_edit_move_keys(self, key: str) -> tuple[str, ...]:
+        if key in self._edit_selected_keys:
+            return tuple(k for k in self.edit_target_keys()
+                         if k in self._edit_selected_keys)
+        return (key,)
+
+    def _nudge_edit_selection(self, dx: float, dy: float):
+        keys = tuple(k for k in self.edit_target_keys()
+                     if k in self._edit_selected_keys)
+        if not keys and self._edit_hover_key is not None:
+            keys = (self._edit_hover_key,)
+            self._set_edit_selection(self._edit_hover_key, additive=False)
+        if not keys:
+            return
+        scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+        for key in keys:
+            ox, oy = self._edit_offset_logic(key)
+            self._set_edit_offset_logic(key, ox + dx / scale, oy + dy / scale)
+        self._apply_layout_position_offsets()
+        self.layout_edit_changed.emit()
+
+    def _handle_edit_key_press(self, event) -> bool:
+        if not self._edit_mode:
+            return False
+        step = 10 if event.modifiers() & Qt.ShiftModifier else 1
+        key = event.key()
+        if key in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected = tuple(k for k in self.edit_target_keys()
+                             if k in self._edit_selected_keys)
+            self._delete_edit_keys(selected)
+        elif key == Qt.Key_Escape:
+            self.set_layout_edit_mode(False)
+        elif key == Qt.Key_Left:
+            self._nudge_edit_selection(-step, 0)
+        elif key == Qt.Key_Right:
+            self._nudge_edit_selection(step, 0)
+        elif key == Qt.Key_Up:
+            self._nudge_edit_selection(0, -step)
+        elif key == Qt.Key_Down:
+            self._nudge_edit_selection(0, step)
+        else:
+            return False
+        event.accept()
+        return True
+
+    def _window_resize_edge_at(self, pos: QPointF) -> str:
+        if not self._edit_mode:
+            return ""
+        m = max(S(6), 6)
+        x, y = pos.x(), pos.y()
+        left = x <= m
+        right = x >= self._W - m
+        top = y <= m
+        bottom = y >= self._H - m
+        edge = ""
+        if top:
+            edge += "t"
+        elif bottom:
+            edge += "b"
+        if left:
+            edge += "l"
+        elif right:
+            edge += "r"
+        return edge
+
+    def _window_resize_cursor(self, edge: str):
+        if edge in ("l", "r"):
+            return Qt.SizeHorCursor
+        if edge in ("t", "b"):
+            return Qt.SizeVerCursor
+        if edge in ("tl", "br"):
+            return Qt.SizeFDiagCursor
+        if edge in ("tr", "bl"):
+            return Qt.SizeBDiagCursor
+        return Qt.ArrowCursor
+
+    def _begin_window_resize(self, edge: str, global_pos: QPoint):
+        if not edge:
+            return
+        self._window_resize_drag = {
+            "edge": edge,
+            "start": QPoint(global_pos),
+            "size": self._window_size_logic(),
+            "win_pos": QPoint(self.window().pos()),
+        }
+
+    def _move_window_resize(self, global_pos: QPoint):
+        if not self._window_resize_drag:
+            return
+        edge = self._window_resize_drag["edge"]
+        start = self._window_resize_drag["start"]
+        delta = global_pos - start
+        scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+        w, h = self._window_resize_drag["size"]
+        dw = float(delta.x()) / scale
+        dh = float(delta.y()) / scale
+        move = QPoint(0, 0)
+        if "l" in edge:
+            w -= dw
+            move.setX(delta.x())
+        elif "r" in edge:
+            w += dw
+        if "t" in edge:
+            h -= dh
+            move.setY(delta.y())
+        elif "b" in edge:
+            h += dh
+        old_size = self._window_size_px()
+        self._set_window_size_logic(w, h)
+        self.apply_edit_window_size()
+        new_size = self._window_size_px()
+        if move != QPoint(0, 0):
+            win = self.window()
+            base = self._window_resize_drag["win_pos"]
+            actual = QPoint(
+                move.x() if new_size[0] != old_size[0] else 0,
+                move.y() if new_size[1] != old_size[1] else 0,
+            )
+            win.move(base + actual)
+
+    def _edit_handle_target_key(self) -> str | None:
+        active = (self._edit_drag or {}).get("key")
+        if active in self.edit_target_keys():
+            return active
+        if self._edit_hover_key in self.edit_target_keys():
+            return self._edit_hover_key
+        return None
+
+    def _ensure_edit_handle_anim(self, key: str) -> Anim:
+        anim = self._edit_handle_anims.get(key)
+        if anim is None:
+            anim = Anim(self)
+            anim.valueChanged.connect(
+                lambda value, k=key: self._on_edit_handle_op(k, value))
+            anim.finished.connect(
+                lambda k=key: self._edit_handle_anim_done(k))
+            self._edit_handle_anims[key] = anim
+        return anim
+
+    def _on_edit_handle_op(self, key: str, value):
+        op = max(0.0, min(1.0, float(value)))
+        self._edit_handle_ops[key] = op
+        self._update_edit_overlay()
+
+    def _edit_handle_anim_done(self, key: str):
+        if self._edit_handle_targets.get(key, 0.0) <= 0.001:
+            self._edit_handle_ops.pop(key, None)
+            self._edit_handle_targets.pop(key, None)
+        self._update_edit_overlay()
+
+    def _fade_edit_handle(self, key: str, target: float,
+                          animate: bool = True):
+        target = 1.0 if target > 0.5 else 0.0
+        if self._edit_handle_targets.get(key) == target:
+            return
+        self._edit_handle_targets[key] = target
+        anim = self._ensure_edit_handle_anim(key)
+        anim.stop()
+        start = max(0.0, min(1.0, self._edit_handle_ops.get(key, 0.0)))
+        ms = adur(120 if target > start else 150, 80)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._on_edit_handle_op(key, target)
+            self._edit_handle_anim_done(key)
+            return
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+
+    def _sync_edit_handle_fades(self, animate: bool = True):
+        target = self._edit_handle_target_key()
+        keys = set(self.edit_target_keys())
+        keys.update(self._edit_handle_ops)
+        keys.update(self._edit_handle_targets)
+        for key in keys:
+            self._fade_edit_handle(
+                key, 1.0 if key == target else 0.0, animate)
+
+    def _update_edit_hover_from_global(self, global_pos: QPoint | None = None):
+        if not self._edit_mode or self._edit_drag is not None:
+            return
+        if global_pos is None:
+            global_pos = QCursor.pos()
+        pos = QPointF(self.mapFromGlobal(global_pos))
+        if not self.rect().contains(pos.toPoint()):
+            self._set_edit_hover_key(None)
+            return
+        self._set_edit_hover_key(self._target_key_at(pos))
+
+    def _install_edit_target_filters(self):
+        mapping = {
+            self.art: "art",
+            self.source_logo: "source_logo",
+            self.source: "source",
+            self.title: "title",
+            self.artist: "artist",
+            self.controls: "controls",
+            self.btn_shuffle: "ctrl_shuffle",
+            self.btn_prev: "ctrl_prev",
+            self.btn_play: "ctrl_play",
+            self.btn_next: "ctrl_next",
+            self.btn_repeat: "ctrl_repeat",
+            self.btn_edit: "top_edit",
+            self.btn_reset_layout: "top_reset",
+            self.btn_vol: "top_volume",
+            self.btn_settings: "top_settings",
+            self.btn_pin: "top_pin",
+            self.btn_close: "top_close",
+            self.seek: "seek",
+            self.t_now: "time_now",
+            self.t_total: "time_total",
+            self.empty_icon: "empty_icon",
+            self.empty_text: "empty_text",
+            self.empty_btn: "empty_button",
+        }
+        self._edit_filter_targets.clear()
+        for widget, key in mapping.items():
+            widget.setMouseTracking(True)
+            widget.installEventFilter(self)
+            self._edit_filter_targets[widget] = key
+
+    def _set_edit_cursors(self):
+        for widget in self._edit_filter_targets:
+            if self._edit_mode:
+                widget.setCursor(Qt.SizeAllCursor)
+            elif widget in (self.art, self.title, self.artist):
+                widget.setCursor(Qt.PointingHandCursor)
+            else:
+                widget.unsetCursor()
+
+    def _update_edit_overlay(self):
+        if not hasattr(self, "_edit_overlay"):
+            return
+        self._edit_overlay.setGeometry(0, 0, self._W, self._H)
+        if self._edit_overlay_op > 0.001:
+            self._edit_overlay.raise_()
+            self._edit_overlay.update()
+
+    def edit_overlay_opacity(self) -> float:
+        return self._edit_overlay_op
+
+    def _on_edit_overlay_op(self, value):
+        self._edit_overlay_op = max(0.0, min(1.0, float(value)))
+        if self._edit_overlay_op > 0.001:
+            self._edit_overlay.show()
+            self._edit_overlay.raise_()
+        self._edit_overlay.update()
+
+    def _edit_overlay_done(self):
+        if self._edit_overlay_target <= 0.001:
+            self._edit_overlay.hide()
+        else:
+            self._edit_overlay.show()
+            self._edit_overlay.raise_()
+        self._edit_overlay.update()
+
+    def _fade_edit_overlay(self, visible: bool, animate: bool = True):
+        target = 1.0 if visible else 0.0
+        self._edit_overlay_target = target
+        self._edit_overlay_anim.stop()
+        if visible or self._edit_overlay_op > 0.001:
+            self._edit_overlay.show()
+            self._edit_overlay.raise_()
+        ms = adur(180 if visible else 150, 100)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._on_edit_overlay_op(target)
+            self._edit_overlay_done()
+            return
+        self._edit_overlay_anim.setStartValue(self._edit_overlay_op)
+        self._edit_overlay_anim.setEndValue(target)
+        self._edit_overlay_anim.setDuration(ms)
+        self._edit_overlay_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._edit_overlay_anim.start()
+
+    def _on_reset_button_op(self, value):
+        self._reset_button_op = max(0.0, min(1.0, float(value)))
+        if self._reset_button_op > 0.001:
+            self.btn_reset_layout.show()
+        self.btn_reset_layout.set_extra_opacity(self._reset_button_op)
+        self.btn_reset_layout.setAttribute(
+            Qt.WA_TransparentForMouseEvents,
+            self._reset_button_op <= 0.02)
+        self._apply_edit_hidden_visibility()
+        self.update()
+
+    def _reset_button_done(self):
+        if self._reset_button_target <= 0.001:
+            self.btn_reset_layout.hide()
+            self.btn_reset_layout.setAttribute(
+                Qt.WA_TransparentForMouseEvents, True)
+        else:
+            self.btn_reset_layout.show()
+            self.btn_reset_layout.setAttribute(
+                Qt.WA_TransparentForMouseEvents, False)
+        self.update()
+
+    def _fade_reset_button(self, visible: bool, animate: bool = True):
+        target = 1.0 if visible else 0.0
+        self._reset_button_target = target
+        self._reset_button_anim.stop()
+        if visible or self._reset_button_op > 0.001:
+            self.btn_reset_layout.show()
+            self.btn_reset_layout.raise_()
+        ms = adur(180 if visible else 150, 100)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._on_reset_button_op(target)
+            self._reset_button_done()
+            return
+        self._reset_button_anim.setStartValue(self._reset_button_op)
+        self._reset_button_anim.setEndValue(target)
+        self._reset_button_anim.setDuration(ms)
+        self._reset_button_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._reset_button_anim.start()
+
+    def set_layout_edit_mode(self, enabled: bool):
+        enabled = bool(enabled)
+        if enabled == self._edit_mode:
+            return
+        self._edit_mode = enabled
+        self._edit_drag = None
+        self._fade_reset_button(enabled, animate=True)
+        if self.btn_edit.isChecked() != enabled:
+            self.btn_edit.setChecked(enabled)
+        self._set_edit_cursors()
+        if enabled:
+            self.setFocus(Qt.MouseFocusReason)
+            self._sync_controls_hover(True, animate=False)
+            self._sync_topbar_hover(True, animate=False)
+            self._fade_edit_overlay(True, animate=True)
+            self._update_edit_hover_from_global()
+            self._apply_edit_hidden_visibility()
+            self._sync_edit_library()
+            self._update_edit_overlay()
+        else:
+            self._set_edit_hover_key(None)
+            self._sync_edit_handle_fades()
+            self._fade_edit_overlay(False, animate=True)
+            self._sync_controls_hover(self.underMouse(), animate=True)
+            self._sync_topbar_hover(self.underMouse(), animate=True)
+            self._restore_edit_key_visibility("top_edit")
+            self._apply_edit_hidden_visibility()
+            self._sync_edit_library()
+        self._sync_edit_instance_element_states()
+
+    def _apply_empty_layout_positions(self):
+        if not hasattr(self, "empty_icon"):
+            return
+        W = self._W
+        self.empty_icon.setGeometry(*self._offset_geometry(
+            "empty_icon", (0, S(14 if self._compact else 22), W, S(36))))
+        self.empty_text.setGeometry(*self._offset_geometry(
+            "empty_text", (0, S(50 if self._compact else 62), W, S(18))))
+        base_w, base_h = getattr(
+            self, "_empty_btn_base_size",
+            (self.empty_btn.width(), self.empty_btn.height()))
+        base = ((W - base_w) // 2,
+                S(74 if self._compact else 92) - self.empty_btn.pad,
+                base_w, base_h)
+        x, y, bw, bh = self._offset_geometry("empty_button", base)
+        self.empty_btn.setFixedSize(bw, bh)
+        self.empty_btn.move(x, y)
+
+    def _apply_layout_position_offsets(self):
+        if hasattr(self, "art"):
+            self._set_art_scales_for_layout(
+                self._cover_scale_setting(), self._vinyl_scale_setting())
+        self._apply_topbar_edit_layout()
+        self._apply_cover_layout(self._cover_layout_data(self._cover_enabled))
+        self.apply_control_button_layout(animate=False)
+        self.apply_seek_length()
+        self.apply_progress_time_spacing()
+        self._apply_empty_layout_positions()
+        self._apply_edit_instance_layouts()
+        self._apply_edit_angles()
+        self._update_edit_overlay()
+
+    def apply_edit_window_size(self):
+        new_w, new_h = self._window_size_px()
+        if new_w == self._W and new_h == self._H:
+            return
+        self._W, self._H = new_w, new_h
+        self.setFixedSize(self._W, self._H)
+        for layer in (getattr(self, "rain", None),
+                      getattr(self, "lightning", None),
+                      getattr(self, "seek_hover", None),
+                      getattr(self, "_ctrl_overlay", None),
+                      getattr(self, "_edit_overlay", None)):
+            if layer is not None:
+                layer.setGeometry(0, 0, self._W, self._H)
+        self.invalidate_bg()
+        self._apply_layout_position_offsets()
+        self._sync_edit_library(animate=False)
+        win = self.window()
+        if hasattr(win, "_sync_size_to_card"):
+            win._sync_size_to_card()
+        self.update()
+
+    def _current_layout_position_snapshot(self) -> dict[str, tuple[float, float]]:
+        snap = {}
+        for key, value in self._layout_positions().items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                x = float(value.get("x", 0.0))
+                y = float(value.get("y", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if abs(x) >= 0.01 or abs(y) >= 0.01:
+                snap[key] = (x, y)
+        return snap
+
+    def _current_layout_size_snapshot(self) -> dict[str, tuple[float, float]]:
+        snap = {}
+        for key, value in self._layout_sizes().items():
+            if not isinstance(value, dict):
+                continue
+            try:
+                w = float(value.get("w", 0.0))
+                h = float(value.get("h", 0.0))
+            except (TypeError, ValueError):
+                continue
+            if abs(w) >= 0.01 or abs(h) >= 0.01:
+                snap[key] = (w, h)
+        return snap
+
+    def _current_layout_angle_snapshot(self) -> dict[str, float]:
+        snap = {}
+        for key, value in self._layout_angles().items():
+            try:
+                angle = self._normalize_edit_angle(float(value))
+            except (TypeError, ValueError):
+                continue
+            if abs(angle) >= 0.01:
+                snap[key] = angle
+        return snap
+
+    def _clear_edit_layout_settings(self):
+        SETTINGS["edit_layout_positions"] = {}
+        SETTINGS["edit_layout_sizes"] = {}
+        SETTINGS["edit_layout_angles"] = {}
+        SETTINGS["edit_window_size"] = {}
+        SETTINGS["edit_hidden_keys"] = []
+        SETTINGS["edit_library_pos"] = {}
+        SETTINGS["edit_library_collapsed"] = False
+        SETTINGS["edit_library_instances"] = []
+        for key, widget in list(self._edit_instance_widgets.items()):
+            self._edit_filter_targets.pop(widget, None)
+            widget.hide()
+            widget.deleteLater()
+            self._edit_selected_keys.discard(key)
+        self._edit_instance_widgets.clear()
+        self._sync_edit_selection_fades()
+
+    def reset_layout_positions(self, animate: bool = True):
+        start = self._current_layout_position_snapshot()
+        size_start = self._current_layout_size_snapshot()
+        angle_start = self._current_layout_angle_snapshot()
+        win_start = self._window_size_logic()
+        has_win = abs(win_start[0]) >= 0.01 or abs(win_start[1]) >= 0.01
+        hidden_start = tuple(self.hidden_edit_keys())
+        self._edit_drag = None
+        self._window_resize_drag = None
+        if self._edit_reset_anim.state() == Anim.Running:
+            self._edit_reset_abort = True
+            self._edit_reset_anim.stop()
+            self._edit_reset_abort = False
+        if not start and not size_start and not angle_start and not has_win:
+            self._clear_edit_layout_settings()
+            self._apply_layout_position_offsets()
+            if hidden_start:
+                self._fade_edit_keys_in(hidden_start, animate=animate)
+            else:
+                self._restore_all_edit_key_visibility()
+            self._apply_edit_hidden_visibility()
+            self._sync_edit_library()
+            self.layout_edit_changed.emit()
+            return
+        self._edit_reset_from = start
+        self._edit_reset_size_from = size_start
+        self._edit_reset_angle_from = angle_start
+        self._edit_reset_window_from = win_start
+        self._edit_reset_hidden_keys = hidden_start
+        ms = adur(280, 160)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._clear_edit_layout_settings()
+            self.apply_edit_window_size()
+            self._apply_layout_position_offsets()
+            if hidden_start:
+                self._fade_edit_keys_in(hidden_start, animate=False)
+            else:
+                self._restore_all_edit_key_visibility()
+            self._apply_edit_hidden_visibility()
+            self._sync_edit_library()
+            self.layout_edit_changed.emit()
+            return
+        self._edit_reset_anim.setStartValue(0.0)
+        self._edit_reset_anim.setEndValue(1.0)
+        self._edit_reset_anim.setDuration(ms)
+        self._edit_reset_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._edit_reset_anim.start()
+
+    def _on_layout_reset(self, value):
+        t = max(0.0, min(1.0, float(value)))
+        self._clear_edit_layout_settings()
+        self._restore_all_edit_key_visibility()
+        if self._edit_reset_hidden_keys:
+            self._hide_edit_keys_without_setting(self._edit_reset_hidden_keys)
+        remain = 1.0 - t
+        for key, (x, y) in self._edit_reset_from.items():
+            self._set_edit_offset_logic(key, x * remain, y * remain)
+        for key, (w, h) in self._edit_reset_size_from.items():
+            self._set_edit_size_logic(key, w * remain, h * remain)
+        for key, angle in self._edit_reset_angle_from.items():
+            self._set_edit_angle_logic(key, angle * remain)
+        ww, wh = self._edit_reset_window_from
+        self._set_window_size_logic(ww * remain, wh * remain)
+        self.apply_edit_window_size()
+        self._apply_layout_position_offsets()
+
+    def _layout_reset_done(self):
+        if self._edit_reset_abort:
+            return
+        self._clear_edit_layout_settings()
+        hidden = self._edit_reset_hidden_keys
+        self._edit_reset_from = {}
+        self._edit_reset_size_from = {}
+        self._edit_reset_angle_from = {}
+        self._edit_reset_window_from = (0.0, 0.0)
+        self._edit_reset_hidden_keys = ()
+        self.apply_edit_window_size()
+        self._apply_layout_position_offsets()
+        self._refresh_art_pixmap()
+        if hidden:
+            self._fade_edit_keys_in(hidden, animate=True)
+        else:
+            self._restore_all_edit_key_visibility()
+        self.layout_edit_changed.emit()
+
+    def _begin_edit_drag(self, key: str, global_pos: QPoint,
+                         additive: bool = False):
+        if self._edit_reset_anim.state() == Anim.Running:
+            self._edit_reset_abort = True
+            self._edit_reset_anim.stop()
+            self._edit_reset_abort = False
+        was_selected = key in self._edit_selected_keys
+        if additive:
+            self._set_edit_selection(key, additive=True)
+        elif key not in self._edit_selected_keys:
+            self._set_edit_selection(key, additive=False)
+        keys = self._active_edit_move_keys(key)
+        scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+        self._edit_drag = {
+            "mode": "move",
+            "key": key,
+            "keys": keys,
+            "start": QPoint(global_pos),
+            "moved": False,
+            "was_selected": was_selected,
+            "offsets": {k: self._edit_offset_logic(k) for k in keys},
+            "scale": scale,
+            "geometries": {
+                widget: QRectF(widget.geometry())
+                for k in keys
+                for widget in self._edit_target_widgets(k)
+            },
+        }
+        self._sync_edit_handle_fades()
+
+    def _begin_edit_resize(self, key: str, global_pos: QPoint):
+        if key not in self._resizable_edit_keys():
+            self._edit_drag = None
+            return
+        if self._edit_reset_anim.state() == Anim.Running:
+            self._edit_reset_abort = True
+            self._edit_reset_anim.stop()
+            self._edit_reset_abort = False
+        scale = max(0.01, float(SETTINGS.get("scale", 1.0)))
+        sw, sh = self._edit_size_logic(key)
+        rect = self.edit_target_rect(key)
+        if not rect.isValid():
+            return
+        self._set_edit_selection(key, additive=False)
+        self._edit_drag = {
+            "mode": "resize",
+            "key": key,
+            "start": QPoint(global_pos),
+            "size": (sw, sh),
+            "scale": scale,
+            "rect": QRectF(rect),
+            "art_delta": self._edit_size_logic("art"),
+            "source_rect": self._unoffset_rect(
+                "source", QRectF(self.source.geometry()))
+                if key in ("source", "source_logo") else QRectF(),
+            "logo_rect": self._unoffset_rect(
+                "source_logo", QRectF(self.source_logo.geometry()))
+                if key in ("source", "source_logo") else QRectF(),
+        }
+        self._sync_edit_handle_fades()
+
+    def _begin_edit_rotate(self, key: str, global_pos: QPoint):
+        if key not in self.edit_target_keys():
+            self._edit_drag = None
+            return
+        if self._edit_reset_anim.state() == Anim.Running:
+            self._edit_reset_abort = True
+            self._edit_reset_anim.stop()
+            self._edit_reset_abort = False
+        rect = self.edit_target_rect(key)
+        if not rect.isValid():
+            return
+        center = self.mapToGlobal(rect.center().toPoint())
+        dx = global_pos.x() - center.x()
+        dy = global_pos.y() - center.y()
+        start_vec = math.degrees(math.atan2(dy, dx))
+        self._set_edit_selection(key, additive=False)
+        self._edit_drag = {
+            "mode": "rotate",
+            "key": key,
+            "start": QPoint(global_pos),
+            "center": QPoint(center),
+            "vec": start_vec,
+            "angle": self._edit_angle_logic(key),
+            "moved": False,
+        }
+        self._sync_edit_handle_fades()
+
+    def _move_edit_drag(self, global_pos: QPoint):
+        if not self._edit_drag:
+            return
+        if self._edit_drag.get("mode") == "resize":
+            self._move_edit_resize(global_pos)
+            return
+        if self._edit_drag.get("mode") == "rotate":
+            self._move_edit_rotate(global_pos)
+            return
+        start = self._edit_drag["start"]
+        delta = global_pos - start
+        if abs(delta.x()) + abs(delta.y()) > S(3):
+            self._edit_drag["moved"] = True
+        scale = float(self._edit_drag["scale"])
+        keys = self._edit_drag.get("keys") or (self._edit_drag["key"],)
+        for key in keys:
+            ox, oy = self._edit_drag["offsets"].get(
+                key, self._edit_offset_logic(key))
+            self._set_edit_offset_logic(
+                key, ox + delta.x() / scale, oy + delta.y() / scale)
+        for widget, rect in self._edit_drag["geometries"].items():
+            widget.setGeometry(round(rect.x() + delta.x()),
+                               round(rect.y() + delta.y()),
+                               round(rect.width()), round(rect.height()))
+        if "controls" in keys:
+            self._ctrl_pos = QPointF(self.controls.pos())
+            self._ctrl_to = QPointF(self.controls.pos())
+        if any(str(k).startswith("ctrl_") for k in keys):
+            self.apply_control_button_layout(animate=False)
+        self._update_edit_overlay()
+
+    def _move_edit_resize(self, global_pos: QPoint):
+        if not self._edit_drag:
+            return
+        key = self._edit_drag["key"]
+        start = self._edit_drag["start"]
+        delta = global_pos - start
+        scale = float(self._edit_drag["scale"])
+        rect = self._edit_drag["rect"]
+        min_w, min_h = self._min_edit_size(key)
+        dx = max(min_w - rect.width(), float(delta.x()))
+        dy = max(min_h - rect.height(), float(delta.y()))
+        sw, sh = self._edit_drag["size"]
+        if key == "art":
+            # Keep the cover resize square and let ArtView recompute its own pad.
+            d = max(dx, dy)
+            aw, ah = self._edit_drag["art_delta"]
+            logical = d / scale
+            self._set_edit_size_logic("art", aw + logical, ah + logical)
+            self.apply_art_size_layout(animate=False, refresh_pixmap=False)
+        elif key in ("source", "source_logo"):
+            d = max(dx, dy)
+            self._set_edit_size_logic(
+                key, sw + d / scale, sh + d / scale)
+            self._apply_source_layout(
+                self._edit_drag["source_rect"],
+                self._edit_drag["logo_rect"])
+        else:
+            self._set_edit_size_logic(
+                key, sw + dx / scale, sh + dy / scale)
+            if key == "controls":
+                self.apply_control_button_layout(animate=False)
+            elif key.startswith("ctrl_"):
+                self.apply_control_button_layout(animate=False)
+            elif key.startswith("top_"):
+                self._apply_topbar_edit_layout()
+            elif key in ("title", "artist"):
+                self._apply_cover_layout(
+                    self._cover_layout_data(self._cover_enabled))
+            elif key == "seek":
+                self.apply_seek_length()
+            elif key in ("time_now", "time_total"):
+                self.apply_progress_time_spacing()
+            elif key.startswith("empty"):
+                self._apply_empty_layout_positions()
+                self._update_edit_overlay()
+            elif self._is_edit_instance_key(key):
+                self._apply_edit_instance_layout(key)
+        self._update_edit_overlay()
+
+    def _move_edit_rotate(self, global_pos: QPoint):
+        if not self._edit_drag:
+            return
+        key = self._edit_drag["key"]
+        center = self._edit_drag["center"]
+        dx = global_pos.x() - center.x()
+        dy = global_pos.y() - center.y()
+        if abs(dx) + abs(dy) <= 1:
+            return
+        cur_vec = math.degrees(math.atan2(dy, dx))
+        delta = self._normalize_edit_angle(cur_vec - self._edit_drag["vec"])
+        if abs(delta) > 1.0:
+            self._edit_drag["moved"] = True
+        angle = self._edit_drag["angle"] + delta
+        self._set_edit_angle_logic(key, angle)
+        if key == "controls":
+            self.apply_control_button_layout(animate=False)
+        else:
+            self._apply_edit_angle(key)
+        self._update_edit_overlay()
+
+    def eventFilter(self, obj, event):
+        if self._edit_mode and obj in self._edit_filter_targets:
+            et = event.type()
+            if et == QEvent.KeyPress and self._handle_edit_key_press(event):
+                return True
+            if et == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
+                key = self._edit_filter_targets[obj]
+                self._set_edit_selection(key, additive=False)
+                event.accept()
+                return True
+            if et == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                pos = self.mapFromGlobal(event.globalPosition().toPoint())
+                rotate_key = self._rotate_key_at(QPointF(pos))
+                resize_key = self._resize_key_at(QPointF(pos))
+                if rotate_key is not None:
+                    self._begin_edit_rotate(
+                        rotate_key, event.globalPosition().toPoint())
+                elif resize_key is not None:
+                    self._begin_edit_resize(
+                        resize_key, event.globalPosition().toPoint())
+                else:
+                    self._begin_edit_drag(
+                        self._edit_filter_targets[obj],
+                        event.globalPosition().toPoint(),
+                        bool(event.modifiers() & Qt.ShiftModifier))
+                event.accept()
+                return True
+            if et == QEvent.MouseMove and self._edit_drag is not None:
+                if event.buttons() & Qt.LeftButton:
+                    self._move_edit_drag(event.globalPosition().toPoint())
+                    event.accept()
+                    return True
+            if et == QEvent.MouseMove and self._edit_drag is None:
+                gpos = event.globalPosition().toPoint()
+                pos = QPointF(self.mapFromGlobal(gpos))
+                self._update_edit_hover_from_global(gpos)
+                if self._rotate_key_at(pos) is not None:
+                    obj.setCursor(Qt.CrossCursor)
+                elif self._resize_key_at(pos) is not None:
+                    obj.setCursor(Qt.SizeFDiagCursor)
+                else:
+                    obj.setCursor(Qt.SizeAllCursor)
+            if et == QEvent.Enter and self._edit_drag is None:
+                self._update_edit_hover_from_global(QCursor.pos())
+            if et == QEvent.Leave and self._edit_drag is None:
+                self._update_edit_hover_from_global(QCursor.pos())
+            if et == QEvent.MouseButtonRelease and self._edit_drag is not None:
+                if event.button() == Qt.LeftButton:
+                    drag_key = self._edit_drag.get("key")
+                    moved = bool(self._edit_drag.get("moved"))
+                    mode = self._edit_drag.get("mode")
+                    was_selected = bool(self._edit_drag.get("was_selected"))
+                    self._move_edit_drag(event.globalPosition().toPoint())
+                    if self._edit_drag.get("mode") == "resize":
+                        key = self._edit_drag.get("key")
+                        if key == "art":
+                            self.apply_art_size_layout(
+                                animate=False, refresh_pixmap=True)
+                            self._refresh_art_pixmap()
+                    self._edit_drag = None
+                    self._sync_edit_handle_fades()
+                    self.layout_edit_changed.emit()
+                    if mode == "move" and not moved:
+                        source_key = self._edit_instance_source(drag_key)
+                        action_key = source_key or drag_key
+                        if action_key in ("top_edit", "top_reset"):
+                            if was_selected:
+                                if action_key == "top_edit":
+                                    self.set_layout_edit_mode(False)
+                                else:
+                                    self.reset_layout_positions()
+                        elif was_selected:
+                            self._set_edit_selection(drag_key, additive=False)
+                    event.accept()
+                    return True
+        return super().eventFilter(obj, event)
 
     def apply_text_layout(self):
         if hasattr(self, "title") and hasattr(self, "artist"):
@@ -1984,13 +4245,43 @@ class Card(QWidget):
         small_px, small_d = self._control_metric(12, 24)
         nav_px, nav_d = self._control_metric(14, 28)
         play_d = max(1, S(36 * self._control_button_scale()))
-        self.btn_shuffle.set_metrics(small_px, small_d)
-        self.btn_repeat.set_metrics(small_px, small_d)
-        self.btn_prev.set_metrics(nav_px, nav_d)
-        self.btn_next.set_metrics(nav_px, nav_d)
-        self.btn_play.set_diameter(play_d)
+        for key, (btn, glyph_base, diam_base, is_play) in (
+                self._control_edit_specs.items()):
+            ind = self._button_edit_scale(key)
+            if is_play:
+                btn.set_diameter(max(1, round(play_d * ind)))
+            elif diam_base == 24:
+                btn.set_metrics(max(1, round(small_px * ind)),
+                                max(1, round(small_d * ind)))
+            else:
+                btn.set_metrics(max(1, round(nav_px * ind)),
+                                max(1, round(nav_d * ind)))
         self.relayout_controls(animate=animate)
         self.update()
+
+    def _apply_topbar_edit_layout(self):
+        if not hasattr(self, "_topbar_edit_specs"):
+            return
+        self.btn_edit.move(self._W - S(128), S(10))
+        self.btn_reset_layout.move(self._W - S(152), S(10))
+        base_geos = {
+            "top_edit": QRectF(self._W - S(128), S(10), S(22), S(22)),
+            "top_reset": QRectF(self._W - S(152), S(10), S(22), S(22)),
+            "top_volume": QRectF(self._W - S(104), S(10), S(22), S(22)),
+            "top_settings": QRectF(self._W - S(80), S(10), S(22), S(22)),
+            "top_pin": QRectF(self._W - S(56), S(10), S(22), S(22)),
+            "top_close": QRectF(self._W - S(32), S(10), S(22), S(22)),
+        }
+        for key, (btn, glyph_base, diam_base) in self._topbar_edit_specs.items():
+            scale = self._button_edit_scale(key, 34.0)
+            glyph_px = max(1, S(glyph_base * scale))
+            diam = max(1, S(diam_base * scale))
+            btn.set_metrics(glyph_px, diam)
+            base = base_geos.get(key)
+            if base is None:
+                continue
+            off = self._edit_offset_px(key)
+            btn.move(round(base.x() + off.x()), round(base.y() + off.y()))
 
     def _on_cover_layout(self, v):
         if self._layout_from is None or self._layout_to is None:
@@ -2176,7 +4467,8 @@ class Card(QWidget):
         if hover is not None:
             self._topbar_hover = bool(hover)
         target = 1.0
-        if SETTINGS.get("topbar_hover", False) and not self._topbar_hover:
+        if (not self._edit_mode and SETTINGS.get("topbar_hover", False)
+                and not self._topbar_hover):
             target = 0.0
         self._topbar_oa.stop()
         ms = adur(160 if target > self._topbar_op else 200, 100)
@@ -2241,6 +4533,8 @@ class Card(QWidget):
             self._controls_hover = bool(hover)
         if self._empty_state:
             target = 0.0
+        elif self._edit_mode:
+            target = 1.0
         elif SETTINGS.get("controls_hover", False):
             target = 1.0 if self._controls_hover else 0.0
         else:
@@ -2278,6 +4572,7 @@ class Card(QWidget):
         if relayout or needs_relayout:
             self.relayout_controls(animate=animate,
                                    fade_in_buttons=fade_in)
+        self._apply_edit_hidden_visibility()
 
     def _on_button_op(self, btn: QWidget, v):
         op = max(0.0, min(1.0, float(v)))
@@ -2352,12 +4647,21 @@ class Card(QWidget):
         self.update_source_visible()
         self.refresh_empty_text()
         self._sync_controls_hover(animate=animate)
-        # 右上角按鈕永遠顯示
-        for b in (self.btn_vol, self.btn_settings, self.btn_pin,
-                  self.btn_close):
-            b.setVisible(True)
+        # 右上角按鈕永遠顯示；筆可關閉，重設只在編輯模式顯示
+        for b in self._topbar_buttons:
+            if b is self.btn_edit:
+                b.setVisible(self._edit_button_target > 0.001
+                             or self._edit_button_op > 0.001)
+            else:
+                b.setVisible(
+                    b is not self.btn_reset_layout
+                    or self._reset_button_target > 0.001
+                    or self._reset_button_op > 0.001)
             b.raise_()
         self.fps_label.raise_()
+        self._apply_edit_hidden_visibility()
+        self._sync_edit_library()
+        self._sync_edit_instance_element_states()
         if empty:
             self._dom = None
             self.refresh_accent()
@@ -2406,6 +4710,7 @@ class Card(QWidget):
         else:
             self.source_logo.show()
             self.source.show()
+        self._apply_edit_hidden_visibility()
         self.update()
 
     def set_source(self, app_id: str):
@@ -2512,11 +4817,13 @@ class Card(QWidget):
     def _apply_colors(self, acc: QColor, bg1: QColor, bg2: QColor):
         self._accent = QColor(acc)
         self._bg1, self._bg2 = QColor(bg1), QColor(bg2)
-        self.art.set_accent(acc)
+        for widget in self._art_widgets():
+            widget.set_accent(acc)
         self.seek.set_accent(acc)
         self.btn_shuffle.set_accent(acc)
         self.btn_repeat.set_accent(acc)
         self.empty_btn.set_theme(acc, self._control_gradient(acc))
+        self._sync_edit_instance_element_states()
         if hasattr(self, "_custom_colors"):
             self.apply_custom_colors(animate=False)
         self._bg = None
@@ -2619,6 +4926,9 @@ class Card(QWidget):
         qss = f"color: {self._css_color(colors['number'])};"
         self.t_now.setStyleSheet(qss)
         self.t_total.setStyleSheet(qss)
+        for widget in self._edit_instance_widgets.values():
+            if isinstance(widget, TimeLabel):
+                widget.setStyleSheet(qss)
 
         topbar_col = (colors["topbar"] if (topbar_override
                       or force_topbar_override) else None)
@@ -2929,10 +5239,12 @@ class Card(QWidget):
         self._bg_fade_anim.start()
 
     def apply_cover_border(self, animate: bool = True):
-        self.art.set_border(bool(SETTINGS.get("cover_border", False)),
-                            float(SETTINGS.get("cover_border_width", 2.0)),
-                            float(SETTINGS.get("cover_border_opacity", 0.85)),
-                            animate=animate)
+        for widget in self._art_widgets():
+            widget.set_border(
+                bool(SETTINGS.get("cover_border", False)),
+                float(SETTINGS.get("cover_border_width", 2.0)),
+                float(SETTINGS.get("cover_border_opacity", 0.85)),
+                animate=animate)
 
     def _cover_radius_for_size(self, cover_size: int) -> int:
         shape = SETTINGS.get("cover_shape", "rounded")
@@ -2959,6 +5271,7 @@ class Card(QWidget):
             self.art.set_pixmap(self._art_pm, animate=animate)
         else:
             self.art.update()
+        self._refresh_edit_instance_art_all(animate=animate)
 
     def _set_art_scales_for_layout(self, cover_scale: float,
                                    vinyl_scale: float):
@@ -2978,24 +5291,58 @@ class Card(QWidget):
     def _art_size_layout_done(self):
         c1, v1 = self._art_scale_to
         self._set_art_scales_for_layout(c1, v1)
-        if self._art_img is not None:
-            dpr = self.devicePixelRatioF()
-            radius = self._cover_radius()
-            self._art_pm = rounded_pixmap(
-                self._art_img, self._cover_visual_size(), radius, dpr)
-            self.art.set_radius(radius, animate=False)
-            self.art.set_pixmap(self._art_pm, animate=False)
+        if self._art_size_refresh_pixmap:
+            self._refresh_art_pixmap()
+        self._art_size_refresh_pixmap = True
         self.update()
 
-    def apply_art_size_layout(self, animate: bool = True):
+    def _refresh_art_pixmap(self):
+        if self._art_img is None:
+            return
+        dpr = self.devicePixelRatioF()
+        radius = self._cover_radius()
+        self._art_pm = rounded_pixmap(
+            self._art_img, self._cover_visual_size(), radius, dpr)
+        self.art.set_radius(radius, animate=False)
+        self.art.set_pixmap(self._art_pm, animate=False)
+        self._refresh_edit_instance_art_all(animate=False)
+
+    def apply_cover_blur(self, radius: float):
+        for widget in self._art_widgets():
+            widget.set_blur(radius)
+
+    def apply_audio_feedback_shape(self):
+        for widget in self._art_widgets():
+            widget.audio_shape_changed()
+
+    def apply_audio_feedback_settings(self):
+        for widget in self._art_widgets():
+            widget.apply_audio_feedback_settings()
+
+    def apply_art_motion_settings(self):
+        for widget in self._art_widgets():
+            widget.apply_motion_settings()
+
+    def apply_tonearm_visible(self, visible: bool, animate: bool = True):
+        for widget in self._art_widgets():
+            widget.set_tonearm_visible(visible, animate=animate)
+
+    def apply_vinyl_center_settings(self, animate: bool = True):
+        for widget in self._art_widgets():
+            widget.apply_vinyl_center_settings(animate=animate)
+
+    def apply_art_size_layout(self, animate: bool = True,
+                              refresh_pixmap: bool = True):
         if not hasattr(self, "art"):
             return
         if self._art_size_anim.state() == Anim.Running:
             self._art_size_anim.stop()
+        self._art_size_refresh_pixmap = bool(refresh_pixmap)
         target = (self._cover_scale_setting(), self._vinyl_scale_setting())
         current = (float(self.art._cover_scale), float(self.art._vinyl_scale))
         if (abs(current[0] - target[0]) < 0.0001
                 and abs(current[1] - target[1]) < 0.0001):
+            self._art_size_refresh_pixmap = True
             return
         ms = adur(260, 150)
         if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
@@ -3011,7 +5358,8 @@ class Card(QWidget):
         self._art_size_anim.start()
 
     def apply_fps(self):
-        self.art.apply_fps()
+        for widget in self._art_widgets():
+            widget.apply_fps()
         self.seek.apply_fps()
         self.title.apply_fps()
         self.artist.apply_fps()
@@ -3078,13 +5426,79 @@ class Card(QWidget):
             old_pm = self.grab()
         self.refresh_empty_text()
         self.empty_btn.set_texts(tr("launch_spotify"), tr("launching"))
-        self.empty_btn.move((self._W - self.empty_btn.width()) // 2,
-                            S(74 if self._compact else 92) - self.empty_btn.pad)
+        self._empty_btn_base_size = (
+            self.empty_btn.width(), self.empty_btn.height())
+        base = ((self._W - self._empty_btn_base_size[0]) // 2,
+                S(74 if self._compact else 92) - self.empty_btn.pad,
+                self._empty_btn_base_size[0],
+                self._empty_btn_base_size[1])
+        x, y, bw, bh = self._offset_geometry("empty_button", base)
+        self.empty_btn.setFixedSize(bw, bh)
+        self.empty_btn.move(x, y)
+        self._update_edit_overlay()
         if old_pm is not None:
             if self._fade is None:
                 self._fade = _CardFade(self)
             self._fade.start(old_pm, ms)
         self.update()
+
+    def _on_edit_button_op(self, value):
+        self._edit_button_op = max(0.0, min(1.0, float(value)))
+        if self._edit_button_op > 0.001:
+            self.btn_edit.show()
+        self.btn_edit.set_extra_opacity(self._edit_button_op)
+        self.btn_edit.setAttribute(
+            Qt.WA_TransparentForMouseEvents,
+            self._edit_button_op <= 0.02)
+        self._apply_edit_hidden_visibility()
+        self.update()
+
+    def _edit_button_done(self):
+        if self._edit_button_target <= 0.001:
+            self.btn_edit.hide()
+            self.btn_edit.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        else:
+            self.btn_edit.show()
+            self.btn_edit.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.update()
+
+    def apply_edit_button_visible(self, animate: bool = True):
+        visible = bool(SETTINGS.get("show_edit_button", True))
+        if not visible and self._edit_mode:
+            self.set_layout_edit_mode(False)
+        target = 1.0 if visible else 0.0
+        self._edit_button_target = target
+        self._edit_button_anim.stop()
+        if visible or self._edit_button_op > 0.001:
+            self.btn_edit.show()
+            self.btn_edit.raise_()
+        ms = adur(180 if visible else 160, 100)
+        if (not animate or not anim_on() or ms <= 0 or not self.isVisible()):
+            self._on_edit_button_op(target)
+            self._edit_button_done()
+        else:
+            self._edit_button_anim.setStartValue(self._edit_button_op)
+            self._edit_button_anim.setEndValue(target)
+            self._edit_button_anim.setDuration(ms)
+            self._edit_button_anim.setEasingCurve(QEasingCurve.OutCubic)
+            self._edit_button_anim.start()
+        if self._edit_mode:
+            self._fade_reset_button(True, animate=animate)
+        else:
+            self._fade_reset_button(False, animate=animate)
+        for b in self._topbar_buttons:
+            b.raise_()
+        self.update()
+
+    def set_audio_level_provider(self, provider):
+        self._audio_level_provider = provider
+        for widget in self._art_widgets():
+            widget.set_audio_level_provider(provider)
+
+    def set_art_playing(self, playing: bool):
+        self._art_playing = bool(playing)
+        for widget in self._art_widgets():
+            widget.set_playing(self._art_playing)
 
     def set_art(self, img: QImage | None, animate=True):
         if img is None or img.isNull():
@@ -3101,6 +5515,7 @@ class Card(QWidget):
             self._cover_grad = cover_gradient(img)
         self.refresh_accent(animate=animate)
         self.art.set_pixmap(self._art_pm, animate=animate)
+        self._refresh_edit_instance_art_all(animate=animate)
         self.update()
 
     # ---- 繪製 ----
@@ -3471,6 +5886,28 @@ class Card(QWidget):
     # ---- 拖曳整個視窗 ----
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
+            if self._edit_mode:
+                edge = self._window_resize_edge_at(e.position())
+                if edge:
+                    self._begin_window_resize(
+                        edge, e.globalPosition().toPoint())
+                    e.accept()
+                    return
+                rotate_key = self._rotate_key_at(e.position())
+                if rotate_key is not None:
+                    self._begin_edit_rotate(
+                        rotate_key, e.globalPosition().toPoint())
+                    e.accept()
+                    return
+                resize_key = self._resize_key_at(e.position())
+                if resize_key is not None:
+                    self._begin_edit_resize(
+                        resize_key, e.globalPosition().toPoint())
+                    e.accept()
+                    return
+                target_key = self._target_key_at(e.position())
+                if target_key is None:
+                    self._set_edit_selection(None, additive=False)
             win = self.window()
             if hasattr(win, "_stop_keep_on_screen_anim"):
                 win._stop_keep_on_screen_anim()
@@ -3481,10 +5918,48 @@ class Card(QWidget):
                 self._bg_parallax_timer.stop()
 
     def mouseMoveEvent(self, e):
+        if self._window_resize_drag is not None and e.buttons() & Qt.LeftButton:
+            self._move_window_resize(e.globalPosition().toPoint())
+            e.accept()
+            return
+        if self._edit_drag is not None and e.buttons() & Qt.LeftButton:
+            self._move_edit_drag(e.globalPosition().toPoint())
+            e.accept()
+            return
+        if self._edit_mode:
+            self._update_edit_hover_from_global(e.globalPosition().toPoint())
+            edge = self._window_resize_edge_at(e.position())
+            if edge:
+                self.setCursor(self._window_resize_cursor(edge))
+            elif self._rotate_key_at(e.position()) is not None:
+                self.setCursor(Qt.CrossCursor)
+            elif self._resize_key_at(e.position()) is not None:
+                self.setCursor(Qt.SizeFDiagCursor)
+            else:
+                self.unsetCursor()
         if self._drag_off is not None and e.buttons() & Qt.LeftButton:
             self.window().move(e.globalPosition().toPoint() - self._drag_off)
 
     def mouseReleaseEvent(self, e):
+        if self._window_resize_drag is not None and e.button() == Qt.LeftButton:
+            self._move_window_resize(e.globalPosition().toPoint())
+            self._window_resize_drag = None
+            self.layout_edit_changed.emit()
+            e.accept()
+            return
+        if self._edit_drag is not None and e.button() == Qt.LeftButton:
+            self._move_edit_drag(e.globalPosition().toPoint())
+            if self._edit_drag.get("mode") == "resize":
+                key = self._edit_drag.get("key")
+                if key == "art":
+                    self.apply_art_size_layout(
+                        animate=False, refresh_pixmap=True)
+                    self._refresh_art_pixmap()
+            self._edit_drag = None
+            self._sync_edit_handle_fades()
+            self.layout_edit_changed.emit()
+            e.accept()
+            return
         if self._drag_off is not None:
             self._drag_off = None
             self._bg_parallax_drag_suspended = False
@@ -3497,6 +5972,11 @@ class Card(QWidget):
             self.wheel_volume.emit(d)
         e.accept()
 
+    def keyPressEvent(self, e):
+        if self._handle_edit_key_press(e):
+            return
+        super().keyPressEvent(e)
+
     def enterEvent(self, e):
         self._sync_bg_parallax_timer()
         self._sync_controls_hover(True)
@@ -3504,6 +5984,7 @@ class Card(QWidget):
         super().enterEvent(e)
 
     def leaveEvent(self, e):
+        self._set_edit_hover_key(None)
         self._bg_parallax_drag_suspended = False
         self._set_bg_parallax(QPointF(0.0, 0.0))
         if self._bg_parallax_config_enabled():
@@ -3934,6 +6415,28 @@ class PlayerWindow(QWidget):
         elif visual is not None:
             self.card.restore_visual_state(visual)
 
+    def _sync_size_to_card(self):
+        if self.card is None:
+            return
+        self.setFixedSize(self.card.width() + MARGIN * 2,
+                          self.card.height() + MARGIN * 2)
+
+    def moveEvent(self, e):
+        super().moveEvent(e)
+        if self.card is not None and self.card.layout_edit_mode():
+            self.card._sync_edit_library(animate=False)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.card is not None and self.card.layout_edit_mode():
+            self.card._sync_edit_library(animate=False)
+
+    def hideEvent(self, e):
+        if (self.card is not None
+                and hasattr(self.card, "_edit_library")):
+            self.card._edit_library.hide()
+        super().hideEvent(e)
+
     def _request_rebuild(self):
         self._rebuild_timer.start()
 
@@ -4202,16 +6705,15 @@ class PlayerWindow(QWidget):
             self.card._sync_controls_hover(animate=True)
         elif key == "topbar_hover":
             self.card._sync_topbar_hover(animate=True)
-        elif key in ("title_size", "artist_size",
-                     "title_x_offset", "title_y_offset",
-                     "artist_x_offset", "artist_y_offset",
-                     "source_x_offset", "source_y_offset"):
+        elif key in ("title_size", "artist_size"):
             self.card.apply_text_layout()
         elif key in ("control_button_size", "control_button_spacing"):
             self.card.apply_control_button_layout(animate=True)
         elif key in ("show_btn_shuffle", "show_btn_prev",
                      "show_btn_next", "show_btn_repeat"):
             self.card.apply_button_visibility(relayout=True, animate=True)
+        elif key == "show_edit_button":
+            self.card.apply_edit_button_visible()
         elif key == "show_fps":
             self.card.apply_fps_overlay()
             if self._panel is not None:
@@ -4234,21 +6736,21 @@ class PlayerWindow(QWidget):
             if str(value) != "audio":
                 self._spectrum.stop()
         elif key == "audio_feedback_shape":
-            self.card.art.audio_shape_changed()
+            self.card.apply_audio_feedback_shape()
         elif key in ("audio_feedback_thickness", "audio_feedback_sensitivity",
                      "audio_feedback_spin", "audio_feedback_spin_speed",
                      "audio_cover_pulse", "audio_cover_pulse_strength"):
-            self.card.art.apply_audio_feedback_settings()
+            self.card.apply_audio_feedback_settings()
         elif key in ("cover_shape", "cover_radius_strength"):
             self.card.apply_cover_shape(animate=True)
         elif key == "cover_blur":
-            self.card.art.set_blur(float(value))
+            self.card.apply_cover_blur(float(value))
         elif key in ("tonearm_speed", "vinyl_spin_speed"):
-            self.card.art.apply_motion_settings()
+            self.card.apply_art_motion_settings()
         elif key == "show_tonearm":
-            self.card.art.set_tonearm_visible(bool(value), animate=True)
+            self.card.apply_tonearm_visible(bool(value), animate=True)
         elif key in ("show_vinyl_center", "vinyl_center_size"):
-            self.card.art.apply_vinyl_center_settings(animate=True)
+            self.card.apply_vinyl_center_settings(animate=True)
         elif key in ("cover_border", "cover_border_width",
                      "cover_border_opacity"):
             self.card.apply_cover_border(animate=True)
@@ -4288,6 +6790,14 @@ class PlayerWindow(QWidget):
         SETTINGS.clear()
         SETTINGS.update(DEFAULTS)
         SETTINGS["custom_themes"] = custom_themes
+        SETTINGS["edit_layout_positions"] = {}
+        SETTINGS["edit_layout_sizes"] = {}
+        SETTINGS["edit_layout_angles"] = {}
+        SETTINGS["edit_window_size"] = {}
+        SETTINGS["edit_hidden_keys"] = []
+        SETTINGS["edit_library_pos"] = {}
+        SETTINGS["edit_library_collapsed"] = False
+        SETTINGS["edit_library_instances"] = []
         SETTINGS["x"], SETTINGS["y"] = x, y
         if sx is not None and sy is not None:
             SETTINGS["settings_x"], SETTINGS["settings_y"] = sx, sy
@@ -4389,6 +6899,8 @@ class PlayerWindow(QWidget):
         c.btn_pin.setChecked(SETTINGS.get("pinned", True))
         c.btn_pin.toggled.connect(self._set_pinned)
         c.btn_close.clicked.connect(self.hide_animated)
+        c.btn_edit.toggled.connect(c.set_layout_edit_mode)
+        c.btn_reset_layout.clicked.connect(lambda: c.reset_layout_positions())
         c.btn_vol.clicked.connect(self._show_volume)
         c.btn_vol.installEventFilter(self)
         c.btn_settings.clicked.connect(self._toggle_panel)
@@ -4399,7 +6911,7 @@ class PlayerWindow(QWidget):
         c.btn_repeat.clicked.connect(self._cycle_repeat)
         c.seek.seeked.connect(self._seek_to)
         c.seek.previewed.connect(self._preview_seek_time)
-        c.art.set_audio_level_provider(self._read_audio_peak)
+        c.set_audio_level_provider(self._read_audio_peak)
         c.empty_btn.clicked.connect(self._launch_spotify)
         c.title.setCursor(Qt.PointingHandCursor)
         c.artist.setCursor(Qt.PointingHandCursor)
@@ -4408,6 +6920,7 @@ class PlayerWindow(QWidget):
         self._bind_open_or_drag(c.artist, "artist")
         c.wheel_volume.connect(self._wheel_volume)
         c.drag_finished.connect(self._save_cfg)
+        c.layout_edit_changed.connect(lambda: self._save_timer.start())
         c.accent_changed.connect(self._sync_panel_accent)
         c.accent_changed.connect(lambda _: self._tray_timer.start())
         c.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -4489,6 +7002,7 @@ class PlayerWindow(QWidget):
         self.setWindowFlag(Qt.WindowStaysOnTopHint, pinned)
         self.move(pos)
         self.show()
+        self.card._sync_edit_instance_element_states()
         self._save_cfg()
 
     def _menu(self, pos):
@@ -4964,7 +7478,8 @@ class PlayerWindow(QWidget):
             self.state.playing = not self.state.playing
             self.card.btn_play.set_playing(self.state.playing)
             self.card.seek.set_playing(self.state.playing)
-            self.card.art.set_playing(self.state.playing)
+            self.card.set_art_playing(self.state.playing)
+            self.card._sync_edit_instance_element_states()
         self._cmd("toggle_play")
 
     def _toggle_shuffle(self):
@@ -4973,6 +7488,7 @@ class PlayerWindow(QWidget):
             self.state.shuffle = new
             self._pending["shuffle"] = (new, time.monotonic() + 3.0)
             self.card.btn_shuffle.setChecked(new)
+            self.card._sync_edit_instance_element_states()
             if not self.demo:
                 self.bridge.set_shuffle(new)
 
@@ -5000,6 +7516,7 @@ class PlayerWindow(QWidget):
         b = self.card.btn_repeat
         b.setChecked(mode in (1, 2))
         b.set_glyph(GLYPH_REPEAT_ONE if mode == 1 else GLYPH_REPEAT_ALL)
+        self.card._sync_edit_instance_element_states()
 
     def _seek_to(self, sec: float):
         if self.state:
@@ -5008,7 +7525,8 @@ class PlayerWindow(QWidget):
             self.state.read_at = now
             self._dpos = sec
             self._seek_pending = (sec, now + 3.0, now)
-            self.card.t_now.set_seconds(sec, animate=True)
+            dur = self.card.seek._dur if self.card is not None else 0.0
+            self.card.set_progress_times(sec, dur, animate_now=True)
         if not self.demo and hasattr(self, "bridge"):
             self.bridge.seek(sec)
 
@@ -5125,7 +7643,7 @@ class PlayerWindow(QWidget):
         c.title.setText(st.title or tr("unknown_title"), animate=animate)
         c.artist.setText(st.artist or "", animate=animate)
         c.btn_play.set_playing(st.playing)
-        c.art.set_playing(st.playing)
+        c.set_art_playing(st.playing)
         c.btn_prev.setEnabled(st.can_prev)
         c.btn_next.setEnabled(st.can_next)
         c.btn_shuffle.setEnabled(st.shuffle is not None)
@@ -5134,6 +7652,7 @@ class PlayerWindow(QWidget):
         self._apply_repeat(st.repeat or 0)
         c.seek.set_seek_enabled(st.can_seek and st.duration > 0)
         c.seek.set_playing(st.playing)
+        c._sync_edit_instance_element_states()
 
     def on_art(self, data: bytes):
         img = self._art_cache.get(data)
@@ -5172,7 +7691,8 @@ class PlayerWindow(QWidget):
             if (old_dur > 0 and old_pos >= old_dur * 0.88
                     and raw <= max(3.0, st.duration * 0.04)):
                 self.card.seek.animate_reset_to_start(old_pos, old_dur)
-                self.card.t_now.set_seconds(0.0, animate=True)
+                self.card.set_progress_times(0.0, st.duration,
+                                             animate_now=True)
                 reset_to_start = True
         elif not st.playing:
             if self._seek_ok(st, raw, now):
@@ -5180,7 +7700,8 @@ class PlayerWindow(QWidget):
                         and raw <= max(2.0, st.duration * 0.02)):
                     self.card.seek.animate_reset_to_start(self._dpos,
                                                           st.duration)
-                    self.card.t_now.set_seconds(0.0, animate=True)
+                    self.card.set_progress_times(0.0, st.duration,
+                                                 animate_now=True)
                     reset_to_start = True
                 self._dpos = raw
         else:
@@ -5192,7 +7713,8 @@ class PlayerWindow(QWidget):
                             and raw <= max(2.0, st.duration * 0.02)):
                         self.card.seek.animate_reset_to_start(self._dpos,
                                                               st.duration)
-                        self.card.t_now.set_seconds(0.0, animate=True)
+                        self.card.set_progress_times(0.0, st.duration,
+                                                     animate_now=True)
                         reset_to_start = True
                     self._dpos = raw
             else:
@@ -5254,7 +7776,7 @@ def main():
 
     load_settings()
     sync_startup_entry()
-    if SETTINGS.get("gpu", True):
+    if SETTINGS.get("gpu", False):
         # Qt 6.4+：widget 視窗改用 RHI（D3D11）GPU 合成
         os.environ.setdefault("QT_WIDGETS_RHI", "1")
 

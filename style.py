@@ -52,6 +52,8 @@ GLYPH_VOLUME_2 = "\uE994"
 GLYPH_VOLUME_3 = "\uE995"
 GLYPH_MUTE = "\uE74F"
 GLYPH_SETTINGS = "\uE713"
+GLYPH_EDIT = "\uE70F"
+GLYPH_RESET = "\uE777"
 GLYPH_CHECK = "\uE73E"
 GLYPH_GLOBE = "\uE774"
 GLYPH_SEARCH = "\uE721"
@@ -73,6 +75,14 @@ DEFAULTS = {
     "settings_scale": 1.199758606299479, # 0.8 ~ 2.0
     "settings_panel_type": "normal",  # normal / categories
     "auto_keep_on_screen": True,  # 視窗超出螢幕時自動拉回可見範圍
+    "edit_layout_positions": {},  # 編輯模式拖曳位移；空 dict = 程式預設版面
+    "edit_layout_sizes": {},      # 編輯模式尺寸增量；空 dict = 程式預設尺寸
+    "edit_layout_angles": {},     # 編輯模式旋轉角度；空 dict = 0 度
+    "edit_window_size": {},       # 編輯模式視窗寬高增量；空 dict = 程式預設尺寸
+    "edit_hidden_keys": [],       # 編輯模式刪除/暫存到 library 的元件 key
+    "edit_library_pos": {},       # 編輯模式 library 位置；空 dict = 預設左側
+    "edit_library_collapsed": False,
+    "edit_library_instances": [], # library 拖入的可重複獨立元件
     "settings_advanced_open": False,  # 設定面板進階區塊是否展開
     "radius": 15,           # 6 ~ 28
     "anim": "full",
@@ -94,10 +104,6 @@ DEFAULTS = {
     "marquee_edge_fade": True, # 跑馬燈文字左右邊緣淡化
     "title_size": 0.997494556708598,
     "artist_size": 0.997494556708598,
-    "title_x_offset": -0.20591344239150544,
-    "title_y_offset": -0.20591344239150544,
-    "artist_x_offset": -0.20591344239150544,
-    "artist_y_offset": -0.20591344239150544,
     "auto_theme": "gradient",  # solid / gradient，封面自動主題背景模式
     "art_mode": "cover",    # cover / vinyl / pulse / audio，封面區顯示模式
     "art_cover_size": 0.9245844436826636,
@@ -128,18 +134,17 @@ DEFAULTS = {
     "show_btn_prev": True,
     "show_btn_next": True,
     "show_btn_repeat": True,
+    "show_edit_button": True,
     "control_button_size": 0.9981209175314486,
     "control_button_spacing": 0.9962418350628971,
     "font": "Arial",
     "fps": 144,             # FPS_MIN ~ FPS_MAX；FPS_MAX 表示不限速
     "antialias": True,      # 反鋸齒
     "show_source": True,    # 左上角來源標誌（Spotify 圖示 + 文字）
-    "source_x_offset": 0.0,
-    "source_y_offset": 0.0,
     "source": "spotify",    # spotify / browser / any 媒體來源
     "startup_enabled": False,
     "startup_show": "boot",  # boot / spotify
-    "gpu": True,            # GPU 合成（QT_WIDGETS_RHI，重啟後生效）
+    "gpu": False,           # GPU 合成（QT_WIDGETS_RHI，重啟後生效）
     "shadow": True,         # 背景陰影
     "controls_align": "left",   # 控制列位置 left / center / right
     "custom_grad": ["#1db954", "#3d9be9"],   # 自訂漸層主題的兩端色
@@ -530,7 +535,10 @@ def apply_settings_data(data=None):
     SETTINGS.update(data)
     for key in ("vinyl_style", "cover_reflection",
                 "cover_soft_shadow", "volume_hover_pin", "volume_osd",
-                "edge_snap", "edge_auto_collapse", "edge_slide_expand"):
+                "edge_snap", "edge_auto_collapse", "edge_slide_expand",
+                "title_x_offset", "title_y_offset",
+                "artist_x_offset", "artist_y_offset",
+                "source_x_offset", "source_y_offset"):
         SETTINGS.pop(key, None)
     # 防呆夾限
     SETTINGS["bg_opacity"] = min(1.0, max(0.35, float(SETTINGS["bg_opacity"])))
@@ -543,6 +551,135 @@ def apply_settings_data(data=None):
         SETTINGS["settings_panel_type"] = "normal"
     SETTINGS["auto_keep_on_screen"] = bool(
         SETTINGS.get("auto_keep_on_screen", True))
+    raw_positions = SETTINGS.get("edit_layout_positions", {})
+    clean_positions = {}
+    if isinstance(raw_positions, dict):
+        for key, value in raw_positions.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            try:
+                x = float(value.get("x", 0.0))
+                y = float(value.get("y", 0.0))
+            except (TypeError, ValueError):
+                continue
+            clean_positions[key] = {
+                "x": min(300.0, max(-300.0, x)),
+                "y": min(300.0, max(-300.0, y)),
+            }
+    SETTINGS["edit_layout_positions"] = clean_positions
+    raw_sizes = SETTINGS.get("edit_layout_sizes", {})
+    clean_sizes = {}
+    if isinstance(raw_sizes, dict):
+        for key, value in raw_sizes.items():
+            if not isinstance(key, str) or not isinstance(value, dict):
+                continue
+            try:
+                w = float(value.get("w", 0.0))
+                h = float(value.get("h", 0.0))
+            except (TypeError, ValueError):
+                continue
+            clean_sizes[key] = {
+                "w": min(300.0, max(-300.0, w)),
+                "h": min(300.0, max(-300.0, h)),
+            }
+    SETTINGS["edit_layout_sizes"] = clean_sizes
+    raw_angles = SETTINGS.get("edit_layout_angles", {})
+    clean_angles = {}
+    if isinstance(raw_angles, dict):
+        for key, value in raw_angles.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                angle = float(value)
+            except (TypeError, ValueError):
+                continue
+            angle = ((angle + 180.0) % 360.0) - 180.0
+            if abs(angle) >= 0.01:
+                clean_angles[key] = angle
+    SETTINGS["edit_layout_angles"] = clean_angles
+    raw_win_size = SETTINGS.get("edit_window_size", {})
+    clean_win_size = {}
+    if isinstance(raw_win_size, dict):
+        try:
+            w = float(raw_win_size.get("w", 0.0))
+            h = float(raw_win_size.get("h", 0.0))
+        except (TypeError, ValueError):
+            w = h = 0.0
+        clean_win_size = {
+            "w": min(500.0, max(-300.0, w)),
+            "h": min(400.0, max(-120.0, h)),
+        }
+        if abs(clean_win_size["w"]) < 0.01 and abs(clean_win_size["h"]) < 0.01:
+            clean_win_size = {}
+    SETTINGS["edit_window_size"] = clean_win_size
+    raw_hidden = SETTINGS.get("edit_hidden_keys", [])
+    clean_hidden = []
+    if isinstance(raw_hidden, (list, tuple, set)):
+        for key in raw_hidden:
+            if isinstance(key, str) and key not in clean_hidden:
+                clean_hidden.append(key)
+    SETTINGS["edit_hidden_keys"] = clean_hidden
+    raw_lib_pos = SETTINGS.get("edit_library_pos", {})
+    clean_lib_pos = {}
+    if isinstance(raw_lib_pos, dict):
+        try:
+            x = float(raw_lib_pos.get("x", 0.0))
+            y = float(raw_lib_pos.get("y", 0.0))
+        except (TypeError, ValueError):
+            x = y = 0.0
+        clean_lib_pos = {
+            "x": min(700.0, max(-360.0, x)),
+            "y": min(520.0, max(-240.0, y)),
+        }
+        if abs(clean_lib_pos["x"]) < 0.01 and abs(clean_lib_pos["y"]) < 0.01:
+            clean_lib_pos = {}
+    SETTINGS["edit_library_pos"] = clean_lib_pos
+    SETTINGS["edit_library_collapsed"] = bool(
+        SETTINGS.get("edit_library_collapsed", False))
+    raw_instances = SETTINGS.get("edit_library_instances", [])
+    clean_instances = []
+    used_ids = set()
+    if isinstance(raw_instances, list):
+        for item in raw_instances:
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("id", "")).strip()
+            if not iid or iid in used_ids:
+                continue
+            kind = str(item.get("kind", "")).strip()
+            if kind == "replica":
+                kind = "element"
+            if kind not in ("art", "element"):
+                continue
+            try:
+                x = float(item.get("x", 40.0))
+                y = float(item.get("y", 40.0))
+                size = float(item.get("size", 72.0))
+            except (TypeError, ValueError):
+                continue
+            clean = {
+                "id": iid[:48],
+                "kind": kind,
+                "x": min(500.0, max(-80.0, x)),
+                "y": min(400.0, max(-80.0, y)),
+                "size": min(220.0, max(24.0, size)),
+            }
+            if kind == "art":
+                mode = str(item.get("mode", "cover"))
+                clean["mode"] = mode if mode in ("cover", "vinyl", "pulse", "audio") else "cover"
+            else:
+                clean["source"] = str(item.get("source", ""))[:48]
+                if clean["source"] in ("time_now", "time_total"):
+                    try:
+                        w = float(item.get("w", clean["size"]))
+                        h = float(item.get("h", 14.0))
+                    except (TypeError, ValueError):
+                        w, h = clean["size"], 14.0
+                    clean["w"] = min(180.0, max(24.0, w))
+                    clean["h"] = min(80.0, max(12.0, h))
+            used_ids.add(clean["id"])
+            clean_instances.append(clean)
+    SETTINGS["edit_library_instances"] = clean_instances
     SETTINGS["settings_advanced_open"] = bool(
         SETTINGS.get("settings_advanced_open", False))
     SETTINGS.pop("settings_full_positions", None)
@@ -550,9 +687,6 @@ def apply_settings_data(data=None):
     SETTINGS["fps"] = min(FPS_MAX, max(FPS_MIN, int(SETTINGS["fps"])))
     SETTINGS["antialias"] = bool(SETTINGS["antialias"])
     SETTINGS["show_source"] = bool(SETTINGS["show_source"])
-    for key in ("source_x_offset", "source_y_offset"):
-        SETTINGS[key] = min(80.0, max(
-            -80.0, float(SETTINGS.get(key, 0.0))))
     SETTINGS["startup_enabled"] = bool(
         SETTINGS.get("startup_enabled", False))
     if SETTINGS.get("startup_show") not in ("boot", "spotify"):
@@ -658,10 +792,6 @@ def apply_settings_data(data=None):
         1.8, max(0.6, float(SETTINGS.get("title_size", 1.0))))
     SETTINGS["artist_size"] = min(
         1.8, max(0.6, float(SETTINGS.get("artist_size", 1.0))))
-    for key in ("title_x_offset", "title_y_offset",
-                "artist_x_offset", "artist_y_offset"):
-        SETTINGS[key] = min(80.0, max(
-            -80.0, float(SETTINGS.get(key, 0.0))))
     if SETTINGS.get("art_mode") not in ("cover", "vinyl", "pulse", "audio"):
         SETTINGS["art_mode"] = "cover"
     SETTINGS["art_cover_size"] = min(
@@ -705,7 +835,8 @@ def apply_settings_data(data=None):
         1.0, max(0.0, float(SETTINGS.get("cover_border_opacity", 0.85))))
     SETTINGS["show_fps"] = bool(SETTINGS.get("show_fps", False))
     for key in ("show_btn_shuffle", "show_btn_prev",
-                "show_btn_next", "show_btn_repeat"):
+                "show_btn_next", "show_btn_repeat",
+                "show_edit_button"):
         SETTINGS[key] = bool(SETTINGS.get(key, True))
     SETTINGS["control_button_size"] = min(
         1.6, max(0.7, float(SETTINGS.get("control_button_size", 1.0))))
@@ -1207,6 +1338,14 @@ def fmt_time(sec: float) -> str:
 _DOM_CACHE: OrderedDict[int, QColor] = OrderedDict()
 _GRAD_CACHE: OrderedDict[int, tuple[QColor, QColor]] = OrderedDict()
 
+# 逐像素評分的浮點次方（**1.4 / **1.25）是迴圈裡最貴的單步；s/v 都是
+# 0-255 整數，預先把每個分量的權重算成 256 元素查表，per-pixel 只剩查表
+# 加乘法。查表值與即算位元級一致，取色結果不變。
+_DOM_SAT = tuple((i / 255) ** 1.4 for i in range(256))   # dominant 飽和度權重
+_DOM_VAL = tuple(i / 255 for i in range(256))             # dominant 明度權重
+_GRAD_SAT = tuple(0.25 + (i / 255) ** 1.25 for i in range(256))
+_GRAD_VAL = tuple(0.35 + i / 255 for i in range(256))
+
 
 def _fit_cover_color(c: QColor) -> QColor:
     h, s, v, _ = QColor(c).getHsv()
@@ -1228,6 +1367,23 @@ def _fallback_cover_pair(c: QColor) -> tuple[QColor, QColor]:
     return base, other
 
 
+def _scaled_rgb_bytes(img: QImage, n: int) -> tuple[bytes, int, int, int]:
+    """把封面縮到 n×n 的 RGB32，回傳原始 bytes 與尺寸 (data, w, h, bpl)。
+
+    逐像素統計若用 `pixelColor()`，每像素都跨 C++/Python 邊界建一個 QColor
+    再多次取值；改用 `constBits()` 一次拿整張 buffer，呼叫端直接讀 bytes 做
+    整數運算（value=max(r,g,b)、saturation 手算），不建任何 QColor。
+    Format_RGB32 little-endian 排列為 BGRA，每像素 4 bytes。
+    """
+    small = img.scaled(n, n, Qt.IgnoreAspectRatio,
+                       Qt.SmoothTransformation).convertToFormat(
+                           QImage.Format_RGB32)
+    w, h = small.width(), small.height()
+    bpl = small.bytesPerLine()
+    data = bytes(small.constBits())     # 複製一次（幾 KB），之後索引便宜
+    return data, w, h, bpl
+
+
 def dominant_color(img: QImage) -> QColor:
     """從封面取出最有代表性的主色，調整到適合當背景底色的明度。
 
@@ -1239,23 +1395,35 @@ def dominant_color(img: QImage) -> QColor:
     if cached is not None:
         _DOM_CACHE.move_to_end(ck)
         return QColor(cached)
-    small = img.scaled(28, 28, Qt.IgnoreAspectRatio,
-                       Qt.SmoothTransformation).convertToFormat(
-                           QImage.Format_RGB32)
+    data, w, h, bpl = _scaled_rgb_bytes(img, 28)
     buckets = {}
-    for y in range(small.height()):
-        for x in range(small.width()):
-            c = small.pixelColor(x, y)
-            v = c.value()
-            if v < 26:          # 接近全黑的像素不具代表性
+    bget = buckets.get
+    sat_lut = _DOM_SAT
+    val_lut = _DOM_VAL
+    for y in range(h):
+        row = y * bpl
+        for x in range(w):
+            off = row + (x << 2)
+            b = data[off]
+            g = data[off + 1]
+            r = data[off + 2]
+            mx = r if r >= g else g
+            if b > mx:
+                mx = b
+            if mx < 26:         # 接近全黑的像素不具代表性
                 continue
-            s = c.saturation()
-            key = (c.red() >> 5, c.green() >> 5, c.blue() >> 5)
-            score = (s / 255) ** 1.4 * (v / 255) + 0.02
-            acc = buckets.setdefault(key, [0, 0, 0, 0, 0.0])
-            acc[0] += c.red()
-            acc[1] += c.green()
-            acc[2] += c.blue()
+            mn = r if r <= g else g
+            if b < mn:
+                mn = b
+            s = ((mx - mn) * 255) // mx if mx else 0
+            key = (r >> 5, g >> 5, b >> 5)
+            score = sat_lut[s] * val_lut[mx] + 0.02
+            acc = bget(key)
+            if acc is None:
+                acc = buckets[key] = [0, 0, 0, 0, 0.0]
+            acc[0] += r
+            acc[1] += g
+            acc[2] += b
             acc[3] += 1
             acc[4] += score
     if not buckets:
@@ -1284,25 +1452,37 @@ def cover_gradient(img: QImage) -> tuple[QColor, QColor]:
         _GRAD_CACHE.move_to_end(ck)
         return QColor(cached[0]), QColor(cached[1])
 
-    small = img.scaled(32, 32, Qt.IgnoreAspectRatio,
-                       Qt.SmoothTransformation).convertToFormat(
-                           QImage.Format_RGB32)
+    data, w, h, bpl = _scaled_rgb_bytes(img, 32)
     buckets: dict[tuple[int, int, int], list[float]] = {}
-    for y in range(small.height()):
-        for x in range(small.width()):
-            c = small.pixelColor(x, y)
-            v = c.value()
-            if v < 24:
+    bget = buckets.get
+    sat_lut = _GRAD_SAT
+    val_lut = _GRAD_VAL
+    for y in range(h):
+        row = y * bpl
+        for x in range(w):
+            off = row + (x << 2)
+            b = data[off]
+            g = data[off + 1]
+            r = data[off + 2]
+            mx = r if r >= g else g
+            if b > mx:
+                mx = b
+            if mx < 24:
                 continue
-            s = c.saturation()
-            if s < 18 and v < 160:
+            mn = r if r <= g else g
+            if b < mn:
+                mn = b
+            s = ((mx - mn) * 255) // mx if mx else 0
+            if s < 18 and mx < 160:
                 continue
-            key = (c.red() >> 4, c.green() >> 4, c.blue() >> 4)
-            score = (0.25 + (s / 255) ** 1.25) * (0.35 + v / 255)
-            acc = buckets.setdefault(key, [0.0, 0.0, 0.0, 0.0, 0.0])
-            acc[0] += c.red()
-            acc[1] += c.green()
-            acc[2] += c.blue()
+            key = (r >> 4, g >> 4, b >> 4)
+            score = sat_lut[s] * val_lut[mx]
+            acc = bget(key)
+            if acc is None:
+                acc = buckets[key] = [0.0, 0.0, 0.0, 0.0, 0.0]
+            acc[0] += r
+            acc[1] += g
+            acc[2] += b
             acc[3] += 1.0
             acc[4] += score
 

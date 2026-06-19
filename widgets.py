@@ -48,6 +48,7 @@ class MarqueeLabel(QWidget):
         self._visual_scale = 1.0
         self._visual_y = 0.0
         self._visual_h = 0.0
+        self._edit_angle = 0.0
         self._text_layer_cache = {}
         self._old_text = ""          # 換曲過渡：舊文字
         self._old_w = 0.0
@@ -65,6 +66,20 @@ class MarqueeLabel(QWidget):
         self._color = QColor(color)
         self._clear_text_layers()
         self.update()
+
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
+
+    def _apply_edit_rotation(self, p: QPainter):
+        if abs(self._edit_angle) < 0.01:
+            return
+        p.translate(self.width() / 2.0, self.height() / 2.0)
+        p.rotate(self._edit_angle)
+        p.translate(-self.width() / 2.0, -self.height() / 2.0)
 
     def set_font_px(self, px: int):
         if px == self._px:
@@ -396,11 +411,13 @@ class MarqueeLabel(QWidget):
             lp.end()
 
             p = QPainter(self)
+            self._apply_edit_rotation(p)
             p.setRenderHint(QPainter.SmoothPixmapTransform, True)
             p.drawPixmap(0, 0, layer)
             return
 
         p = QPainter(self)
+        self._apply_edit_rotation(p)
         p.setRenderHint(QPainter.TextAntialiasing)
         self._paint_text_contents(p, y, h, scale, avail_w)
 
@@ -510,6 +527,7 @@ class ArtView(QWidget):
         self._audio_timer.setTimerType(Qt.PreciseTimer)
         self._audio_timer.setInterval(fps_ms())
         self._audio_timer.timeout.connect(self._audio_tick)
+        self._edit_angle = 0.0
         self.setMouseTracking(True)
         self.setFixedSize(self._layout_size + self.pad * 2,
                           self._layout_size + self.pad * 2)
@@ -552,6 +570,20 @@ class ArtView(QWidget):
         self._accent = QColor(c)
         self.update()
 
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
+
+    def _apply_edit_rotation(self, p: QPainter):
+        if abs(self._edit_angle) < 0.01:
+            return
+        p.translate(self.width() / 2.0, self.height() / 2.0)
+        p.rotate(self._edit_angle)
+        p.translate(-self.width() / 2.0, -self.height() / 2.0)
+
     def set_audio_level_provider(self, provider):
         self._audio_level_provider = provider
         self._sync_audio()
@@ -569,6 +601,21 @@ class ArtView(QWidget):
         self.pad = max(8, round(self._layout_size * 0.18))
         self.setFixedSize(self._layout_size + self.pad * 2,
                           self._layout_size + self.pad * 2)
+        self._sync_spin()
+        self.update()
+
+    def set_base_size(self, size: int, radius: int | None = None):
+        size = max(1, int(size))
+        if size == self._size and radius is None:
+            return
+        self._size = size
+        self._layout_size = max(self.cover_size(), self.vinyl_size())
+        self._vinyl_base_cache.clear()
+        self.pad = max(8, round(self._layout_size * 0.18))
+        self.setFixedSize(self._layout_size + self.pad * 2,
+                          self._layout_size + self.pad * 2)
+        if radius is not None:
+            self._radius = max(0, min(self.cover_size() // 2, int(radius)))
         self._sync_spin()
         self.update()
 
@@ -1968,6 +2015,8 @@ class ArtView(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
+        p.save()
+        self._apply_edit_rotation(p)
         t = self._t
         p.save()
         self._apply_hover_transform(p)
@@ -1996,6 +2045,7 @@ class ArtView(QWidget):
         p.restore()
         if self._tonearm_op > 0.001:
             self._draw_tonearm(p, vinyl_alpha * self._tonearm_op)
+        p.restore()
 
 
 class _AnimButton(QAbstractButton):
@@ -2023,6 +2073,7 @@ class _AnimButton(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self._hover_pulse_phase = 0
         self._hover_ms_factor = 1.0
+        self._edit_angle = 0.0
 
     def _on_hov(self, v):
         self._hov = float(v)
@@ -2099,7 +2150,6 @@ class _AnimButton(QAbstractButton):
                           adur(80, 60), QEasingCurve.OutQuad)
 
     def mouseReleaseEvent(self, e):
-        super().mouseReleaseEvent(e)
         if anim_full():
             curve = QEasingCurve(QEasingCurve.OutBack)
             curve.setOvershoot(getattr(self, "_release_overshoot_override",
@@ -2110,14 +2160,24 @@ class _AnimButton(QAbstractButton):
         else:
             self._animate(self._pa, self._press, 1.0, adur(130, 100),
                           QEasingCurve.OutCubic)
+        super().mouseReleaseEvent(e)
 
     def _scale(self) -> float:
         return self._press * (1.0 + self.HOVER_GROW * self._hov)
+
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
 
     def _transform(self, p: QPainter, dx: float = 0.0, dy: float = 0.0,
                    angle: float = 0.0):
         cx, cy = self.width() / 2, self.height() / 2
         p.translate(cx + dx, cy + dy)
+        if self._edit_angle:
+            p.rotate(self._edit_angle)
         if angle:
             p.rotate(angle)
         s = self._scale()
@@ -2394,9 +2454,7 @@ class IconButton(_AnimButton):
         rect = QRectF(self.rect())
 
         glyph = self._draw_glyph()
-        scale_active = abs(self._scale() - 1.0) > 0.001
-        stable_layer = (self._fx_kind in ("gear", "wiggle", "spin")
-                        or self._nudge_dir or self._dot or scale_active)
+        stable_layer = True
         dot_drawn = False
         if stable_layer:
             pm = self._glyph_layer(glyph, col, rect)
@@ -2717,10 +2775,25 @@ class SeekBar(QWidget):
         self._transition_anim = Anim(self)
         self._transition_anim.valueChanged.connect(self._on_transition)
         self._transition_anim.finished.connect(self._transition_done)
+        self._edit_angle = 0.0
 
         self.setMouseTracking(True)
 
     # ---- 外部介面 ----
+
+    def set_edit_angle(self, angle: float):
+        angle = float(angle or 0.0)
+        if abs(angle - self._edit_angle) < 0.01:
+            return
+        self._edit_angle = angle
+        self.update()
+
+    def _apply_edit_rotation(self, p: QPainter):
+        if abs(self._edit_angle) < 0.01:
+            return
+        p.translate(self.width() / 2.0, self.height() / 2.0)
+        p.rotate(self._edit_angle)
+        p.translate(-self.width() / 2.0, -self.height() / 2.0)
 
     def set_accent(self, c: QColor):
         self._accent = QColor(c)
@@ -3564,6 +3637,7 @@ class SeekBar(QWidget):
     def paintEvent(self, _):
         p = QPainter(self)
         aa(p)
+        self._apply_edit_rotation(p)
         if (self._transition_pm is not None and self._transition_t < 0.999):
             new_pm = self._render_pixmap()
             buf = self._crossfade_pixmap(

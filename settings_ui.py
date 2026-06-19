@@ -4372,6 +4372,9 @@ class SettingsPanel(QWidget):
             self.tg_btn_repeat = row("show_btn_repeat", Toggle(
                 bool(SETTINGS["show_btn_repeat"]), accent=self._accent),
                 stretch=False)
+            self.tg_edit_button = row("show_edit_button", Toggle(
+                bool(SETTINGS.get("show_edit_button", True)),
+                accent=self._accent), stretch=False)
 
         if panel_type == "normal":
             build_appearance()
@@ -4481,26 +4484,6 @@ class SettingsPanel(QWidget):
         self.sl_auto_strength = adv_row("auto_color_strength", PanelSlider(
             0, 100, SETTINGS["auto_color_strength"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-
-        section(adv, "section_text")
-        self.sl_source_x = adv_row("source_x_offset", PanelSlider(
-            -80, 80, SETTINGS["source_x_offset"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-        self.sl_source_y = adv_row("source_y_offset", PanelSlider(
-            -80, 80, SETTINGS["source_y_offset"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-        self.sl_title_x = adv_row("title_x_offset", PanelSlider(
-            -80, 80, SETTINGS["title_x_offset"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-        self.sl_title_y = adv_row("title_y_offset", PanelSlider(
-            -80, 80, SETTINGS["title_y_offset"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-        self.sl_artist_x = adv_row("artist_x_offset", PanelSlider(
-            -80, 80, SETTINGS["artist_x_offset"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-        self.sl_artist_y = adv_row("artist_y_offset", PanelSlider(
-            -80, 80, SETTINGS["artist_y_offset"],
-            fmt=lambda v: f"{v:.0f}px", accent=self._accent))
 
         section(adv, "section_cover")
         self.sl_tonearm_speed = adv_row("tonearm_speed", PanelSlider(
@@ -4861,18 +4844,6 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("title_size", v / 100.0))
         self.sl_artist_size.changed.connect(
             lambda v: self.setting_changed.emit("artist_size", v / 100.0))
-        self.sl_title_x.changed.connect(
-            lambda v: self.setting_changed.emit("title_x_offset", v))
-        self.sl_title_y.changed.connect(
-            lambda v: self.setting_changed.emit("title_y_offset", v))
-        self.sl_artist_x.changed.connect(
-            lambda v: self.setting_changed.emit("artist_x_offset", v))
-        self.sl_artist_y.changed.connect(
-            lambda v: self.setting_changed.emit("artist_y_offset", v))
-        self.sl_source_x.changed.connect(
-            lambda v: self.setting_changed.emit("source_x_offset", v))
-        self.sl_source_y.changed.connect(
-            lambda v: self.setting_changed.emit("source_y_offset", v))
         self.sl_control_button_size.changed.connect(
             lambda v: self.setting_changed.emit(
                 "control_button_size", v / 100.0))
@@ -4889,6 +4860,8 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("show_btn_next", v))
         self.tg_btn_repeat.changed.connect(
             lambda v: self.setting_changed.emit("show_btn_repeat", v))
+        self.tg_edit_button.changed.connect(
+            lambda v: self.setting_changed.emit("show_edit_button", v))
         self.btn_reset.clicked.connect(
             lambda: self.setting_changed.emit("settings_reset", True))
         self.btn_settings_import.clicked.connect(
@@ -6412,10 +6385,7 @@ class SettingsPanel(QWidget):
                     self.sl_lightning_duration,
                     self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
-                    self.sl_source_x, self.sl_source_y,
                     self.sl_title_size, self.sl_artist_size,
-                    self.sl_title_x, self.sl_title_y,
-                    self.sl_artist_x, self.sl_artist_y,
                     self.sl_auto_strength, self.sl_cover_border_width,
                     self.sl_cover_border_opacity, self.sl_cover_blur,
                     self.sl_cover_radius_strength,
@@ -6466,7 +6436,7 @@ class SettingsPanel(QWidget):
                     self.tg_marquee_edge_fade,
                     self.tg_audio_spin, self.tg_audio_cover_pulse,
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
-                    self.tg_btn_repeat)
+                    self.tg_btn_repeat, self.tg_edit_button)
         return tuple(w for w in controls if w is not None)
 
     def sync_weather_controls(self, adjust: bool = True,
@@ -6576,6 +6546,9 @@ class SettingsPanel(QWidget):
         anim.start()
 
     def _repaint_controls(self):
+        # 對被 viewport 裁掉的控制項呼叫 update() 本就近乎免費——Qt 在 paint
+        # 階段以 exposed-region 自動略過不可見者。實測 visibleRegion() 預檢的
+        # 成本反而高於它省下的 update()，故不做裁切，直接全部 update。
         for w in self._controls():
             w.update()
 
@@ -6764,8 +6737,10 @@ class VolumePopup(QWidget):
         self.setFont(panel_font(12))
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.NoDropShadowWindowHint
-                            | Qt.WindowStaysOnTopHint)
+                            | Qt.WindowStaysOnTopHint
+                            | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self._accent = QColor(accent)
         self._enabled = value is not None
@@ -7003,6 +6978,4 @@ class VolumePopup(QWidget):
         self._install_filter()
         fade_in(self, slide=8)
         self.raise_()
-        self.activateWindow()
-        self.setFocus(Qt.PopupFocusReason)
         QTimer.singleShot(120, self._enable_auto_dismiss)
