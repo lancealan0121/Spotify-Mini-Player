@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyInstaller build output
+build/
+dist/
+*.spec
+
+# Runtime / user state (regenerated on first launch)
+config.json
+config.json.bak
+
+# Logs & scratch data
+logs/
+data/
+*.log
+*.tmp
+*.bak
+
+# Secrets
+.env
+.env.*
+
+# AI assistant working notes
+.claude/
+.agents/
+.codex/
+AGENTS.md
+CLAUDE.md
+
+# OS cruft
+Thumbs.db
+desktop.ini
