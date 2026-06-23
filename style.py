@@ -60,7 +60,7 @@ GLYPH_SEARCH = "\uE721"
 GLYPH_CHEVRON_DOWN = "\uE70D"
 GLYPH_CHEVRON_UP = "\uE70E"
 
-# ---------------------------------------------------------------- 設定 ----
+# ---- 設定 ----
 
 FPS_MIN = 24
 FPS_MAX = 240
@@ -97,11 +97,13 @@ DEFAULTS = {
     "seek_thumb_size": 0.595937135919813,
     "progress_time_mode": "current",
     "progress_time_anim_enabled": True,
-    "progress_time_anim_style": "fade",  # fade / slide / slide2
+    "progress_time_anim_style": "fade",  # fade / slide / instant
     "progress_time_spacing": 0.0,  # 進度數字字距，邏輯 px
     "controls_hover": True, # 控制列只在 hover 時顯示
     "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
     "marquee_edge_fade": True, # 跑馬燈文字左右邊緣淡化
+    "marquee_speed": 27.0,     # 10.0 ~ 80.0，跑馬燈速度（px / 秒）
+    "marquee_hold": 1.5,       # 0.5 ~ 5.0，跑馬燈停留秒數
     "title_size": 0.997494556708598,
     "artist_size": 0.997494556708598,
     "auto_theme": "gradient",  # solid / gradient，封面自動主題背景模式
@@ -111,6 +113,7 @@ DEFAULTS = {
     "audio_feedback_thickness": 1.0,
     "audio_feedback_sensitivity": 1.0,
     "audio_feedback_shape": "ring",  # ring=環形頻譜 / bars=直立直方圖 / blob=流動波瓣（僅 audio 模式）
+    "audio_feedback_halo": True,     # 反饋條背後的底環（僅 ring）
     "audio_feedback_spin": False,    # 反饋周圍是否繞封面旋轉（僅 ring/blob）
     "audio_feedback_spin_speed": 1.0,  # 旋轉速度倍率
     "audio_cover_pulse": True,       # audio 模式封面跟著節奏脈動縮放
@@ -123,6 +126,8 @@ DEFAULTS = {
     "topbar_hover": False,
     "card_preset": "standard",
     "show_cover": True,
+    "custom_cover": "",         # 自訂封面圖路徑（無專輯封面時顯示）
+    "fallback_cover": "",      # 備援封面圖路徑（專輯封面為空時使用，優先級低於 custom_cover）
     "cover_blur": 0.0,
     "cover_shape": "rounded",  # rounded / square / circle
     "cover_radius_strength": 0.9974260819701061,
@@ -227,12 +232,12 @@ SEEK_THUMBS = [("hover", "滑過顯示"), ("always", "常駐顯示")]
 SEEK_THUMB_SHAPES = [("circle", "圓形"), ("star", "星星"), ("rect", "直條")]
 PROGRESS_TIME_MODES = [("current", "目前"), ("remaining", "-剩餘")]
 PROGRESS_TIME_ANIM_STYLES = [("fade", "淡化"), ("slide", "滑動"),
-                             ("slide2", "滑動 2")]
+                             ("instant", "瞬間")]
 AUTO_THEME_MODES = [("solid", "單色"), ("gradient", "漸層")]
 SOURCE_MODES = [("spotify", "Spotify"), ("browser", "瀏覽器"), ("any", "全部")]
 CONTROLS_ALIGN = [("left", "靠左"), ("center", "置中"), ("right", "靠右")]
 CARD_PRESETS = [("mini", "超迷你"), ("standard", "標準"),
-                ("wide", "寬版"), ("controls", "控制列")]
+                ("cover_only", "單純封面")]
 WEATHER_EFFECTS = [("rain", "雨"), ("snow", "雪"), ("custom", "自訂")]
 LANGUAGES = [("zh", "中文"), ("ja", "日本語")]
 SETTINGS_PANEL_TYPES = [("normal", "一般"), ("categories", "分類")]
@@ -247,11 +252,7 @@ I18N_PATH = os.path.join(RESOURCE_DIR, "i18n.json")
 
 
 def _load_i18n() -> dict:
-    """從 i18n.json 載入語言字串；缺漏的鍵以 zh 補齊。
-
-    語言文字一律放在外部 i18n.json（不寫死在程式裡），方便直接編修/新增
-    語言。檔案結構為 {"zh": {...}, "ja": {...}}。
-    """
+    """從 i18n.json 載入語言字串；缺漏鍵以 zh 補齊。"""
     try:
         with open(I18N_PATH, encoding="utf-8") as f:
             data = json.load(f)
@@ -324,11 +325,7 @@ def _format_qt_message(mode, context, message: str) -> str:
 
 
 def install_qt_message_filter():
-    """只靜音已知的 Windows DirectWrite 點陣字警告。
-
-    Qt 在初始化或原生控制項 fallback 時仍可能嘗試載入 Fixedsys 這類
-    .fon 點陣字，DirectWrite 會印出噪音警告；其他 Qt 訊息仍照常輸出。
-    """
+    """靜音已知的 Windows DirectWrite 點陣字警告（Fixedsys 等 .fon）。"""
     global _QT_MESSAGE_HANDLER_INSTALLED, _PREV_QT_MESSAGE_HANDLER
     if _QT_MESSAGE_HANDLER_INSTALLED:
         return
@@ -369,15 +366,10 @@ def safe_font_family(family: str | None = None) -> str:
 
 
 def install_font_substitutions():
-    """全域攔截 Windows 點陣系統字體（Fixedsys/Terminal/System 等）。
+    """全域攔截 Windows 點陣系統字（Fixedsys/Terminal 等），導向安全 UI 字體。
 
-    這些 .fon 點陣字沒有 TrueType outline，Qt 的 DirectWrite 後端呼叫
-    `CreateFontFaceFromHDC()` 會失敗並噴 `qt.qpa.fonts` 警告，更糟的是
-    某些情況會在存取空 font face 時直接崩潰（exit code 0xC0000005）。
-    `safe_font_family()` 只能擋設定面板選到的字體，攔不住原生對話框、
-    系統 fallback 等以 `styleHint=AnyStyle` 明確請求這些 family 的來源；
-    這裡改用 Qt 全域字體替換表一次把它們導向安全 UI 字體。需在
-    QApplication 建立後、任何視窗建立前呼叫。"""
+    需在 QApplication 建立後、任何視窗建立前呼叫。
+    """
     if QGuiApplication.instance() is None:
         return
     target = safe_font_family()
@@ -788,6 +780,10 @@ def apply_settings_data(data=None):
         SETTINGS.get("marquee_enabled", True))
     SETTINGS["marquee_edge_fade"] = bool(
         SETTINGS.get("marquee_edge_fade", True))
+    SETTINGS["marquee_speed"] = min(
+        80.0, max(10.0, float(SETTINGS.get("marquee_speed", 27.0))))
+    SETTINGS["marquee_hold"] = min(
+        5.0, max(0.5, float(SETTINGS.get("marquee_hold", 1.5))))
     SETTINGS["title_size"] = min(
         1.8, max(0.6, float(SETTINGS.get("title_size", 1.0))))
     SETTINGS["artist_size"] = min(
@@ -806,6 +802,8 @@ def apply_settings_data(data=None):
         SETTINGS["audio_feedback_shape"] = "ring"
     SETTINGS["audio_feedback_spin"] = bool(
         SETTINGS.get("audio_feedback_spin", False))
+    SETTINGS["audio_feedback_halo"] = bool(
+        SETTINGS.get("audio_feedback_halo", True))
     SETTINGS["audio_feedback_spin_speed"] = min(
         2.5, max(0.01, float(SETTINGS.get("audio_feedback_spin_speed", 1.0))))
     SETTINGS["audio_cover_pulse"] = bool(
@@ -822,6 +820,10 @@ def apply_settings_data(data=None):
     SETTINGS["vinyl_spin_speed"] = min(
         2.5, max(0.4, float(SETTINGS.get("vinyl_spin_speed", 1.0))))
     SETTINGS["show_cover"] = bool(SETTINGS.get("show_cover", True))
+    SETTINGS["custom_cover"] = str(
+        SETTINGS.get("custom_cover", "") or "").strip()
+    SETTINGS["fallback_cover"] = str(
+        SETTINGS.get("fallback_cover", "") or "").strip()
     SETTINGS["cover_blur"] = round(min(
         14.0, max(0.0, float(SETTINGS.get("cover_blur", 0.0)))), 1)
     if SETTINGS.get("cover_shape") not in ("rounded", "square", "circle"):
@@ -1047,13 +1049,10 @@ def aa(p: QPainter):
     p.setRenderHint(QPainter.TextAntialiasing, True)
 
 
-# ---------------------------------------------------------------- 動畫 ----
+# ---- 動畫 ----
 
 class _AnimManager(QObject):
-    """全域動畫計時器：所有 Anim 共用一個 PreciseTimer（間隔 = fps 設定）。
-
-    沒有動畫進行時計時器自動停止，不佔 CPU。
-    """
+    """全域動畫計時器：所有 Anim 共用一個 PreciseTimer，無動畫時自動停止。"""
 
     def __init__(self):
         super().__init__()
@@ -1106,11 +1105,8 @@ def apply_anim_fps():
 class Anim(QObject):
     """時間基準數值動畫，取代 QVariantAnimation。
 
-    QVariantAnimation 由 Qt 內部統一計時器驅動，固定約 60fps，在 Windows
-    上還受粗粒度系統計時器（~15.6ms）拖累，fps 設定完全影響不到它；改由
-    共用 PreciseTimer（間隔依 fps 設定）驅動，hover/滑桿等互動動畫才能
-    真正跟上高更新率。介面對齊 QVariantAnimation 的使用子集
-    （stop() 在進行中會同步發 finished，與 Qt 行為一致）。
+    QVariantAnimation 被 Qt 內部計時器鎖在 ~60fps（Windows 粗計時器下更低）；
+    改由共用 PreciseTimer 驅動，互動動畫才能跟上高更新率。
     """
 
     valueChanged = Signal(float)
@@ -1164,7 +1160,7 @@ class Anim(QObject):
         self.valueChanged.emit(self._v0 + (self._v1 - self._v0) * e)
 
 
-# ---------------------------------------------------------------- 陰影 ----
+# ---- 陰影 ----
 
 _SHADOW_CACHE: OrderedDict[tuple, QPixmap] = OrderedDict()
 _SHADOW_TPL: OrderedDict[tuple, QPixmap] = OrderedDict()
@@ -1202,13 +1198,8 @@ def soft_shadow(w: int, h: int, radius: float, blur: int = 18,
                 alpha: int = 150, dpr: float = 1.0) -> QPixmap:
     """預先模糊好的圓角矩形陰影貼圖（快取）。
 
-    QGraphicsDropShadowEffect 掛在 widget 上會讓子元件每幀重繪都重新做
-    高斯模糊，是效能殺手；改成一次性產生貼圖，paintEvent 直接 drawPixmap。
-    回傳貼圖比 (w, h) 大、四周各多 blur，繪製時座標要往左上偏 blur。
-
-    高斯模糊本身也不便宜（縮放/圓角滑桿拖曳時每個新尺寸都要重算一次會
-    微卡）：圓角矩形陰影沿直邊是平移不變的，所以先做一張小模板（角落 +
-    可拉伸中段），任何尺寸都用 9-宮格拼出來，模糊只在每個圓角值做一次。
+    用 9-宮格拼出任意尺寸，避免 QGraphicsDropShadowEffect 每幀重做高斯模糊。
+    回傳貼圖比 (w, h) 大 blur 邊距，繪製時座標往左上偏 blur。
     """
     key = (int(w * dpr), int(h * dpr), round(radius * dpr * 2),
            int(blur * dpr), alpha)
@@ -1263,7 +1254,7 @@ def soft_shadow(w: int, h: int, radius: float, blur: int = 18,
     return out
 
 
-# ---------------------------------------------------------------- 來源 ----
+# ---- 來源 ----
 
 # token（出現在 SMTC app id 中）→ 顯示名稱、進程 exe
 _SOURCE_APPS = [
@@ -1291,7 +1282,7 @@ def source_info(app_id: str) -> tuple[str, list[str], bool]:
     return "MEDIA", [], False
 
 
-# ---------------------------------------------------------------- 字體 ----
+# ---- 字體 ----
 
 _ICON_FAMILY = None
 
@@ -1318,7 +1309,7 @@ def ui_font(px: int, weight=QFont.Normal) -> QFont:
     return f
 
 
-# ---------------------------------------------------------------- 顏色 ----
+# ---- 顏色 ----
 
 def blend(a: QColor, b: QColor, t: float) -> QColor:
     """RGB 內插（含 alpha）。"""
@@ -1338,11 +1329,9 @@ def fmt_time(sec: float) -> str:
 _DOM_CACHE: OrderedDict[int, QColor] = OrderedDict()
 _GRAD_CACHE: OrderedDict[int, tuple[QColor, QColor]] = OrderedDict()
 
-# 逐像素評分的浮點次方（**1.4 / **1.25）是迴圈裡最貴的單步；s/v 都是
-# 0-255 整數，預先把每個分量的權重算成 256 元素查表，per-pixel 只剩查表
-# 加乘法。查表值與即算位元級一致，取色結果不變。
-_DOM_SAT = tuple((i / 255) ** 1.4 for i in range(256))   # dominant 飽和度權重
-_DOM_VAL = tuple(i / 255 for i in range(256))             # dominant 明度權重
+# 逐像素評分的冪次運算是迴圈中最貴的單步；預先建 256 元素查表，per-pixel 只剩查表加乘法
+_DOM_SAT = tuple((i / 255) ** 1.4 for i in range(256))
+_DOM_VAL = tuple(i / 255 for i in range(256))
 _GRAD_SAT = tuple(0.25 + (i / 255) ** 1.25 for i in range(256))
 _GRAD_VAL = tuple(0.35 + i / 255 for i in range(256))
 
@@ -1368,12 +1357,9 @@ def _fallback_cover_pair(c: QColor) -> tuple[QColor, QColor]:
 
 
 def _scaled_rgb_bytes(img: QImage, n: int) -> tuple[bytes, int, int, int]:
-    """把封面縮到 n×n 的 RGB32，回傳原始 bytes 與尺寸 (data, w, h, bpl)。
+    """把封面縮到 n×n 的 RGB32，回傳 raw bytes 與尺寸，供逐像素統計用。
 
-    逐像素統計若用 `pixelColor()`，每像素都跨 C++/Python 邊界建一個 QColor
-    再多次取值；改用 `constBits()` 一次拿整張 buffer，呼叫端直接讀 bytes 做
-    整數運算（value=max(r,g,b)、saturation 手算），不建任何 QColor。
-    Format_RGB32 little-endian 排列為 BGRA，每像素 4 bytes。
+    用 constBits() 一次拿整張 buffer，省去每像素跨 C++/Python 建 QColor 的成本。
     """
     small = img.scaled(n, n, Qt.IgnoreAspectRatio,
                        Qt.SmoothTransformation).convertToFormat(
@@ -1385,10 +1371,9 @@ def _scaled_rgb_bytes(img: QImage, n: int) -> tuple[bytes, int, int, int]:
 
 
 def dominant_color(img: QImage) -> QColor:
-    """從封面取出最有代表性的主色，調整到適合當背景底色的明度。
+    """從封面取出最有代表性的主色，調整明度適合作背景。
 
-    純 Python 逐像素統計不便宜，以 QImage.cacheKey() 快取：同一張封面
-    （上一首/下一首來回、縮放重建卡片）不重算。
+    純 Python 逐像素統計以 QImage.cacheKey() 快取，來回切歌不重算。
     """
     ck = img.cacheKey()
     cached = _DOM_CACHE.get(ck)

@@ -1,0 +1,10 @@
+{
+  "languages": {
+    "Python": {
+      "hard_tabs": false
+    }
+  },
+  "inlay_hints": {
+    "show_background": false
+  }
+}

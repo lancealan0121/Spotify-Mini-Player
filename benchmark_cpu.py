@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 """Spotify Mini — CPU 效能基準測試。
-
-針對每個可能吃 CPU 的子系統做獨立測量，依耗時排名找出瓶頸。
-不依賴實際 Spotify 播放，使用假資料與合成圖片。
+針對各子系統獨立測量，依耗時排名找瓶頸。使用假資料與合成圖片，不依賴 Spotify。
 
 用法：
     python benchmark_cpu.py              # 完整測試
-    python benchmark_cpu.py --quick      # 快速測試（較少次數）
-    python benchmark_cpu.py --frames N   # 自訂連續幀模擬幀數
+    python benchmark_cpu.py --quick      # 快速（較少次數）
+    python benchmark_cpu.py --frames N   # 自訂連續幀數
 """
 
 import math
@@ -39,9 +37,7 @@ BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 TEST_IMG_PATH = os.path.join(BENCH_DIR, "spt.png")
 
 
-# ═══════════════════════════════════════════════════════════════
-# 工具函式
-# ═══════════════════════════════════════════════════════════════
+# ---- 工具函式 ----
 
 def load_settings_clean():
     """載入設定並關閉動畫/特效避免干擾。"""
@@ -101,9 +97,7 @@ def clear_dominant_cache():
     _s._GRAD_CACHE.clear()
 
 
-# ═══════════════════════════════════════════════════════════════
-# 測試案例
-# ═══════════════════════════════════════════════════════════════
+# ---- 測試案例 ----
 
 class BenchCase:
     """單一測試案例。"""
@@ -218,9 +212,7 @@ class BenchSuite:
         return ranked
 
 
-# ═══════════════════════════════════════════════════════════════
-# 建構測試套件
-# ═══════════════════════════════════════════════════════════════
+# ---- 建構測試套件 ----
 
 def build_suite(app: QApplication, card, art_view, marquee, seek_bar,
                 weather_layer, img_300, img_600, quick: bool = False
@@ -512,9 +504,7 @@ def _bench_clip_gradient():
     p.end()
 
 
-# ═══════════════════════════════════════════════════════════════
-# 連續幀模擬
-# ═══════════════════════════════════════════════════════════════
+# ---- 連續幀模擬 ----
 
 class FrameSim:
     """模擬連續幀渲染，測量真實場景下的幀耗時分布。"""
@@ -610,16 +600,12 @@ def print_frame_stats(stats: dict, indent: str = "    "):
           f"{fmt_ns(stats['max'] * 1e9)}")
 
 
-# ═══════════════════════════════════════════════════════════════
-# 設定面板 benchmark
-# ═══════════════════════════════════════════════════════════════
+# ---- 設定面板 benchmark ----
 
 def bench_settings_panel(app: QApplication, quick: bool = False):
-    """設定面板是另一個 CPU 重災區：透明視窗 + 上百個自繪控制項。
+    """設定面板 benchmark：透明視窗 + 自繪控制項的 CPU 成本。
 
-    量三件事：整面板重繪、accent/主題色動畫每幀成本（會重畫所有可見控制
-    項）、各類控制項單次 paint × 數量的貢獻排名。數字每次略有不同，所以
-    只輸出實測值與依數據排出的名次，不寫死任何建議文字。
+    量測：整面板重繪、accent 動畫每幀、各控制項 paint × 數量的貢獻排名。
     """
     import collections
     from PySide6.QtWidgets import QWidget
@@ -699,9 +685,7 @@ def bench_settings_panel(app: QApplication, quick: bool = False):
             "visible": len(visible), "size": (panel.width(), panel.height())}
 
 
-# ═══════════════════════════════════════════════════════════════
-# Main
-# ═══════════════════════════════════════════════════════════════
+# ---- Main ----
 
 def main():
     quick = "--quick" in sys.argv

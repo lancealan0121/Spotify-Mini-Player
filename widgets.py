@@ -19,9 +19,6 @@ from style import (GLYPH_NOTE, GLYPH_VOLUME_0, GLYPH_VOLUME_1,
 class MarqueeLabel(QWidget):
     """文字超出寬度時自動左右捲動的標籤（速度與更新率無關）。"""
 
-    SPEED = 27.0          # px / 秒
-    HOLD = 1.5            # 捲動前後停留秒數
-
     def __init__(self, px: int, color: QColor, weight=QFont.Normal,
                  parent=None):
         super().__init__(parent)
@@ -36,6 +33,8 @@ class MarqueeLabel(QWidget):
         self._color = QColor(color)
         self._marquee_enabled = bool(SETTINGS.get("marquee_enabled", True))
         self._edge_fade = bool(SETTINGS.get("marquee_edge_fade", True))
+        self._speed = float(SETTINGS.get("marquee_speed", 27.0))
+        self._hold_time = float(SETTINGS.get("marquee_hold", 1.5))
         self._edge_fade_op = 1.0 if self._edge_fade else 0.0
         self._edge_fade_anim = Anim(self)
         self._edge_fade_anim.valueChanged.connect(self._on_edge_fade)
@@ -100,10 +99,22 @@ class MarqueeLabel(QWidget):
             return
         self._marquee_enabled = enabled
         self._offset = 0.0
-        self._hold = self.HOLD
+        self._hold = self._hold_time
         self._last = time.monotonic()
         self._sync_scroll_timer()
         self.update()
+
+    def set_marquee_speed(self, speed: float):
+        speed = min(80.0, max(10.0, float(speed)))
+        if abs(speed - self._speed) < 0.01:
+            return
+        self._speed = speed
+
+    def set_marquee_hold(self, hold: float):
+        hold = min(5.0, max(0.5, float(hold)))
+        if abs(hold - self._hold_time) < 0.01:
+            return
+        self._hold_time = hold
 
     def set_marquee_edge_fade(self, enabled: bool):
         enabled = bool(enabled)
@@ -187,7 +198,7 @@ class MarqueeLabel(QWidget):
             self._ta.start()
         self._text = text
         self._offset = 0.0
-        self._hold = self.HOLD
+        self._hold = self._hold_time
         self._last = time.monotonic()
         self._text_w = QFontMetricsF(self._font).horizontalAdvance(text)
         self._clear_text_layers()
@@ -259,10 +270,10 @@ class MarqueeLabel(QWidget):
         if self._hold > 0:
             self._hold -= dt
             return
-        self._offset += self.SPEED * dt
+        self._offset += self._speed * dt
         if self._offset >= self._text_w + self._gap:
             self._offset = 0.0
-            self._hold = self.HOLD
+            self._hold = self._hold_time
         self.update()
 
     def _elided(self, text: str, width: float) -> str:
@@ -482,6 +493,11 @@ class ArtView(QWidget):
         self._fb_shape_t = 1.0
         self._fb_shape_a = Anim(self)
         self._fb_shape_a.valueChanged.connect(self._on_fb_shape)
+        self._halo_op = (
+            1.0 if SETTINGS.get("audio_feedback_halo", True) else 0.0)
+        self._halo_target = self._halo_op
+        self._halo_oa = Anim(self)
+        self._halo_oa.valueChanged.connect(self._on_halo_op)
         self._playing = False
         self._arm = 0.0
         self._arm_target = 0.0
@@ -510,11 +526,9 @@ class ArtView(QWidget):
         self._audio_phase = 0.0
         self._audio_ring_phase = 0.0
         self._audio_spin = 0.0
-        # 角度 cos/sin 表（依 slot 數快取）：halo/ring/blob 每幀重複用，
-        # 省掉幾百次三角函數呼叫（Python 函式呼叫成本是高 fps 卡頓主因）。
+        # 角度 cos/sin 表依 slot 數快取，省每幀數百次三角函數呼叫
         self._angle_cache: dict[int, list[tuple[float, float]]] = {}
-        # 唱片靜態盤面貼圖快取：盤面不隨 spin/封面/中心大小變化，烘成 pixmap
-        # 後每幀只 drawPixmap，省掉約 25 個 drawEllipse/漸層（高 fps 卡頓主因）。
+        # 唱片靜態盤面快取：不隨 spin/封面變化，烘成 pixmap 後每幀只 drawPixmap
         self._vinyl_base_cache: dict[tuple, QPixmap] = {}
         self._cover_pulse = 0.0
         self._audio_energy = 0.0
@@ -1013,7 +1027,33 @@ class ArtView(QWidget):
 
     def apply_audio_feedback_settings(self):
         self._sync_audio()
+        self._sync_halo_op(animate=True)
         self.update()
+
+    def _on_halo_op(self, value):
+        self._halo_op = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _sync_halo_op(self, animate: bool = True):
+        target = 1.0 if SETTINGS.get("audio_feedback_halo", True) else 0.0
+        self._halo_target = target
+        if abs(self._halo_op - target) < 0.001:
+            self._halo_oa.stop()
+            self._halo_op = target
+            self.update()
+            return
+        self._halo_oa.stop()
+        ms = adur(220 if target > self._halo_op else 170, 100)
+        if (not animate or not anim_on() or not self.isVisible()
+                or ms <= 0):
+            self._halo_op = target
+            self.update()
+            return
+        self._halo_oa.setStartValue(self._halo_op)
+        self._halo_oa.setEndValue(target)
+        self._halo_oa.setDuration(ms)
+        self._halo_oa.setEasingCurve(QEasingCurve.OutCubic)
+        self._halo_oa.start()
 
     def set_mode(self, mode: str, animate: bool = True):
         mode = (mode if mode in ("cover", "vinyl", "pulse", "audio")
@@ -1202,13 +1242,9 @@ class ArtView(QWidget):
         p.restore()
 
     def _vinyl_base_pixmap(self, r: QRectF) -> tuple[QPixmap, float]:
-        """靜態唱片盤面（陰影/漸層底/溝槽/高光/描邊）烘成貼圖快取。
+        """唱片靜態盤面烘成貼圖快取，省每幀重畫 ~25 個 drawEllipse/漸層。
 
-        盤面只依尺寸與 dpr，與 spin 角度、封面、中心標籤大小無關；每幀重畫
-        約 25 個 drawEllipse/漸層是高 fps 卡頓主因，改一次烘成 pixmap，
-        paintEvent 只 drawPixmap。尺寸（縮放 / art_vinyl_size）、dpr 或反鋸齒
-        設定變才重建（set_scales 另會主動清快取）。回傳貼圖與外擴留邊 pad
-        （盤面描邊/陰影會略超出 r，繪製時座標往左上偏 pad）。
+        只依尺寸與 dpr，spin/封面/中心標籤變化不重建。回傳貼圖與外擴留邊 pad。
         """
         dpr = max(1.0, self.devicePixelRatioF())
         w = max(1.0, r.width())
@@ -1675,9 +1711,9 @@ class ArtView(QWidget):
             p.translate(-c)
         p.setPen(Qt.NoPen)
         # blob（流動）不畫底環——它要「有聲音才有」，沒有預設常駐圈
-        if shape != "blob":
+        if shape != "blob" and self._halo_op > 0.001:
             halo = QColor(self._accent)
-            halo.setAlpha(round(34 + 44 * energy))
+            halo.setAlpha(round((34 + 44 * energy) * self._halo_op))
             p.setBrush(halo)
             halo_path = QPainterPath()
             halo_steps = (96 if (meter_mode or self._mode == "pulse")
@@ -1842,12 +1878,8 @@ class ArtView(QWidget):
 
     def _draw_blob_lobes(self, p, c, rad, base_rad, max_h, spectrum, morph,
                          energy, phase, thickness, spectrum_index_for_slot):
-        # 液態頻譜輪廓：封面外圈一條平滑閉合曲線，每個角度的半徑直接對應一個
-        # 頻段——自頂端往左右兩側鏡像（= 圓形等化器），所以輪廓的鼓起/凹陷
-        # 就是當下的頻譜，隨音樂即時起伏，一眼看得出是音訊回應。整體外擴量
-        # 由音量驅動：靜音時收回封面後（藏起來），有聲音才漲出來。無頻譜
-        # （pulse 律動模式）時退回有機合成波。只畫兩條閉合路徑、吃預算好的
-        # 角度表並做循環 3-tap 平滑，成本低。
+        # 液態頻譜：封面外圈平滑閉合曲線，半徑對應頻段（圓形等化器），
+        # 隨音樂即時起伏。靜音時收回、有聲音才漲出。3-tap 平滑 + 角度表，成本低。
         steps = 64
         table = self._angle_table(steps)
         cover_rad = rad * 0.78 * self._audio_cover_pulse_scale()
@@ -2821,17 +2853,14 @@ class SeekBar(QWidget):
         self._sync_fx()
 
     def style_changed(self):
-        # seek_style（plain/wave/glow）不走交叉淡化——波浪振幅 _amp 與流光
-        # _glow 本來就是逐幀平滑過渡的。讓波浪「慢慢攤平」比 fade 一張凍結
-        # 舊圖順得多。只在動畫關閉時直接歸位避免卡住。
+        # seek_style 不走交叉淡化——波浪振幅與流光本身就會逐幀平滑過渡
         old_style = self._style
         self._style = SETTINGS.get("seek_style", "wave")
         if not anim_on():
             self._amp = 1.0 if (self._style == "wave" and self._playing) else 0.0
             self._glow = 1.0 if (self._style == "glow" and self._playing) else 0.0
         elif self._style == "glow":
-            # 保留 _amp 讓 wave -> glow 可以自然攤平，只預熱流光本身；
-            # 這樣第一幀不會像普通底條，也不會吃掉波浪到流光的過渡。
+            # wave → glow 自然攤平，預熱流光讓第一幀不像普通底條
             if self._playing:
                 self._glow = max(self._glow, 0.35)
                 if old_style != "glow":
@@ -2841,9 +2870,7 @@ class SeekBar(QWidget):
         self.update()
 
     def thumb_mode_changed(self):
-        # seek_thumb（圓鈕顯示：hover/always）只改圓鈕可見度，不動底軌/填滿，
-        # 直接走 _sync_thumb 的彈出/收回動畫即可。不要走整幀交叉淡化——那會把
-        # 舊圓鈕烘進快照、與正在動畫的新圓鈕重疊成幽靈圖層（原本的卡頓主因）。
+        # 只改圓鈕可見度，走 _sync_thumb 彈出/收回動畫，不走整幀交叉淡化
         self._sync_thumb()
 
     def begin_visual_transition(self):

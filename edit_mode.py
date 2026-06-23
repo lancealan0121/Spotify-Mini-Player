@@ -1,4 +1,4 @@
-"""Edit-mode overlay, library, ghost fade, and element widgets."""
+"""編輯模式：版面提示框、元件庫、淡化動畫與複製元件。"""
 
 import time
 
@@ -181,8 +181,7 @@ class _EditLibrary(QWidget):
         self._press_pos = QPoint()
         self._press_global = QPoint()
         self._panel_start = QPoint()
-        # 獨立視窗：首次放置後就鎖住位置，卡片移動/縮放都不再把它拉回去。
-        self._placed = False
+        self._placed = False  # 首次放置後鎖定位置，不跟卡片移動
         self._op = 0.0
         self._target = 0.0
         self._scroll = 0.0
@@ -271,8 +270,7 @@ class _EditLibrary(QWidget):
         return QPoint(x, y)
 
     def _store_pos(self):
-        # 存絕對螢幕座標：卡片移動不再拖著它跑，也不夾在視窗附近。
-        # _clamp_global_pos 只保證留在螢幕內可抓取。
+        # 存絕對螢幕座標，卡片移動不拖著它跑
         p = self.pos()
         SETTINGS["edit_library_pos"] = {"gx": float(p.x()), "gy": float(p.y())}
         self.card.layout_edit_changed.emit()

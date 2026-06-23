@@ -3143,13 +3143,10 @@ class _ScrollablePanelBody(_PanelBody):
         self._place_content(force=True)
 
     def resize_viewport_only(self, height: int):
-        """section 動畫專用：只縮 viewport／footer 高度，不重排 content。
+        """section 動畫專用：只縮 viewport/footer 高度，不重排 content。
 
-        content 由 _SectionSlideOverlay 的快照蓋住，SectionLabel 則保留在
-        底下即時重繪箭頭；這裡刻意不碰 content layout，只把 viewport 與固定
-        footer 的幾何跟著視窗縮放。寬度與 header／footer 高度沿用最後一次
-        set_viewport 的結果。"""
-        height = max(1, int(height))
+        content 由 _SectionSlideOverlay 快照蓋住，開關箭頭由 SectionLabel 即時重繪。
+        """
         width = max(1, self.width())
         self._viewport_h = max(1, height - self._header_h - self._footer_h)
         if self._footer_widget is not None:
@@ -3631,13 +3628,10 @@ class _PanelZoomOverlay(QWidget):
 
 
 class _SectionSlideOverlay(QWidget):
-    """section 展開/收合動畫層：凍結 content 整層 reflow，改用展開後快照。
+    """section 展開/收合動畫層：用展開後快照取代即時 reflow。
 
-    原本動畫每幀都讓捲動內容重新 layout（撐開的 section 把下方數十個控制項
-    全部 move + 重繪），是設定面板下拉只有 ~30fps 的主因。改成動畫開始抓一張
-    「展開後」content 快照，動畫期間只 drawPixmap 兩段——展開點以上不動、以下
-    隨露出高度平移，完全不碰 layout 與子元件重繪。座標皆為 content（未捲動）
-    座標，套上捲動位移 _offset 後映射到 viewport。
+    原做法每幀重排數十個控制項（~30fps）；改成動畫開始抓快照，期間只
+    drawPixmap 兩段——展開點以上不動、以下平移，不碰 layout。
     """
 
     def __init__(self, parent=None):
@@ -4088,28 +4082,39 @@ class SettingsPanel(QWidget):
 
         def build_general():
             section(lay, "section_general")
-            self.sg_panel_type = row("settings_panel_type", Segmented(
-                settings_panel_type_options(), SETTINGS["settings_panel_type"],
-                accent=self._accent))
-            self.tg_auto_keep_on_screen = row("auto_keep_on_screen", Toggle(
-                bool(SETTINGS.get("auto_keep_on_screen", True)),
-                accent=self._accent), stretch=False)
-            self.sg_source = row("source", Segmented(
-                source_options(), SETTINGS["source"], accent=self._accent))
-            self.tg_startup = row("startup_enabled", Toggle(
-                bool(SETTINGS["startup_enabled"]), accent=self._accent),
-                stretch=False)
-            self.sg_startup_show = row("startup_show", Segmented(
-                startup_show_options(), SETTINGS["startup_show"],
-                accent=self._accent))
-            self.sg_lang = row("language", Segmented(
-                LANGUAGES, SETTINGS["language"], accent=self._accent))
-
-        def build_appearance():
-            section(lay, "section_appearance")
             self.sw_theme = row("theme", SwatchRow(SETTINGS["theme"],
                                                    expanded=expanded),
                                 stretch=False, top=True)
+            self.sg_auto_theme = row("auto_theme", Segmented(
+                auto_theme_options(), SETTINGS["auto_theme"],
+                accent=self._accent))
+            self.sl_scale = row("player_size", PanelSlider(
+                80, 300, SETTINGS["scale"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_opacity = row("opacity", PanelSlider(
+                35, 100, SETTINGS["bg_opacity"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_brightness = row("brightness", PanelSlider(
+                55, 145, SETTINGS["brightness"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_radius = row("radius", PanelSlider(
+                6, 28, SETTINGS["radius"],
+                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
+            self.sg_card_preset = row("card_preset", Segmented(
+                card_preset_options(), SETTINGS["card_preset"], accent=self._accent))
+            self.sg_source = row("source", Segmented(
+                source_options(), SETTINGS["source"], accent=self._accent))
+            self.sg_lang = row("language", Segmented(
+                LANGUAGES, SETTINGS["language"], accent=self._accent))
+            self.tg_startup = row("startup_enabled", Toggle(
+                bool(SETTINGS["startup_enabled"]), accent=self._accent),
+                stretch=False)
+            self.sg_panel_type = row("settings_panel_type", Segmented(
+                settings_panel_type_options(), SETTINGS["settings_panel_type"],
+                accent=self._accent))
+
+        def build_appearance():
+            section(lay, "section_appearance")
             self.bg_image = row("background_image", ImagePathPicker(
                 SETTINGS.get("background_image", ""), accent=self._accent))
             self.sg_bg_image_mode = row("background_image_mode", Segmented(
@@ -4126,136 +4131,6 @@ class SettingsPanel(QWidget):
                 Toggle(bool(SETTINGS.get("background_image_auto_theme", True)),
                        accent=self._accent),
                 stretch=False)
-            self.tg_bg_image_parallax = row("background_image_parallax",
-                Toggle(bool(SETTINGS.get("background_image_parallax", False)),
-                       accent=self._accent),
-                stretch=False)
-            self.sl_bg_image_parallax_strength = row(
-                "background_image_parallax_strength",
-                PanelSlider(
-                    0, 200,
-                    SETTINGS.get("background_image_parallax_strength", 1.0) * 100,
-                    fmt=lambda v: f"{v:.0f}%",
-                    accent=self._accent))
-            self.sl_bg_image_parallax_fps = row(
-                "background_image_parallax_fps",
-                PanelSlider(
-                    5, 60,
-                    SETTINGS.get("background_image_parallax_fps", 30),
-                    fmt=lambda v: f"{v:.0f}",
-                    step=1, accent=self._accent))
-            weather = SETTINGS.get("weather_effect", "rain")
-            if weather not in ("rain", "snow", "custom"):
-                weather = "rain"
-            self.sg_weather_effect = row("weather_effect", Segmented(
-                weather_effect_options(), weather, accent=self._accent))
-            self.tg_weather_enabled = row("weather_enabled",
-                Toggle(bool(SETTINGS.get("weather_enabled", False)),
-                       accent=self._accent),
-                stretch=False)
-            self.sl_weather_intensity = row("weather_intensity", PanelSlider(
-                0, 100, SETTINGS.get(f"{weather}_intensity", 0.55) * 100,
-                fmt=lambda v: f"{v:.1f}%" if v < 10 else f"{v:.0f}%",
-                step=0.1, accent=self._accent))
-            self.sl_rain_length = row("rain_length", PanelSlider(
-                5, 160, SETTINGS.get("rain_length", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_rain_thickness = row("rain_thickness", PanelSlider(
-                30, 260, SETTINGS.get("rain_thickness", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_rain_direction = row("rain_direction", PanelSlider(
-                -55, 55, SETTINGS.get("rain_direction", 18.0),
-                fmt=lambda v: f"{v:+.0f}°", accent=self._accent))
-            self.sl_rain_fall_speed = row("rain_fall_speed", PanelSlider(
-                25, 250, SETTINGS.get("rain_fall_speed", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_snow_size = row("snow_size", PanelSlider(
-                45, 220, SETTINGS.get("snow_size", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_snow_spin_speed = row("snow_spin_speed", PanelSlider(
-                0, 300, SETTINGS.get("snow_spin_speed", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_snow_fall_speed = row("snow_fall_speed", PanelSlider(
-                25, 250, SETTINGS.get("snow_fall_speed", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_custom_size = row("custom_size", PanelSlider(
-                45, 500, SETTINGS.get("custom_size", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_custom_spin_speed = row("custom_spin_speed", PanelSlider(
-                0, 300, SETTINGS.get("custom_spin_speed", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_custom_fall_speed = row("custom_fall_speed", PanelSlider(
-                25, 250, SETTINGS.get("custom_fall_speed", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.ed_custom_symbols = QLineEdit(
-                str(SETTINGS.get("custom_symbols", "❄,❅,❆")))
-            self.ed_custom_symbols.setPlaceholderText("❄,❅,❆")
-            self.ed_custom_symbols.setFixedHeight(panel_px(30))
-            self.ed_custom_symbols.setStyleSheet(
-                "QLineEdit { background: rgba(255,255,255,16);"
-                " border: 1px solid rgba(255,255,255,30);"
-                " border-radius: 8px; padding: 0 10px;"
-                " color: rgba(255,255,255,225); }"
-                "QLineEdit:focus { border-color: rgba(255,255,255,76); }")
-            self.ed_custom_symbols.setFont(panel_font(11))
-            self.sl_custom_symbols = row(
-                "custom_symbols", self.ed_custom_symbols)
-            self.custom_image = row("custom_image", ImagePathPicker(
-                SETTINGS.get("custom_image", ""), accent=self._accent,
-                title_key="custom_image"))
-            self.sync_weather_controls(adjust=False)
-            self.tg_lightning_enabled = row("lightning_enabled",
-                Toggle(bool(SETTINGS.get("lightning_enabled", False)),
-                       accent=self._accent),
-                stretch=False)
-            self.sl_lightning_size = row("lightning_size", PanelSlider(
-                30, 200, SETTINGS.get("lightning_size", 1.0) * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_lightning_thickness = row(
-                "lightning_thickness",
-                PanelSlider(40, 300,
-                            SETTINGS.get("lightning_thickness", 1.0) * 100,
-                            fmt=lambda v: f"{v:.0f}%",
-                            accent=self._accent))
-            self.sl_lightning_intensity = row(
-                "lightning_intensity",
-                PanelSlider(0, 250,
-                            SETTINGS.get("lightning_intensity", 0.55) * 100,
-                            fmt=lambda v: f"{v:.0f}%",
-                            accent=self._accent))
-            self.sl_lightning_duration = row(
-                "lightning_duration",
-                PanelSlider(5, 150,
-                            SETTINGS.get("lightning_duration", 0.18) * 100,
-                            fmt=lambda v: f"{v / 100.0:.2f}s",
-                            step=1, accent=self._accent))
-            self.tg_lightning_duration_random = row(
-                "lightning_random_duration",
-                Toggle(bool(SETTINGS.get(
-                    "lightning_random_duration",
-                    SETTINGS.get("lightning_duration_random", False))),
-                       accent=self._accent),
-                stretch=False)
-            self.sg_auto_theme = row("auto_theme", Segmented(
-                auto_theme_options(), SETTINGS["auto_theme"],
-                accent=self._accent))
-            self.sl_opacity = row("opacity", PanelSlider(
-                35, 100, SETTINGS["bg_opacity"] * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_brightness = row("brightness", PanelSlider(
-                55, 145, SETTINGS["brightness"] * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_scale = row("player_size", PanelSlider(
-                80, 300, SETTINGS["scale"] * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_settings_scale = row("settings_size", PanelSlider(
-                80, 200, SETTINGS["settings_scale"] * 100,
-                fmt=lambda v: f"{v:.0f}%", live=False, accent=self._accent))
-            self.sl_radius = row("radius", PanelSlider(
-                6, 28, SETTINGS["radius"],
-                fmt=lambda v: f"{v:.0f}px", accent=self._accent))
-            self.sg_card_preset = row("card_preset", Segmented(
-                card_preset_options(), SETTINGS["card_preset"], accent=self._accent))
 
         def build_text():
             section(lay, "section_text")
@@ -4263,103 +4138,25 @@ class SettingsPanel(QWidget):
             self.cp_font_color = row("font_color", ColorValueButton(
                 SETTINGS.get("font_color", ""), "#ffffff",
                 "font_color", accent=self._accent))
-            self.cp_source_text_color = row("source_text_color",
-                ColorValueButton(SETTINGS.get("source_text_color", ""),
-                                 "#ffffff", "source_text_color",
-                                 accent=self._accent))
-            self.cp_number_color = row("number_color", ColorValueButton(
-                SETTINGS.get("number_color", ""), "#ffffff",
-                "number_color", accent=self._accent))
-            self.tg_marquee = row("marquee_enabled", Toggle(
-                bool(SETTINGS["marquee_enabled"]), accent=self._accent),
-                stretch=False)
-            self.tg_marquee_edge_fade = row("marquee_edge_fade", Toggle(
-                bool(SETTINGS.get("marquee_edge_fade", True)),
-                accent=self._accent), stretch=False)
             self.sl_title_size = row("title_size", PanelSlider(
                 60, 180, SETTINGS["title_size"] * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
             self.sl_artist_size = row("artist_size", PanelSlider(
                 60, 180, SETTINGS["artist_size"] * 100,
                 fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.tg_marquee = row("marquee_enabled", Toggle(
+                bool(SETTINGS["marquee_enabled"]), accent=self._accent),
+                stretch=False)
 
         def build_controls():
             section(lay, "section_controls")
             self.sg_seek = row("seek_bar", Segmented(
                 seek_options(), SETTINGS["seek_style"], accent=self._accent))
-            self.sg_thumb = row("seek_thumb", Segmented(
-                seek_thumb_options(), SETTINGS["seek_thumb"],
-                accent=self._accent))
-            self.sg_thumb_shape = row("seek_thumb_shape", Segmented(
-                seek_thumb_shape_options(),
-                SETTINGS.get("seek_thumb_shape", "circle"),
-                accent=self._accent))
-            self.sl_seek_length = row("seek_length", PanelSlider(
-                20, 130, SETTINGS["seek_length"] * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_seek_thumb_size = row("seek_thumb_size", PanelSlider(
-                20, 150, SETTINGS["seek_thumb_size"] * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sg_ctl = row("button_pos", Segmented(
+                align_options(), SETTINGS["controls_align"], accent=self._accent))
             self.sg_progress_time = row("progress_time", Segmented(
                 progress_time_options(), SETTINGS["progress_time_mode"],
                 accent=self._accent))
-            self.sl_progress_time_spacing = row(
-                "progress_time_spacing",
-                PanelSlider(-20, 80,
-                            SETTINGS.get("progress_time_spacing", 0.0) * 10.0,
-                            fmt=lambda v: f"{v / 10.0:.1f}px",
-                            accent=self._accent, step=1))
-            self.tg_seek_hover_time = row("seek_hover_time", Toggle(
-                bool(SETTINGS.get("seek_hover_time", True)),
-                accent=self._accent), stretch=False)
-            self.tg_progress_time_anim = row(
-                "progress_time_anim_enabled",
-                Toggle(bool(SETTINGS.get("progress_time_anim_enabled", True)),
-                       accent=self._accent),
-                stretch=False)
-            self.sg_progress_time_anim = row(
-                "progress_time_anim_style",
-                Segmented(progress_time_anim_options(),
-                          SETTINGS.get("progress_time_anim_style", "fade"),
-                          accent=self._accent))
-
-        def build_cover():
-            section(lay, "section_cover")
-            self.tg_show_cover = row("show_cover", Toggle(
-                bool(SETTINGS["show_cover"]), accent=self._accent),
-                stretch=False)
-            self.sg_art_mode = row("art_mode", Segmented(
-                art_mode_options(), SETTINGS["art_mode"], accent=self._accent))
-            self.tg_show_tonearm = row("show_tonearm", Toggle(
-                bool(SETTINGS["show_tonearm"]), accent=self._accent),
-                stretch=False)
-            self.sl_cover_blur = row("cover_blur", PanelSlider(
-                0, 14, SETTINGS["cover_blur"],
-                fmt=lambda v: f"{v:.1f}px", accent=self._accent, step=0.1))
-            self.sg_cover_shape = row("cover_shape", Segmented(
-                cover_shape_options(), SETTINGS["cover_shape"], accent=self._accent))
-            self.sl_cover_radius_strength = row(
-                "cover_radius_strength",
-                PanelSlider(0, 200, SETTINGS["cover_radius_strength"] * 100,
-                            fmt=lambda v: f"{v:.0f}%",
-                            accent=self._accent))
-
-        def build_buttons():
-            section(lay, "section_buttons")
-            self.cp_topbar_icon_color = row("topbar_icon_color",
-                ColorValueButton(SETTINGS.get("topbar_icon_color", ""),
-                                 "#ffffff", "topbar_icon_color",
-                                 accent=self._accent))
-            self.sl_control_button_size = row("control_button_size", PanelSlider(
-                70, 160, SETTINGS["control_button_size"] * 100,
-                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
-            self.sl_control_button_spacing = row(
-                "control_button_spacing",
-                PanelSlider(40, 220, SETTINGS["control_button_spacing"] * 100,
-                            fmt=lambda v: f"{v:.0f}%",
-                            accent=self._accent))
-            self.sg_ctl = row("button_pos", Segmented(
-                align_options(), SETTINGS["controls_align"], accent=self._accent))
             self.tg_btn_shuffle = row("show_btn_shuffle", Toggle(
                 bool(SETTINGS["show_btn_shuffle"]), accent=self._accent),
                 stretch=False)
@@ -4375,21 +4172,43 @@ class SettingsPanel(QWidget):
             self.tg_edit_button = row("show_edit_button", Toggle(
                 bool(SETTINGS.get("show_edit_button", True)),
                 accent=self._accent), stretch=False)
+            self.sl_control_button_size = row("control_button_size", PanelSlider(
+                70, 160, SETTINGS["control_button_size"] * 100,
+                fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+            self.sl_control_button_spacing = row(
+                "control_button_spacing",
+                PanelSlider(40, 220, SETTINGS["control_button_spacing"] * 100,
+                            fmt=lambda v: f"{v:.0f}%",
+                            accent=self._accent))
+
+        def build_cover():
+            section(lay, "section_cover")
+            self.tg_show_cover = row("show_cover", Toggle(
+                bool(SETTINGS["show_cover"]), accent=self._accent),
+                stretch=False)
+            self.sg_art_mode = row("art_mode", Segmented(
+                art_mode_options(), SETTINGS["art_mode"], accent=self._accent))
+            self.sg_cover_shape = row("cover_shape", Segmented(
+                cover_shape_options(), SETTINGS["cover_shape"], accent=self._accent))
+            self.custom_cover = row("custom_cover", ImagePathPicker(
+                SETTINGS.get("custom_cover", ""), accent=self._accent,
+                title_key="custom_cover"))
+            self.fallback_cover = row("fallback_cover", ImagePathPicker(
+                SETTINGS.get("fallback_cover", ""), accent=self._accent,
+                title_key="fallback_cover"))
 
         if panel_type == "normal":
+            build_general()
             build_appearance()
             build_text()
-            build_general()
             build_cover()
             build_controls()
-            build_buttons()
         else:
             build_general()
             build_appearance()
             build_text()
             build_cover()
             build_controls()
-            build_buttons()
 
         self.btn_advanced = PanelButton("", accent=self._accent, parent=self)
         self.advanced_box = _ScrollablePanelBody(self)
@@ -4484,8 +4303,162 @@ class SettingsPanel(QWidget):
         self.sl_auto_strength = adv_row("auto_color_strength", PanelSlider(
             0, 100, SETTINGS["auto_color_strength"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_settings_scale = adv_row("settings_size", PanelSlider(
+            80, 200, SETTINGS["settings_scale"] * 100,
+            fmt=lambda v: f"{v:.0f}%", live=False, accent=self._accent))
+        self.tg_auto_keep_on_screen = adv_row("auto_keep_on_screen", Toggle(
+            bool(SETTINGS.get("auto_keep_on_screen", True)),
+            accent=self._accent), stretch=False)
+        self.sg_startup_show = adv_row("startup_show", Segmented(
+            startup_show_options(), SETTINGS["startup_show"],
+            accent=self._accent))
+        self.tg_bg_image_parallax = adv_row("background_image_parallax",
+            Toggle(bool(SETTINGS.get("background_image_parallax", False)),
+                   accent=self._accent),
+            stretch=False)
+        self.sl_bg_image_parallax_strength = adv_row(
+            "background_image_parallax_strength",
+            PanelSlider(
+                0, 200,
+                SETTINGS.get("background_image_parallax_strength", 1.0) * 100,
+                fmt=lambda v: f"{v:.0f}%",
+                accent=self._accent))
+        self.sl_bg_image_parallax_fps = adv_row(
+            "background_image_parallax_fps",
+            PanelSlider(
+                5, 60,
+                SETTINGS.get("background_image_parallax_fps", 30),
+                fmt=lambda v: f"{v:.0f}",
+                step=1, accent=self._accent))
+
+        section(adv, "section_weather")
+        weather = SETTINGS.get("weather_effect", "rain")
+        if weather not in ("rain", "snow", "custom"):
+            weather = "rain"
+        self.sg_weather_effect = adv_row("weather_effect", Segmented(
+            weather_effect_options(), weather, accent=self._accent))
+        self.tg_weather_enabled = adv_row("weather_enabled",
+            Toggle(bool(SETTINGS.get("weather_enabled", False)),
+                   accent=self._accent),
+            stretch=False)
+        self.sl_weather_intensity = adv_row("weather_intensity", PanelSlider(
+            0, 100, SETTINGS.get(f"{weather}_intensity", 0.55) * 100,
+            fmt=lambda v: f"{v:.1f}%" if v < 10 else f"{v:.0f}%",
+            step=0.1, accent=self._accent))
+        self.sl_rain_length = adv_row("rain_length", PanelSlider(
+            5, 160, SETTINGS.get("rain_length", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_rain_thickness = adv_row("rain_thickness", PanelSlider(
+            30, 260, SETTINGS.get("rain_thickness", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_rain_direction = adv_row("rain_direction", PanelSlider(
+            -55, 55, SETTINGS.get("rain_direction", 18.0),
+            fmt=lambda v: f"{v:+.0f}°", accent=self._accent))
+        self.sl_rain_fall_speed = adv_row("rain_fall_speed", PanelSlider(
+            25, 250, SETTINGS.get("rain_fall_speed", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_snow_size = adv_row("snow_size", PanelSlider(
+            45, 220, SETTINGS.get("snow_size", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_snow_spin_speed = adv_row("snow_spin_speed", PanelSlider(
+            0, 300, SETTINGS.get("snow_spin_speed", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_snow_fall_speed = adv_row("snow_fall_speed", PanelSlider(
+            25, 250, SETTINGS.get("snow_fall_speed", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_custom_size = adv_row("custom_size", PanelSlider(
+            45, 500, SETTINGS.get("custom_size", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_custom_spin_speed = adv_row("custom_spin_speed", PanelSlider(
+            0, 300, SETTINGS.get("custom_spin_speed", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_custom_fall_speed = adv_row("custom_fall_speed", PanelSlider(
+            25, 250, SETTINGS.get("custom_fall_speed", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.ed_custom_symbols = QLineEdit(
+            str(SETTINGS.get("custom_symbols", "❄,❅,❆")))
+        self.ed_custom_symbols.setPlaceholderText("❄,❅,❆")
+        self.ed_custom_symbols.setFixedHeight(panel_px(30))
+        self.ed_custom_symbols.setStyleSheet(
+            "QLineEdit { background: rgba(255,255,255,16);"
+            " border: 1px solid rgba(255,255,255,30);"
+            " border-radius: 8px; padding: 0 10px;"
+            " color: rgba(255,255,255,225); }"
+            "QLineEdit:focus { border-color: rgba(255,255,255,76); }")
+        self.ed_custom_symbols.setFont(panel_font(11))
+        self.sl_custom_symbols = adv_row(
+            "custom_symbols", self.ed_custom_symbols)
+        self.custom_image = adv_row("custom_image", ImagePathPicker(
+            SETTINGS.get("custom_image", ""), accent=self._accent,
+            title_key="custom_image"))
+        self.sync_weather_controls(adjust=False)
+        self.tg_lightning_enabled = adv_row("lightning_enabled",
+            Toggle(bool(SETTINGS.get("lightning_enabled", False)),
+                   accent=self._accent),
+            stretch=False)
+        self.sl_lightning_size = adv_row("lightning_size", PanelSlider(
+            30, 200, SETTINGS.get("lightning_size", 1.0) * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_lightning_thickness = adv_row(
+            "lightning_thickness",
+            PanelSlider(40, 300,
+                        SETTINGS.get("lightning_thickness", 1.0) * 100,
+                        fmt=lambda v: f"{v:.0f}%",
+                        accent=self._accent))
+        self.sl_lightning_intensity = adv_row(
+            "lightning_intensity",
+            PanelSlider(0, 250,
+                        SETTINGS.get("lightning_intensity", 0.55) * 100,
+                        fmt=lambda v: f"{v:.0f}%",
+                        accent=self._accent))
+        self.sl_lightning_duration = adv_row(
+            "lightning_duration",
+            PanelSlider(5, 150,
+                        SETTINGS.get("lightning_duration", 0.18) * 100,
+                        fmt=lambda v: f"{v / 100.0:.2f}s",
+                        step=1, accent=self._accent))
+        self.tg_lightning_duration_random = adv_row(
+            "lightning_random_duration",
+            Toggle(bool(SETTINGS.get(
+                "lightning_random_duration",
+                SETTINGS.get("lightning_duration_random", False))),
+                   accent=self._accent),
+            stretch=False)
+
+        section(adv, "section_text")
+        self.cp_topbar_icon_color = adv_row("topbar_icon_color",
+            ColorValueButton(SETTINGS.get("topbar_icon_color", ""),
+                             "#ffffff", "topbar_icon_color",
+                             accent=self._accent))
+        self.cp_source_text_color = adv_row("source_text_color",
+            ColorValueButton(SETTINGS.get("source_text_color", ""),
+                             "#ffffff", "source_text_color",
+                             accent=self._accent))
+        self.cp_number_color = adv_row("number_color", ColorValueButton(
+            SETTINGS.get("number_color", ""), "#ffffff",
+            "number_color", accent=self._accent))
+        self.tg_marquee_edge_fade = adv_row("marquee_edge_fade", Toggle(
+            bool(SETTINGS.get("marquee_edge_fade", True)),
+            accent=self._accent), stretch=False)
+        self.sl_marquee_speed = adv_row("marquee_speed", PanelSlider(
+            10, 80, SETTINGS["marquee_speed"],
+            fmt=lambda v: f"{v:.0f} px/s", accent=self._accent, step=1))
+        self.sl_marquee_hold = adv_row("marquee_hold", PanelSlider(
+            5, 50, SETTINGS["marquee_hold"] * 10,
+            fmt=lambda v: f"{v / 10:.1f}s", accent=self._accent, step=1))
 
         section(adv, "section_cover")
+        self.tg_show_tonearm = adv_row("show_tonearm", Toggle(
+            bool(SETTINGS["show_tonearm"]), accent=self._accent),
+            stretch=False)
+        self.sl_cover_blur = adv_row("cover_blur", PanelSlider(
+            0, 14, SETTINGS["cover_blur"],
+            fmt=lambda v: f"{v:.1f}px", accent=self._accent, step=0.1))
+        self.sl_cover_radius_strength = adv_row(
+            "cover_radius_strength",
+            PanelSlider(0, 200, SETTINGS["cover_radius_strength"] * 100,
+                        fmt=lambda v: f"{v:.0f}%",
+                        accent=self._accent))
         self.sl_tonearm_speed = adv_row("tonearm_speed", PanelSlider(
             40, 250, SETTINGS["tonearm_speed"] * 100,
             fmt=lambda v: f"{v / 100.0:.1f}x", accent=self._accent))
@@ -4509,6 +4482,8 @@ class SettingsPanel(QWidget):
         self.sg_audio_shape = adv_row("audio_feedback_shape", Segmented(
             audio_feedback_shape_options(), SETTINGS["audio_feedback_shape"],
             accent=self._accent))
+        self.tg_audio_halo = adv_toggle("audio_feedback_halo",
+                                        "audio_feedback_halo")
         self.tg_audio_spin = adv_toggle("audio_feedback_spin",
                                         "audio_feedback_spin")
         self.sl_audio_spin_speed = adv_row(
@@ -4538,6 +4513,38 @@ class SettingsPanel(QWidget):
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
 
         section(adv, "section_controls")
+        self.sg_thumb = adv_row("seek_thumb", Segmented(
+            seek_thumb_options(), SETTINGS["seek_thumb"],
+            accent=self._accent))
+        self.sg_thumb_shape = adv_row("seek_thumb_shape", Segmented(
+            seek_thumb_shape_options(),
+            SETTINGS.get("seek_thumb_shape", "circle"),
+            accent=self._accent))
+        self.sl_seek_length = adv_row("seek_length", PanelSlider(
+            20, 130, SETTINGS["seek_length"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.sl_seek_thumb_size = adv_row("seek_thumb_size", PanelSlider(
+            20, 150, SETTINGS["seek_thumb_size"] * 100,
+            fmt=lambda v: f"{v:.0f}%", accent=self._accent))
+        self.tg_seek_hover_time = adv_row("seek_hover_time", Toggle(
+            bool(SETTINGS.get("seek_hover_time", True)),
+            accent=self._accent), stretch=False)
+        self.sl_progress_time_spacing = adv_row(
+            "progress_time_spacing",
+            PanelSlider(-20, 80,
+                        SETTINGS.get("progress_time_spacing", 0.0) * 10.0,
+                        fmt=lambda v: f"{v / 10.0:.1f}px",
+                        accent=self._accent, step=1))
+        self.tg_progress_time_anim = adv_row(
+            "progress_time_anim_enabled",
+            Toggle(bool(SETTINGS.get("progress_time_anim_enabled", True)),
+                   accent=self._accent),
+            stretch=False)
+        self.sg_progress_time_anim = adv_row(
+            "progress_time_anim_style",
+            Segmented(progress_time_anim_options(),
+                      SETTINGS.get("progress_time_anim_style", "fade"),
+                      accent=self._accent))
         self.sl_seek_wave_amp = adv_row("seek_wave_amp", PanelSlider(
             0, 200, SETTINGS["seek_wave_amp"] * 100,
             fmt=lambda v: f"{v:.0f}%", accent=self._accent))
@@ -4564,12 +4571,12 @@ class SettingsPanel(QWidget):
         self.tg_topbar_hover = adv_toggle("topbar_hover", "topbar_hover")
 
         section(adv, "section_performance")
+        self.tg_anim_enabled = adv_toggle("anim_enabled", "anim_enabled")
         self.sl_fps = adv_row("FPS", PanelSlider(
             FPS_MIN, FPS_MAX, SETTINGS["fps"],
             fmt=lambda v: "無限" if round(v) >= FPS_MAX else f"{v:.0f}",
             accent=self._accent))
         self.tg_show_fps = adv_toggle("show_fps", "show_fps")
-        self.tg_anim_enabled = adv_toggle("anim_enabled", "anim_enabled")
         self.tg_aa = adv_toggle("antialias", "antialias")
         self.tg_src = adv_toggle("show_source", "show_source")
         self.tg_shadow = adv_toggle("shadow", "shadow")
@@ -4764,6 +4771,10 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("vinyl_center_size", v / 100.0))
         self.tg_show_cover.changed.connect(
             lambda v: self.setting_changed.emit("show_cover", v))
+        self.custom_cover.changed.connect(
+            lambda v: self.setting_changed.emit("custom_cover", v))
+        self.fallback_cover.changed.connect(
+            lambda v: self.setting_changed.emit("fallback_cover", v))
         self.sl_cover_blur.changed.connect(
             lambda v: self.setting_changed.emit("cover_blur", v))
         self.sg_cover_shape.changed.connect(
@@ -4840,6 +4851,10 @@ class SettingsPanel(QWidget):
             lambda v: self.setting_changed.emit("marquee_enabled", v))
         self.tg_marquee_edge_fade.changed.connect(
             lambda v: self.setting_changed.emit("marquee_edge_fade", v))
+        self.sl_marquee_speed.changed.connect(
+            lambda v: self.setting_changed.emit("marquee_speed", v))
+        self.sl_marquee_hold.changed.connect(
+            lambda v: self.setting_changed.emit("marquee_hold", v / 10.0))
         self.sl_title_size.changed.connect(
             lambda v: self.setting_changed.emit("title_size", v / 100.0))
         self.sl_artist_size.changed.connect(
@@ -5239,10 +5254,10 @@ class SettingsPanel(QWidget):
         self._animate_category_switch(key)
 
     def _animate_category_switch(self, key: str):
-        """categories 模式切分類：舊內容淡出、新內容上移淡入、面板高度平滑
-        過渡。沿用 scale 切換那套 _overlay/_zoom_anim/_zoom_done 基礎設施
-        （陰影、圓角、視窗收尾都已驗證），差別是 align_top 不縱向拉伸。"""
-        body = self._body
+        """categories 模式切分類：舊內容淡出、新內容上移淡入、面板高度平滑過渡。
+
+        沿用 scale 切換的 _overlay/_zoom_anim/_zoom_done 基礎設施。
+        """
         ms = adur(240, 130)
         if (body is None or not anim_on() or ms <= 0
                 or not self.isVisible()):
@@ -5522,11 +5537,9 @@ class SettingsPanel(QWidget):
 
     def _begin_section_overlay(self, group_id: str, container: QWidget,
                                start: float, full_h: float) -> bool:
-        """以展開後快照接管 section 動畫，凍結 content reflow。回傳是否啟用。
+        """以展開後快照接管 section 動畫，凍結 content reflow。
 
-        無搜尋、視窗已鎖定（_begin_section_frame_lock 成功）時啟用；其餘
-        情況回傳 False，沿用逐幀 relayout 路徑。動畫期間真實 content 留在
-        底下，只挖出 SectionLabel 那塊讓箭頭能即時旋轉。
+        無搜尋、視窗鎖定時啟用；其餘回傳 False 沿用逐幀 relayout。
         """
         frame = self._section_overlay_frame
         host = self._section_host_panel(container)
@@ -6227,6 +6240,10 @@ class SettingsPanel(QWidget):
             self.bg_image.refresh_language()
         if hasattr(self, "custom_image"):
             self.custom_image.refresh_language()
+        if hasattr(self, "custom_cover"):
+            self.custom_cover.refresh_language()
+        if hasattr(self, "fallback_cover"):
+            self.fallback_cover.refresh_language()
         for w in (getattr(self, "cp_font_color", None),
                   getattr(self, "cp_source_text_color", None),
                   getattr(self, "cp_number_color", None),
@@ -6386,6 +6403,7 @@ class SettingsPanel(QWidget):
                     self.sl_scale,
                     self.sl_settings_scale, self.sl_radius, self.sl_fps,
                     self.sl_title_size, self.sl_artist_size,
+                    self.sl_marquee_speed, self.sl_marquee_hold,
                     self.sl_auto_strength, self.sl_cover_border_width,
                     self.sl_cover_border_opacity, self.sl_cover_blur,
                     self.sl_cover_radius_strength,
@@ -6418,7 +6436,9 @@ class SettingsPanel(QWidget):
                     self.btn_settings_import, self.btn_settings_export,
                     self.btn_settings_open,
                     self.btn_advanced_close, self.fp_font,
-                    self.bg_image, self.custom_image, self.cp_font_color,
+                    self.bg_image, self.custom_image, self.custom_cover,
+                    self.fallback_cover,
+                    self.cp_font_color,
                     self.cp_source_text_color, self.cp_number_color,
                     self.cp_topbar_icon_color, self.cp_seek_fill_color,
                     self.cp_seek_thumb_color, self.cp_seek_track_color,
@@ -6434,7 +6454,8 @@ class SettingsPanel(QWidget):
                     self.tg_show_tonearm, self.tg_show_vinyl_center,
                     self.tg_cover_border, self.tg_marquee,
                     self.tg_marquee_edge_fade,
-                    self.tg_audio_spin, self.tg_audio_cover_pulse,
+                    self.tg_audio_halo, self.tg_audio_spin,
+                    self.tg_audio_cover_pulse,
                     self.tg_btn_shuffle, self.tg_btn_prev, self.tg_btn_next,
                     self.tg_btn_repeat, self.tg_edit_button)
         return tuple(w for w in controls if w is not None)

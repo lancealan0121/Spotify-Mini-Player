@@ -1,15 +1,7 @@
-"""Spotify Mini — 不需要 API 的桌面迷你播放器。
+"""Spotify Mini — 無需 API 的桌面迷你播放器，透過 SMTC 遙控 Spotify / 瀏覽器。
 
-透過 Windows 媒體傳輸控制（SMTC）遙控 Spotify 桌面版（或瀏覽器等其他媒體來源）：
-無邊框置頂小卡片、封面主色漸層背景、跑馬燈標題、可拖曳進度條、
-播放/上一首/下一首/隨機/循環、音量控制、自訂設定面板、系統匣常駐。
-
-開發用參數：
-    --demo          使用假資料顯示版面（不連 Spotify）
-    --panel         啟動時順便打開設定面板
-    --startup       由 Windows 開機啟動項呼叫
-    --startup-hide  開機先常駐，偵測到 Spotify 後再顯示
-    --shot <path>   啟動 1.5 秒後截圖存檔並退出（面板開啟時加存 *_panel）
+開發參數：--demo（假資料） --panel（開設定） --startup（開機啟動）
+         --startup-hide（開機先常駐） --shot <path>（截圖後退出，面板開啟加存 *_panel）
 """
 import ctypes
 import json
@@ -194,7 +186,7 @@ def rounded_pixmap(img: QImage, size: int, radius: int, dpr: float) -> QPixmap:
     return pm
 
 
-# ---------------------------------------------------------------- 卡片 ----
+# ---- 卡片 ----
 
 class _CardFade(QWidget):
     """空狀態 ↔ 內容切換時舊畫面淡出的過渡層（蓋在卡片上，不擋滑鼠）。"""
@@ -241,7 +233,7 @@ class _CardFade(QWidget):
 class TimeLabel(QLabel):
     """底部時間文字：seek / 回起點時快速數字內插。"""
 
-    TEXT_STYLES = ("fade", "slide", "slide2")
+    TEXT_STYLES = ("fade", "slide", "instant")
 
     def __init__(self, text="0:00", parent=None):
         super().__init__(text, parent)
@@ -306,7 +298,11 @@ class TimeLabel(QLabel):
         self._new_text = text
         self._text_style = style if style in self.TEXT_STYLES else "fade"
         QLabel.setText(self, text)
-        ms = adur(290, 180) if self._text_style == "slide2" else adur(180, 110)
+        if self._text_style == "instant":
+            self._text_t = 1.0
+            self.update()
+            return False
+        ms = adur(180, 110)
         if not anim_on() or ms <= 0 or not self.isVisible():
             self._text_t = 1.0
             self.update()
@@ -391,14 +387,6 @@ class TimeLabel(QLabel):
             p.drawText(r, align, self._old_text)
             p.setOpacity(t)
             p.drawText(r, align, self._new_text)
-        elif self._text_style == "slide2":
-            slide_dy = dy * 1.45
-            p.setOpacity(1.0 - t)
-            p.drawText(r.translated(0, -slide_dy * t), align,
-                       self._old_text)
-            p.setOpacity(t)
-            p.drawText(r.translated(0, slide_dy * (1.0 - t)), align,
-                       self._new_text)
         else:
             p.setOpacity(1.0 - t)
             p.drawText(r.translated(0, -dy * t), align, self._old_text)
@@ -434,13 +422,6 @@ class TimeLabel(QLabel):
                 p.drawText(QPointF(old_x, baseline), old_ch)
                 p.setOpacity(t)
                 p.drawText(QPointF(x, baseline), new_ch)
-            elif self._text_style == "slide2":
-                slide_dy = dy * 1.45
-                p.setOpacity(1.0 - t)
-                p.drawText(QPointF(old_x, baseline - slide_dy * t), old_ch)
-                p.setOpacity(t)
-                p.drawText(QPointF(x, baseline + slide_dy * (1.0 - t)),
-                           new_ch)
             else:
                 p.setOpacity(1.0 - t)
                 p.drawText(QPointF(old_x, baseline - dy * t), old_ch)
@@ -1359,8 +1340,7 @@ class Card(QWidget):
     _PRESET_METRICS = {
         "mini": (340, 124, 76),
         "standard": (CARD_W, CARD_H, ART_SIZE),
-        "wide": (500, CARD_H, ART_SIZE),
-        "controls": (430, 104, 68),
+        "cover_only": (272, 272, 240),
     }
 
     def __init__(self, parent=None):
@@ -1377,8 +1357,9 @@ class Card(QWidget):
         self._base_h = base_h
         self._compact = preset in ("mini", "controls")
         self._control_bar = preset == "controls"
-        self._cover_enabled = (preset != "mini"
-                               and bool(SETTINGS.get("show_cover", True)))
+        self._cover_only = (preset == "cover_only")
+        self._cover_enabled = (self._cover_only or (
+            preset != "mini" and bool(SETTINGS.get("show_cover", True))))
         self._art_size = S(base_art)
         self._W, self._H = self._window_size_px()
         self.setFixedSize(self._W, self._H)
@@ -1428,6 +1409,11 @@ class Card(QWidget):
         self._bg_clip_path_key = None
         self._bg_image_path = ""
         self._bg_image: QImage | None = None
+        self._album_img: QImage | None = None     # 最後的專輯封面（None=無）
+        self._cover_image_path = ""               # 自訂封面圖快取鍵
+        self._cover_image: QImage | None = None
+        self._fallback_image_path = ""            # 備援封面圖快取鍵
+        self._fallback_image: QImage | None = None
         self._bg_theme_key = None
         self._bg_dom: QColor | None = None
         self._bg_grad: tuple[QColor, QColor] | None = None
@@ -1490,7 +1476,8 @@ class Card(QWidget):
         self._controls_oa = Anim(self)
         self._controls_oa.valueChanged.connect(self._on_controls_op)
         self._topbar_hover = False
-        self._topbar_op = 1.0 if not SETTINGS.get("topbar_hover", False) else 0.0
+        self._topbar_op = 1.0 if not (
+            SETTINGS.get("topbar_hover", False) or self._cover_only) else 0.0
         self._topbar_oa = Anim(self)
         self._topbar_oa.valueChanged.connect(self._on_topbar_op)
         self._info_focus = 0.0
@@ -2240,7 +2227,7 @@ class Card(QWidget):
         self.seek_hover.setGeometry(0, 0, self._W, self._H)
         self.seek.set_hover_overlay(self.seek_hover)
         self.seek_hover.raise_()
-        if self._control_bar:
+        if self._control_bar or self._cover_only:
             self.t_now.hide()
             self.t_total.hide()
             self.seek.hide()
@@ -3380,13 +3367,13 @@ class Card(QWidget):
         elif key == "art":
             self.art.setVisible((not self._empty_state) and self._cover_enabled)
         elif key in ("source", "source_logo"):
-            visible = (not self._empty_state
+            visible = (not self._empty_state and not self._cover_only
                        and bool(SETTINGS.get("show_source", True)))
             for w in widgets:
                 w.setVisible(visible)
         elif key in ("title", "artist", "controls"):
             for w in widgets:
-                w.setVisible(not self._empty_state)
+                w.setVisible((not self._empty_state) and not self._cover_only)
         elif key.startswith("ctrl_"):
             self.apply_button_visibility(relayout=True, animate=False)
         elif key.startswith("top_"):
@@ -3396,10 +3383,14 @@ class Card(QWidget):
                 self._fade_reset_button(self._edit_mode, animate=False)
             else:
                 for w in widgets:
-                    w.show()
+                    if self._cover_only and w is self.btn_vol:
+                        w.setVisible(False)
+                    else:
+                        w.show()
         elif key in ("seek", "time_now", "time_total"):
             for w in widgets:
-                w.setVisible((not self._empty_state) and not self._control_bar)
+                w.setVisible((not self._empty_state) and not self._control_bar
+                             and not self._cover_only)
         elif key.startswith("empty"):
             for w in widgets:
                 w.setVisible(self._empty_state)
@@ -3757,6 +3748,8 @@ class Card(QWidget):
         enabled = bool(enabled)
         if enabled == self._edit_mode:
             return
+        if enabled and self._empty_state:
+            return      # 空狀態不能進編輯模式
         self._edit_mode = enabled
         self._edit_drag = None
         self._fade_reset_button(enabled, animate=True)
@@ -4109,7 +4102,7 @@ class Card(QWidget):
         dy = max(min_h - rect.height(), float(delta.y()))
         sw, sh = self._edit_drag["size"]
         if key == "art":
-            # Keep the cover resize square and let ArtView recompute its own pad.
+            # 封面縮放維持正方形，讓 ArtView 自己重算 pad
             d = max(dx, dy)
             aw, ah = self._edit_drag["art_delta"]
             logical = d / scale
@@ -4365,7 +4358,7 @@ class Card(QWidget):
             self._on_button_op(btn, 1.0)
             btn.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._ctrl_fade_in.clear()
-        self.controls.setVisible(not self._empty_state)
+        self.controls.setVisible((not self._empty_state) and not self._cover_only)
 
     def relayout_controls(self, animate: bool = False,
                           fade_in_buttons=None):
@@ -4447,7 +4440,7 @@ class Card(QWidget):
         if self._ctrl_overlay is not None:
             self._ctrl_overlay.hide()
         self.controls.move(round(target.x()), round(target.y()))
-        self.controls.setVisible(not self._empty_state)
+        self.controls.setVisible((not self._empty_state) and not self._cover_only)
         self._sync_controls_hover(animate=False)
 
     def _on_controls_op(self, v):
@@ -4476,7 +4469,8 @@ class Card(QWidget):
         if hover is not None:
             self._topbar_hover = bool(hover)
         target = 1.0
-        if (not self._edit_mode and SETTINGS.get("topbar_hover", False)
+        if (not self._edit_mode
+                and (SETTINGS.get("topbar_hover", False) or self._cover_only)
                 and not self._topbar_hover):
             target = 0.0
         self._topbar_oa.stop()
@@ -4552,7 +4546,7 @@ class Card(QWidget):
         replay_play_hover = (target > self._controls_op + 0.01
                              and SETTINGS.get("controls_hover", False)
                              and animate and anim_on())
-        self.controls.setVisible(not self._empty_state)
+        self.controls.setVisible((not self._empty_state) and not self._cover_only)
         if replay_play_hover and hasattr(self.btn_play, "replay_hover_animation"):
             self.btn_play.replay_hover_animation()
         self._controls_oa.stop()
@@ -4638,6 +4632,8 @@ class Card(QWidget):
                    and empty != self._empty_state)
         if do_fade:
             old_pm = self.grab()     # 切換前的畫面，蓋在上面淡出
+        if empty and self._edit_mode:
+            self.set_layout_edit_mode(False)
         self._empty_state = empty
         for w in self._content:
             w.setVisible(not empty)
@@ -4646,6 +4642,10 @@ class Card(QWidget):
             self.t_now.hide()
             self.t_total.hide()
             self.seek.hide()
+        if not empty and self._cover_only:
+            for w in self._content:
+                if w is not self.art:
+                    w.hide()
         if empty and self._ctrl_overlay is not None:
             self._ctrl_suppress_done = True
             self._ctrl_anim.stop()
@@ -4655,12 +4655,15 @@ class Card(QWidget):
             w.setVisible(empty)
         self.update_source_visible()
         self.refresh_empty_text()
+        self.apply_edit_button_visible(animate=animate)
         self._sync_controls_hover(animate=animate)
-        # 右上角按鈕永遠顯示；筆可關閉，重設只在編輯模式顯示
+        # 右上角按鈕；編輯鈕空狀態時淡化隱藏
         for b in self._topbar_buttons:
-            if b is self.btn_edit:
-                b.setVisible(self._edit_button_target > 0.001
-                             or self._edit_button_op > 0.001)
+            if self._cover_only and b in (self.btn_edit,
+                                          self.btn_reset_layout, self.btn_vol):
+                b.setVisible(False)
+            elif b is self.btn_edit:
+                pass  # 由 apply_edit_button_visible 處理淡化
             else:
                 b.setVisible(
                     b is not self.btn_reset_layout
@@ -4686,7 +4689,7 @@ class Card(QWidget):
         self.empty_btn.setVisible(self._empty_state and mode != "browser")
 
     def update_source_visible(self):
-        target = 1.0 if (not self._empty_state
+        target = 1.0 if (not self._empty_state and not self._cover_only
                          and SETTINGS["show_source"]) else 0.0
         ms = adur(190, 110)
         # stop() 會同步發 finished；先保留顯示狀態，避免淡出前被隱藏。
@@ -5386,10 +5389,13 @@ class Card(QWidget):
     def apply_marquee_setting(self):
         enabled = bool(SETTINGS.get("marquee_enabled", True))
         edge_fade = bool(SETTINGS.get("marquee_edge_fade", True))
-        self.title.set_marquee_enabled(enabled)
-        self.artist.set_marquee_enabled(enabled)
-        self.title.set_marquee_edge_fade(edge_fade)
-        self.artist.set_marquee_edge_fade(edge_fade)
+        speed = float(SETTINGS.get("marquee_speed", 27.0))
+        hold = float(SETTINGS.get("marquee_hold", 1.5))
+        for lbl in (self.title, self.artist):
+            lbl.set_marquee_enabled(enabled)
+            lbl.set_marquee_edge_fade(edge_fade)
+            lbl.set_marquee_speed(speed)
+            lbl.set_marquee_hold(hold)
 
     def apply_fps_overlay(self):
         show = bool(SETTINGS.get("show_fps", False))
@@ -5472,7 +5478,8 @@ class Card(QWidget):
         self.update()
 
     def apply_edit_button_visible(self, animate: bool = True):
-        visible = bool(SETTINGS.get("show_edit_button", True))
+        visible = (bool(SETTINGS.get("show_edit_button", True))
+                   and not self._empty_state)
         if not visible and self._edit_mode:
             self.set_layout_edit_mode(False)
         target = 1.0 if visible else 0.0
@@ -5510,22 +5517,54 @@ class Card(QWidget):
             widget.set_playing(self._art_playing)
 
     def set_art(self, img: QImage | None, animate=True):
-        if img is None or img.isNull():
+        self._album_img = (QImage(img)
+                           if (img is not None and not img.isNull()) else None)
+        custom = self._custom_cover_image()
+        eff = custom if custom is not None else self._album_img
+        if eff is None or eff.isNull():
+            eff = self._fallback_cover_image()
+        if eff is None or eff.isNull():
             self._art_img = None
             self._art_pm = None
             self._dom = None
             self._cover_grad = None
         else:
-            self._art_img = QImage(img)
+            self._art_img = QImage(eff)
             dpr = self.devicePixelRatioF()
             self._art_pm = rounded_pixmap(
-                img, self._cover_visual_size(), self._cover_radius(), dpr)
-            self._dom = dominant_color(img)
-            self._cover_grad = cover_gradient(img)
+                eff, self._cover_visual_size(), self._cover_radius(), dpr)
+            self._dom = dominant_color(eff)
+            self._cover_grad = cover_gradient(eff)
         self.refresh_accent(animate=animate)
         self.art.set_pixmap(self._art_pm, animate=animate)
         self._refresh_edit_instance_art_all(animate=animate)
         self.update()
+
+    def _custom_cover_image(self) -> QImage | None:
+        path = str(SETTINGS.get("custom_cover", "") or "").strip()
+        if path != self._cover_image_path:
+            self._cover_image_path = path
+            self._cover_image = QImage(path) if path else None
+        if self._cover_image is None or self._cover_image.isNull():
+            return None
+        return self._cover_image
+
+    def refresh_custom_cover(self):
+        self._cover_image_path = ""
+        self._cover_image = None
+
+    def _fallback_cover_image(self) -> QImage | None:
+        path = str(SETTINGS.get("fallback_cover", "") or "").strip()
+        if path != self._fallback_image_path:
+            self._fallback_image_path = path
+            self._fallback_image = QImage(path) if path else None
+        if self._fallback_image is None or self._fallback_image.isNull():
+            return None
+        return self._fallback_image
+
+    def refresh_fallback_cover(self):
+        self._fallback_image_path = ""
+        self._fallback_image = None
 
     # ---- 繪製 ----
 
@@ -6016,7 +6055,7 @@ class Card(QWidget):
         super().leaveEvent(e)
 
 
-# ------------------------------------------------------- 縮放過渡動畫 ----
+# ---- 縮放過渡動畫 ----
 
 class _ZoomOverlay(QWidget):
     """卡片重建（縮放/字體）時的縮放 + 交叉淡化過渡層。"""
@@ -6133,7 +6172,7 @@ class _ZoomOverlay(QWidget):
         p.drawPixmap(rect, pm, QRectF(0, 0, bw, bh))
 
 
-# ---------------------------------------------------------------- 視窗 ----
+# ---- 視窗 ----
 
 INSTANCE_KEY = "spotify_mini.single"
 
@@ -6671,7 +6710,7 @@ class PlayerWindow(QWidget):
                 self._panel.sync_weather_controls()
         elif (key in ("weather_enabled", "rain_enabled")
               or key.startswith("rain_") or key.startswith("snow_")
-              or key.startswith("custom_")):
+              or (key.startswith("custom_") and key != "custom_cover")):
             self.card.apply_rain_settings()
         elif key in ("lightning_enabled", "lightning_size",
                      "lightning_thickness",
@@ -6735,7 +6774,8 @@ class PlayerWindow(QWidget):
             self.card.apply_fps_overlay()
             if self._panel is not None:
                 self._panel.apply_fps_overlay()
-        elif key in ("marquee_enabled", "marquee_edge_fade"):
+        elif key in ("marquee_enabled", "marquee_edge_fade",
+                     "marquee_speed", "marquee_hold"):
             self.card.apply_marquee_setting()
         elif key == "anim_enabled":
             apply_anim_fps()
@@ -6744,6 +6784,14 @@ class PlayerWindow(QWidget):
                 self._panel.update()
         elif key == "show_cover":
             self.card.set_cover_enabled(bool(value), animate=True)
+        elif key == "custom_cover":
+            self.card.refresh_custom_cover()
+            self.card.set_art(self.card._album_img, animate=True)
+        elif key == "fallback_cover":
+            self.card.refresh_fallback_cover()
+            self.card.set_art(self.card._album_img, animate=True)
+        elif key == "audio_feedback_halo":
+            self.card.apply_audio_feedback_settings()
         elif key == "art_mode":
             self.card.art.set_mode(str(value), animate=True)
             # 離開音訊模式就停掉 WASAPI loopback 擷取執行緒——它原本只在

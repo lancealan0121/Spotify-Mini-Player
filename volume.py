@@ -168,20 +168,16 @@ class AppMasterAudioMeter:
 
 
 class SystemSpectrumAnalyzer:
-    """WASAPI loopback / input fallback 的 64 段對數頻譜分析器。"""
+    """WASAPI loopback / input fallback 的對數頻譜分析器（64 段）。"""
 
     SAMPLE_RATE = 44100
     FFT_SIZE = 2048
     BAR_COUNT = 64
-    ATTACK_TAU = 0.035   # bar 竄起時間常數（秒）：小=反應快、衝擊強
-    RELEASE_TAU = 0.22   # bar 回落時間常數（秒）：大=尾巴長、不抖
-    PEAK_TAU = 1.2       # 正規化峰值衰減時間常數（秒）：小=動態跟得緊
-    SILENCE_HOLD = 0.05  # 多久沒有新樣本流入就當作靜音（秒）：loopback 暫停渲染
-                         # 時不送 callback，緩衝會凍結。偵測下限是一個 callback
-                         # 間隔（blocksize 512 @ 44.1kHz≈11.6ms），這裡留約 4 倍
-                         # 餘裕，播放中不會誤判、暫停時又幾乎無感延遲。
-    SILENCE_RELEASE_TAU = 0.07  # 靜音時 bar 專用回落時間常數（秒）：比音樂尾巴
-                         # （RELEASE_TAU）快很多，暫停瞬間就俐落縮回，不拖泥帶水。
+    ATTACK_TAU = 0.035   # bar 竄起時間常數：小=反應快
+    RELEASE_TAU = 0.22   # bar 回落時間常數：大=尾巴長
+    PEAK_TAU = 1.2       # 峰值衰減時間常數
+    SILENCE_HOLD = 0.05  # 無新樣本多久視為靜音（loopback 暫停不送 callback）
+    SILENCE_RELEASE_TAU = 0.07  # 靜音時 bar 回落常數：比音樂尾巴快，俐落縮回
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -201,25 +197,17 @@ class SystemSpectrumAnalyzer:
             self._write_pos = 0
             self._window = np.hanning(self.FFT_SIZE).astype(np.float32)
             self._smooth = np.zeros(self.BAR_COUNT, dtype=np.float32)
-            # 快取上次 rfft 算出的原始頻帶量值（_raw）與其對應的寫入時刻
-            # （_fft_at）。渲染以 240fps 拉 bars()，但音訊 callback 僅 ~86Hz
-            # （blocksize 512 @ 44.1kHz）；兩次 callback 間 buffer 內容不變，
-            # rfft 結果位元級相同。故 _last_write_t 未變就重用 _raw，跳過昂貴
-            # 的 2048 點 rfft（每幀仍照算平滑＋正規化，視覺零差異）。
+            # 快取上次 rfft 結果；buffer 未更新就重用，跳過昂貴的 2048 點 rfft
             self._raw = np.zeros(self.BAR_COUNT, dtype=np.float32)
             self._fft_at = None
             self._edges = np.geomspace(20.0, 16000.0, self.BAR_COUNT + 1)
             self._freqs = np.fft.rfftfreq(self.FFT_SIZE, 1.0 / self.SAMPLE_RATE)
             self._groups = self._build_groups()
-            # 頻率傾斜補償：音樂能量隨頻率遞減（低音遠強於高頻），而全域共用
-            # 峰值正規化會讓中高頻被低音壓到不動。對每段中心頻乘遞增增益把
-            # 高頻拉回可見量級（只增不減，低音 punch 不動）；clamp 防過曝。
+            # 頻率傾斜補償：音樂能量隨頻率遞減，對高頻乘遞增增益拉回可見量級
             _fc = np.sqrt(self._edges[:-1] * self._edges[1:])
             self._tilt = np.clip(
                 (_fc / 1000.0) ** 0.40, 1.0, 2.6).astype(np.float32)
-            # 每個頻帶以「中心頻率對應的小數 bin 位置」取樣，對 rfft 量值做
-            # 線性內插。低頻對數頻帶比 bin 還窄時，最低幾帶不再對到同一個
-            # bin（值相同會讓最左幾根 bar 黏成一塊），內插出各自不同的值。
+            # 頻帶中心對小數 bin 做線性內插，低頻不再黏成同值
             self._band_centers = (
                 _fc / (self.SAMPLE_RATE / self.FFT_SIZE)).astype(np.float32)
         else:
@@ -479,9 +467,8 @@ class SystemSpectrumAnalyzer:
             return None
         now = time.monotonic()
         last_write = self._last_write_t
-        # loopback 在沒有音訊渲染時不會送 callback，環形緩衝會凍結在最後一段
-        # 音樂。若資料停止流入超過 SILENCE_HOLD 就當作靜音，讓 bar 依 release
-        # 時間常數平滑回落歸零，而不是回傳凍結的舊頻譜（卡住不縮回封面）。
+        # loopback 暫停渲染時不送 callback；若資料停止流入超過 SILENCE_HOLD
+        # 就當作靜音，讓 bar 平滑回落歸零而非凍結在舊頻譜。
         silent = last_write is None or (now - last_write) > self.SILENCE_HOLD
         last = self._last_bars_t
         self._last_bars_t = now
@@ -490,7 +477,7 @@ class SystemSpectrumAnalyzer:
             k_dn = 1.0 - math.exp(-dt / self.SILENCE_RELEASE_TAU)
             self._smooth += (0.0 - self._smooth) * k_dn
             self._smooth[self._smooth < 1e-4] = 0.0
-            # 峰值同步衰減，下次有音樂時才能立刻重新正規化到滿幅。
+            # 峰值同步衰減，下次有音樂時才能立刻重新正規化
             self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), 1e-6)
             return self._smooth.tolist()
         new_audio = last_write != self._fft_at
@@ -519,8 +506,7 @@ class SystemSpectrumAnalyzer:
         self._peak = max(self._peak * math.exp(-dt / self.PEAK_TAU), mx, 1e-6)
         norm = np.clip(raw / self._peak, 0.0, 1.0)
 
-        # attack 快、release 慢的非對稱平滑（時間基準，與 fps 無關）：
-        # bar 隨鼓點瞬間竄起、回落時拖尾巴，做出 Wallpaper Engine 式的彈跳。
+        # attack 快、release 慢的非對稱平滑：bar 隨鼓點竄起、回落拖尾巴
         k_up = 1.0 - math.exp(-dt / self.ATTACK_TAU)
         k_dn = 1.0 - math.exp(-dt / self.RELEASE_TAU)
         k = np.where(norm > self._smooth, k_up, k_dn).astype(np.float32)
