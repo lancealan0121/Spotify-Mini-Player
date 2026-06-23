@@ -35,6 +35,10 @@ data/
 AGENTS.md
 CLAUDE.md
 
+# IDE/editor metadata
+.idea/
+.zed/
+
 # OS cruft
 Thumbs.db
 desktop.ini
