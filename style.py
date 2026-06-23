@@ -1,4 +1,5 @@
 """共用樣式與設定系統：主題色、縮放、字體、動畫模式、config 載入儲存。"""
+
 import json
 import math
 import os
@@ -7,13 +8,31 @@ import time
 from collections import OrderedDict
 
 import shiboken6
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QGuiApplication,
-                           QImage, QPainter, QPainterPath, QPixmap)
-from PySide6.QtCore import (QEasingCurve, QObject, QRectF, Qt, QTimer,
-                            Signal, qInstallMessageHandler)
+from PySide6.QtCore import (
+    QEasingCurve,
+    QObject,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+    qInstallMessageHandler,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QGuiApplication,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+)
 
-BASE_DIR = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
-            else os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = (
+    os.path.dirname(sys.executable)
+    if getattr(sys, "frozen", False)
+    else os.path.dirname(os.path.abspath(__file__))
+)
 RESOURCE_DIR = getattr(sys, "_MEIPASS", BASE_DIR)
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
@@ -32,33 +51,33 @@ COLOR_SETTING_KEYS = (
 
 CARD_W, CARD_H = 400, 148
 ART_SIZE = 96
-MARGIN = 18            # 卡片外圍留給陰影的透明邊
+MARGIN = 18  # 卡片外圍留給陰影的透明邊
 
 # Segoe Fluent Icons / MDL2 圖示字元
-GLYPH_PLAY = "\uE768"
-GLYPH_PAUSE = "\uE769"
-GLYPH_PREV = "\uE892"
-GLYPH_NEXT = "\uE893"
-GLYPH_SHUFFLE = "\uE8B1"
-GLYPH_REPEAT_ALL = "\uE8EE"
-GLYPH_REPEAT_ONE = "\uE8ED"
-GLYPH_PIN = "\uE718"
-GLYPH_CLOSE = "\uE8BB"
-GLYPH_NOTE = "\uE8D6"
-GLYPH_VOLUME = "\uE767"
-GLYPH_VOLUME_0 = "\uE992"
-GLYPH_VOLUME_1 = "\uE993"
-GLYPH_VOLUME_2 = "\uE994"
-GLYPH_VOLUME_3 = "\uE995"
-GLYPH_MUTE = "\uE74F"
-GLYPH_SETTINGS = "\uE713"
-GLYPH_EDIT = "\uE70F"
-GLYPH_RESET = "\uE777"
-GLYPH_CHECK = "\uE73E"
-GLYPH_GLOBE = "\uE774"
-GLYPH_SEARCH = "\uE721"
-GLYPH_CHEVRON_DOWN = "\uE70D"
-GLYPH_CHEVRON_UP = "\uE70E"
+GLYPH_PLAY = "\ue768"
+GLYPH_PAUSE = "\ue769"
+GLYPH_PREV = "\ue892"
+GLYPH_NEXT = "\ue893"
+GLYPH_SHUFFLE = "\ue8b1"
+GLYPH_REPEAT_ALL = "\ue8ee"
+GLYPH_REPEAT_ONE = "\ue8ed"
+GLYPH_PIN = "\ue718"
+GLYPH_CLOSE = "\ue8bb"
+GLYPH_NOTE = "\ue8d6"
+GLYPH_VOLUME = "\ue767"
+GLYPH_VOLUME_0 = "\ue992"
+GLYPH_VOLUME_1 = "\ue993"
+GLYPH_VOLUME_2 = "\ue994"
+GLYPH_VOLUME_3 = "\ue995"
+GLYPH_MUTE = "\ue74f"
+GLYPH_SETTINGS = "\ue713"
+GLYPH_EDIT = "\ue70f"
+GLYPH_RESET = "\ue777"
+GLYPH_CHECK = "\ue73e"
+GLYPH_GLOBE = "\ue774"
+GLYPH_SEARCH = "\ue721"
+GLYPH_CHEVRON_DOWN = "\ue70d"
+GLYPH_CHEVRON_UP = "\ue70e"
 
 # ---- 設定 ----
 
@@ -67,28 +86,28 @@ FPS_MAX = 240
 
 DEFAULTS = {
     "pinned": True,
-    "theme": "auto",        # auto 或 THEMES 內的 key
-    "bg_opacity": 1.0,      # 0.35 ~ 1.0
-    "brightness": 0.9540801010635326,     # 0.55 ~ 1.45，mini player 背景亮度
+    "theme": "auto",  # auto 或 THEMES 內的 key
+    "bg_opacity": 1.0,  # 0.35 ~ 1.0
+    "brightness": 0.9540801010635326,  # 0.55 ~ 1.45，mini player 背景亮度
     "auto_color_strength": 1.0,  # 0.0 ~ 1.0，自動主色背景強度
-    "scale": 1.7038678271081824,          # 0.8 ~ 3.0
-    "settings_scale": 1.199758606299479, # 0.8 ~ 2.0
+    "scale": 1.7038678271081824,  # 0.8 ~ 3.0
+    "settings_scale": 1.199758606299479,  # 0.8 ~ 2.0
     "settings_panel_type": "normal",  # normal / categories
     "auto_keep_on_screen": True,  # 視窗超出螢幕時自動拉回可見範圍
     "edit_layout_positions": {},  # 編輯模式拖曳位移；空 dict = 程式預設版面
-    "edit_layout_sizes": {},      # 編輯模式尺寸增量；空 dict = 程式預設尺寸
-    "edit_layout_angles": {},     # 編輯模式旋轉角度；空 dict = 0 度
-    "edit_window_size": {},       # 編輯模式視窗寬高增量；空 dict = 程式預設尺寸
-    "edit_hidden_keys": [],       # 編輯模式刪除/暫存到 library 的元件 key
-    "edit_library_pos": {},       # 編輯模式 library 位置；空 dict = 預設左側
+    "edit_layout_sizes": {},  # 編輯模式尺寸增量；空 dict = 程式預設尺寸
+    "edit_layout_angles": {},  # 編輯模式旋轉角度；空 dict = 0 度
+    "edit_window_size": {},  # 編輯模式視窗寬高增量；空 dict = 程式預設尺寸
+    "edit_hidden_keys": [],  # 編輯模式刪除/暫存到 library 的元件 key
+    "edit_library_pos": {},  # 編輯模式 library 位置；空 dict = 預設左側
     "edit_library_collapsed": False,
-    "edit_library_instances": [], # library 拖入的可重複獨立元件
+    "edit_library_instances": [],  # library 拖入的可重複獨立元件
     "settings_advanced_open": False,  # 設定面板進階區塊是否展開
-    "radius": 15,           # 6 ~ 28
+    "radius": 15,  # 6 ~ 28
     "anim": "full",
     "anim_enabled": True,
-    "seek_style": "wave",   # plain / wave / glow
-    "seek_thumb": "always", # hover / always，進度條白色圓鈕顯示方式
+    "seek_style": "wave",  # plain / wave / glow
+    "seek_thumb": "always",  # hover / always，進度條白色圓鈕顯示方式
     "seek_thumb_shape": "circle",  # circle / star / rect
     "seek_wave_amp": 0.7049731860774968,
     "seek_wave_speed": 0.8993361381128148,
@@ -99,24 +118,24 @@ DEFAULTS = {
     "progress_time_anim_enabled": True,
     "progress_time_anim_style": "fade",  # fade / slide / instant
     "progress_time_spacing": 0.0,  # 進度數字字距，邏輯 px
-    "controls_hover": True, # 控制列只在 hover 時顯示
-    "marquee_enabled": True, # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
-    "marquee_edge_fade": True, # 跑馬燈文字左右邊緣淡化
-    "marquee_speed": 27.0,     # 10.0 ~ 80.0，跑馬燈速度（px / 秒）
-    "marquee_hold": 1.5,       # 0.5 ~ 5.0，跑馬燈停留秒數
+    "controls_hover": True,  # 控制列只在 hover 時顯示
+    "marquee_enabled": True,  # 曲名 / 作者過長時跑馬燈，關閉時省略號截斷
+    "marquee_edge_fade": True,  # 跑馬燈文字左右邊緣淡化
+    "marquee_speed": 27.0,  # 10.0 ~ 80.0，跑馬燈速度（px / 秒）
+    "marquee_hold": 1.5,  # 0.5 ~ 5.0，跑馬燈停留秒數
     "title_size": 0.997494556708598,
     "artist_size": 0.997494556708598,
     "auto_theme": "gradient",  # solid / gradient，封面自動主題背景模式
-    "art_mode": "cover",    # cover / vinyl / pulse / audio，封面區顯示模式
+    "art_mode": "cover",  # cover / vinyl / pulse / audio，封面區顯示模式
     "art_cover_size": 0.9245844436826636,
     "art_vinyl_size": 0.9983334355091419,
     "audio_feedback_thickness": 1.0,
     "audio_feedback_sensitivity": 1.0,
     "audio_feedback_shape": "ring",  # ring=環形頻譜 / bars=直立直方圖 / blob=流動波瓣（僅 audio 模式）
-    "audio_feedback_halo": True,     # 反饋條背後的底環（僅 ring）
-    "audio_feedback_spin": False,    # 反饋周圍是否繞封面旋轉（僅 ring/blob）
+    "audio_feedback_halo": True,  # 反饋條背後的底環（僅 ring）
+    "audio_feedback_spin": False,  # 反饋周圍是否繞封面旋轉（僅 ring/blob）
     "audio_feedback_spin_speed": 1.0,  # 旋轉速度倍率
-    "audio_cover_pulse": True,       # audio 模式封面跟著節奏脈動縮放
+    "audio_cover_pulse": True,  # audio 模式封面跟著節奏脈動縮放
     "audio_cover_pulse_strength": 1.0,  # 脈動強度倍率
     "show_vinyl_center": True,
     "vinyl_center_size": 1.0,
@@ -126,8 +145,8 @@ DEFAULTS = {
     "topbar_hover": False,
     "card_preset": "standard",
     "show_cover": True,
-    "custom_cover": "",         # 自訂封面圖路徑（無專輯封面時顯示）
-    "fallback_cover": "",      # 備援封面圖路徑（專輯封面為空時使用，優先級低於 custom_cover）
+    "custom_cover": "",  # 自訂封面圖路徑（無專輯封面時顯示）
+    "fallback_cover": "",  # 備援封面圖路徑（專輯封面為空時使用，優先級低於 custom_cover）
     "cover_blur": 0.0,
     "cover_shape": "rounded",  # rounded / square / circle
     "cover_radius_strength": 0.9974260819701061,
@@ -143,17 +162,17 @@ DEFAULTS = {
     "control_button_size": 0.9981209175314486,
     "control_button_spacing": 0.9962418350628971,
     "font": "Arial",
-    "fps": 144,             # FPS_MIN ~ FPS_MAX；FPS_MAX 表示不限速
-    "antialias": True,      # 反鋸齒
-    "show_source": True,    # 左上角來源標誌（Spotify 圖示 + 文字）
-    "source": "spotify",    # spotify / browser / any 媒體來源
+    "fps": 144,  # FPS_MIN ~ FPS_MAX；FPS_MAX 表示不限速
+    "antialias": True,  # 反鋸齒
+    "show_source": True,  # 左上角來源標誌（Spotify 圖示 + 文字）
+    "source": "spotify",  # spotify / browser / any 媒體來源
     "startup_enabled": False,
     "startup_show": "boot",  # boot / spotify
-    "gpu": False,           # GPU 合成（QT_WIDGETS_RHI，重啟後生效）
-    "shadow": True,         # 背景陰影
-    "controls_align": "left",   # 控制列位置 left / center / right
-    "custom_grad": ["#1db954", "#3d9be9"],   # 自訂漸層主題的兩端色
-    "background_image": "",     # 自訂卡片背景圖片路徑
+    "gpu": False,  # GPU 合成（QT_WIDGETS_RHI，重啟後生效）
+    "shadow": True,  # 背景陰影
+    "controls_align": "left",  # 控制列位置 left / center / right
+    "custom_grad": ["#1db954", "#3d9be9"],  # 自訂漸層主題的兩端色
+    "background_image": "",  # 自訂卡片背景圖片路徑
     "background_image_mode": "cover",  # cover / contain / stretch / tile
     "background_image_brightness": 1.0,  # 0.35 ~ 1.65，自訂背景圖亮度
     "background_image_auto_theme": True,  # 自動主題使用封面色；False 時使用背景圖色
@@ -163,47 +182,47 @@ DEFAULTS = {
     "seek_hover_time": True,  # hover 進度條時顯示滑鼠位置時間
     "weather_enabled": False,  # 降水效果總開關
     "weather_effect": "rain",  # rain / snow / custom，目前編輯與顯示的降水類型
-    "rain_enabled": False,   # 飄雨效果
-    "rain_intensity": 0.55,   # 0.0 ~ 1.0，雨量強度
-    "rain_length": 1.0,      # 0.05 ~ 1.6，雨線長度
-    "rain_thickness": 1.0,   # 0.3 ~ 2.6，雨線粗細
+    "rain_enabled": False,  # 飄雨效果
+    "rain_intensity": 0.55,  # 0.0 ~ 1.0，雨量強度
+    "rain_length": 1.0,  # 0.05 ~ 1.6，雨線長度
+    "rain_thickness": 1.0,  # 0.3 ~ 2.6，雨線粗細
     "rain_direction": 18.0,  # -55 ~ 55，雨線飄移角度（度）
     "rain_fall_speed": 1.0,  # 0.25 ~ 2.5，雨滴下落速度
-    "snow_intensity": 0.42,   # 0.0 ~ 1.0，雪量強度
-    "snow_length": 0.8,       # 0.05 ~ 1.6，雪拖尾長度
-    "snow_thickness": 1.0,    # 0.3 ~ 2.6，雪花大小 / 粗細
+    "snow_intensity": 0.42,  # 0.0 ~ 1.0，雪量強度
+    "snow_length": 0.8,  # 0.05 ~ 1.6，雪拖尾長度
+    "snow_thickness": 1.0,  # 0.3 ~ 2.6，雪花大小 / 粗細
     "snow_direction": -10.0,  # -55 ~ 55，雪花飄移角度（度）
-    "snow_size": 1.0,         # 0.45 ~ 2.2，雪花大小
-    "snow_spin_speed": 1.0,   # 0.0 ~ 3.0，雪花旋轉速度
-    "snow_fall_speed": 1.0,   # 0.25 ~ 2.5，雪花下落速度
-    "custom_intensity": 0.42, # 0.0 ~ 1.0，自訂符號密度
-    "custom_size": 1.0,       # 0.45 ~ 5.0，自訂符號大小
-    "custom_spin_speed": 1.0, # 0.0 ~ 3.0，自訂符號旋轉速度
-    "custom_fall_speed": 1.0, # 0.25 ~ 2.5，自訂符號下落速度
-    "custom_symbols": "❄,❅,❆", # 逗號分隔的自訂符號
-    "custom_image": "",      # 自訂飄落圖片路徑，空字串 = 使用文字符號
+    "snow_size": 1.0,  # 0.45 ~ 2.2，雪花大小
+    "snow_spin_speed": 1.0,  # 0.0 ~ 3.0，雪花旋轉速度
+    "snow_fall_speed": 1.0,  # 0.25 ~ 2.5，雪花下落速度
+    "custom_intensity": 0.42,  # 0.0 ~ 1.0，自訂符號密度
+    "custom_size": 1.0,  # 0.45 ~ 5.0，自訂符號大小
+    "custom_spin_speed": 1.0,  # 0.0 ~ 3.0，自訂符號旋轉速度
+    "custom_fall_speed": 1.0,  # 0.25 ~ 2.5，自訂符號下落速度
+    "custom_symbols": "❄,❅,❆",  # 逗號分隔的自訂符號
+    "custom_image": "",  # 自訂飄落圖片路徑，空字串 = 使用文字符號
     "lightning_enabled": False,
-    "lightning_size": 1.0,       # 0.3 ~ 2.0，閃電尺寸
+    "lightning_size": 1.0,  # 0.3 ~ 2.0，閃電尺寸
     "lightning_thickness": 1.0,  # 0.4 ~ 3.0，閃電線條粗細
-    "lightning_intensity": 0.55, # 0.0 ~ 2.5，閃光強度與頻率
+    "lightning_intensity": 0.55,  # 0.0 ~ 2.5，閃光強度與頻率
     "lightning_duration": 0.18,  # 0.05 ~ 1.5，閃電出現到消失秒數
-    "lightning_random_duration": False, # 閃電持續時間隨機
-    "font_color": "",           # 曲名 / 作者文字顏色，空字串 = 預設
-    "source_text_color": "",    # 左上來源文字顏色，空字串 = 預設
-    "topbar_icon_color": "",    # 右上工具列圖示顏色，空字串 = 預設
-    "number_color": "",         # 進度數字顏色，空字串 = 預設
-    "seek_fill_color": "",      # 進度條已播放顏色，空字串 = 跟隨主題色
-    "seek_thumb_color": "",     # 進度條圓鈕顏色，空字串 = 白色
-    "seek_track_color": "",     # 進度條總長度底色，空字串 = 預設淡白
-    "custom_themes": [],    # 使用者新增主題：{key, name, colors:[hex] / [hex, hex]}
-    "held_theme": None,     # 已刪除但目前仍套用中的自訂主題快照
-    "hotkey": "",           # 全域快捷鍵：顯示 / 隱藏小播放器
+    "lightning_random_duration": False,  # 閃電持續時間隨機
+    "font_color": "",  # 曲名 / 作者文字顏色，空字串 = 預設
+    "source_text_color": "",  # 左上來源文字顏色，空字串 = 預設
+    "topbar_icon_color": "",  # 右上工具列圖示顏色，空字串 = 預設
+    "number_color": "",  # 進度數字顏色，空字串 = 預設
+    "seek_fill_color": "",  # 進度條已播放顏色，空字串 = 跟隨主題色
+    "seek_thumb_color": "",  # 進度條圓鈕顏色，空字串 = 白色
+    "seek_track_color": "",  # 進度條總長度底色，空字串 = 預設淡白
+    "custom_themes": [],  # 使用者新增主題：{key, name, colors:[hex] / [hex, hex]}
+    "held_theme": None,  # 已刪除但目前仍套用中的自訂主題快照
+    "hotkey": "",  # 全域快捷鍵：顯示 / 隱藏小播放器
     "hotkey_play": "",
     "hotkey_prev": "",
     "hotkey_next": "",
     "hotkey_vol_up": "",
     "hotkey_vol_down": "",
-    "language": "ja",       # zh / ja
+    "language": "ja",  # zh / ja
 }
 
 THEMES = [
@@ -211,33 +230,31 @@ THEMES = [
     # "custom" = 新增自訂主題按鈕、
     # "#hex" = 單色、("#hex", "#hex") = 雙色漸層
     # 前 COLS 個（settings_ui.SwatchRow）是收合時可見的第一列
-    ("auto",     "封面自動",    None),
-    ("glass",    "玻璃透明",    "glass"),
-    ("custom",   "新增主題",    "custom"),
-    ("green",    "Spotify 綠",  "#1DB954"),
-    ("blue",     "海洋藍",      "#3D9BE9"),
-    ("purple",   "紫羅蘭",      "#9B5FD0"),
-    ("pink",     "櫻花粉",      "#E8638C"),
-    ("orange",   "暖陽橙",      "#E08A3C"),
-    ("sunset",   "落日漸層",    ("#E96443", "#904E95")),
-    ("aurora",   "極光漸層",    ("#36D1AC", "#3A7BD5")),
-    ("neon",     "霓虹漸層",    ("#FC5C7D", "#6A82FB")),
-    ("ocean",    "海淵漸層",    ("#2193B0", "#6DD5ED")),
-    ("forest",   "森林漸層",    ("#11998E", "#38EF7D")),
-    ("dusk",     "暮色漸層",    ("#C06C84", "#355C7D")),
+    ("auto", "封面自動", None),
+    ("glass", "玻璃透明", "glass"),
+    ("custom", "新增主題", "custom"),
+    ("green", "Spotify 綠", "#1DB954"),
+    ("blue", "海洋藍", "#3D9BE9"),
+    ("purple", "紫羅蘭", "#9B5FD0"),
+    ("pink", "櫻花粉", "#E8638C"),
+    ("orange", "暖陽橙", "#E08A3C"),
+    ("sunset", "落日漸層", ("#E96443", "#904E95")),
+    ("aurora", "極光漸層", ("#36D1AC", "#3A7BD5")),
+    ("neon", "霓虹漸層", ("#FC5C7D", "#6A82FB")),
+    ("ocean", "海淵漸層", ("#2193B0", "#6DD5ED")),
+    ("forest", "森林漸層", ("#11998E", "#38EF7D")),
+    ("dusk", "暮色漸層", ("#C06C84", "#355C7D")),
 ]
 
 SEEK_STYLES = [("plain", "簡約"), ("wave", "波浪"), ("glow", "流光")]
 SEEK_THUMBS = [("hover", "滑過顯示"), ("always", "常駐顯示")]
 SEEK_THUMB_SHAPES = [("circle", "圓形"), ("star", "星星"), ("rect", "直條")]
 PROGRESS_TIME_MODES = [("current", "目前"), ("remaining", "-剩餘")]
-PROGRESS_TIME_ANIM_STYLES = [("fade", "淡化"), ("slide", "滑動"),
-                             ("instant", "瞬間")]
+PROGRESS_TIME_ANIM_STYLES = [("fade", "淡化"), ("slide", "滑動"), ("instant", "瞬間")]
 AUTO_THEME_MODES = [("solid", "單色"), ("gradient", "漸層")]
 SOURCE_MODES = [("spotify", "Spotify"), ("browser", "瀏覽器"), ("any", "全部")]
 CONTROLS_ALIGN = [("left", "靠左"), ("center", "置中"), ("right", "靠右")]
-CARD_PRESETS = [("mini", "超迷你"), ("standard", "標準"),
-                ("cover_only", "單純封面")]
+CARD_PRESETS = [("mini", "超迷你"), ("standard", "標準"), ("cover_only", "單純封面")]
 WEATHER_EFFECTS = [("rain", "雨"), ("snow", "雪"), ("custom", "自訂")]
 LANGUAGES = [("zh", "中文"), ("ja", "日本語")]
 SETTINGS_PANEL_TYPES = [("normal", "一般"), ("categories", "分類")]
@@ -297,12 +314,16 @@ def _font_substitution_names(name: str) -> tuple[str, ...]:
     base = str(name or "").strip()
     if not base:
         return ()
-    return tuple(dict.fromkeys((
-        base,
-        base.lower(),
-        base.upper(),
-        base.title(),
-    )))
+    return tuple(
+        dict.fromkeys(
+            (
+                base,
+                base.lower(),
+                base.upper(),
+                base.title(),
+            )
+        )
+    )
 
 
 def _format_qt_message(mode, context, message: str) -> str:
@@ -334,9 +355,11 @@ def install_qt_message_filter():
         text = str(message)
         lower = text.lower()
         category = getattr(context, "category", "") or ""
-        if (category == "qt.qpa.fonts"
-                and "CreateFontFaceFromHDC() failed" in text
-                and any(name in lower for name in _BAD_UI_FONTS)):
+        if (
+            category == "qt.qpa.fonts"
+            and "CreateFontFaceFromHDC() failed" in text
+            and any(name in lower for name in _BAD_UI_FONTS)
+        ):
             return
         if _PREV_QT_MESSAGE_HANDLER is not None:
             _PREV_QT_MESSAGE_HANDLER(mode, context, message)
@@ -387,8 +410,9 @@ def _builtin_theme_keys() -> set[str]:
     return {k for k, _, _ in THEMES}
 
 
-def _normalize_custom_theme(entry, idx: int,
-                            used: set[str] | None = None) -> dict | None:
+def _normalize_custom_theme(
+    entry, idx: int, used: set[str] | None = None
+) -> dict | None:
     if not isinstance(entry, dict):
         return None
     used = used if used is not None else set()
@@ -512,10 +536,10 @@ def _migrate_legacy_custom_theme():
         "name": "自訂漸層",
         "colors": [str(cg[0]), str(cg[1])],
     }
-    if not any(t.get("key") == entry["key"]
-               for t in SETTINGS.get("custom_themes", [])):
+    if not any(t.get("key") == entry["key"] for t in SETTINGS.get("custom_themes", [])):
         SETTINGS["custom_themes"] = normalize_custom_themes(
-            list(SETTINGS.get("custom_themes", [])) + [entry])
+            list(SETTINGS.get("custom_themes", [])) + [entry]
+        )
     SETTINGS["theme"] = entry["key"]
 
 
@@ -525,24 +549,31 @@ def apply_settings_data(data=None):
     SETTINGS.clear()
     SETTINGS.update(DEFAULTS)
     SETTINGS.update(data)
-    for key in ("vinyl_style", "cover_reflection",
-                "cover_soft_shadow", "volume_hover_pin", "volume_osd",
-                "edge_snap", "edge_auto_collapse", "edge_slide_expand",
-                "title_x_offset", "title_y_offset",
-                "artist_x_offset", "artist_y_offset",
-                "source_x_offset", "source_y_offset"):
+    for key in (
+        "vinyl_style",
+        "cover_reflection",
+        "cover_soft_shadow",
+        "volume_hover_pin",
+        "volume_osd",
+        "edge_snap",
+        "edge_auto_collapse",
+        "edge_slide_expand",
+        "title_x_offset",
+        "title_y_offset",
+        "artist_x_offset",
+        "artist_y_offset",
+        "source_x_offset",
+        "source_y_offset",
+    ):
         SETTINGS.pop(key, None)
     # 防呆夾限
     SETTINGS["bg_opacity"] = min(1.0, max(0.35, float(SETTINGS["bg_opacity"])))
     SETTINGS["brightness"] = min(1.45, max(0.55, float(SETTINGS["brightness"])))
     SETTINGS["scale"] = min(3.0, max(0.8, float(SETTINGS["scale"])))
-    SETTINGS["settings_scale"] = min(
-        2.0, max(0.8, float(SETTINGS["settings_scale"])))
-    if SETTINGS.get("settings_panel_type") not in [
-            k for k, _ in SETTINGS_PANEL_TYPES]:
+    SETTINGS["settings_scale"] = min(2.0, max(0.8, float(SETTINGS["settings_scale"])))
+    if SETTINGS.get("settings_panel_type") not in [k for k, _ in SETTINGS_PANEL_TYPES]:
         SETTINGS["settings_panel_type"] = "normal"
-    SETTINGS["auto_keep_on_screen"] = bool(
-        SETTINGS.get("auto_keep_on_screen", True))
+    SETTINGS["auto_keep_on_screen"] = bool(SETTINGS.get("auto_keep_on_screen", True))
     raw_positions = SETTINGS.get("edit_layout_positions", {})
     clean_positions = {}
     if isinstance(raw_positions, dict):
@@ -627,7 +658,8 @@ def apply_settings_data(data=None):
             clean_lib_pos = {}
     SETTINGS["edit_library_pos"] = clean_lib_pos
     SETTINGS["edit_library_collapsed"] = bool(
-        SETTINGS.get("edit_library_collapsed", False))
+        SETTINGS.get("edit_library_collapsed", False)
+    )
     raw_instances = SETTINGS.get("edit_library_instances", [])
     clean_instances = []
     used_ids = set()
@@ -658,7 +690,9 @@ def apply_settings_data(data=None):
             }
             if kind == "art":
                 mode = str(item.get("mode", "cover"))
-                clean["mode"] = mode if mode in ("cover", "vinyl", "pulse", "audio") else "cover"
+                clean["mode"] = (
+                    mode if mode in ("cover", "vinyl", "pulse", "audio") else "cover"
+                )
             else:
                 clean["source"] = str(item.get("source", ""))[:48]
                 if clean["source"] in ("time_now", "time_total"):
@@ -673,14 +707,14 @@ def apply_settings_data(data=None):
             clean_instances.append(clean)
     SETTINGS["edit_library_instances"] = clean_instances
     SETTINGS["settings_advanced_open"] = bool(
-        SETTINGS.get("settings_advanced_open", False))
+        SETTINGS.get("settings_advanced_open", False)
+    )
     SETTINGS.pop("settings_full_positions", None)
     SETTINGS["radius"] = min(28, max(6, int(SETTINGS["radius"])))
     SETTINGS["fps"] = min(FPS_MAX, max(FPS_MIN, int(SETTINGS["fps"])))
     SETTINGS["antialias"] = bool(SETTINGS["antialias"])
     SETTINGS["show_source"] = bool(SETTINGS["show_source"])
-    SETTINGS["startup_enabled"] = bool(
-        SETTINGS.get("startup_enabled", False))
+    SETTINGS["startup_enabled"] = bool(SETTINGS.get("startup_enabled", False))
     if SETTINGS.get("startup_show") not in ("boot", "spotify"):
         SETTINGS["startup_show"] = "boot"
     SETTINGS["gpu"] = bool(SETTINGS["gpu"])
@@ -689,22 +723,28 @@ def apply_settings_data(data=None):
     SETTINGS["controls_hover"] = bool(SETTINGS.get("controls_hover", False))
     SETTINGS["topbar_hover"] = bool(SETTINGS.get("topbar_hover", False))
     SETTINGS["background_image"] = str(
-        SETTINGS.get("background_image", "") or "").strip()
+        SETTINGS.get("background_image", "") or ""
+    ).strip()
     if SETTINGS.get("background_image_mode") not in [
-            k for k, _ in BACKGROUND_IMAGE_MODES]:
+        k for k, _ in BACKGROUND_IMAGE_MODES
+    ]:
         SETTINGS["background_image_mode"] = "cover"
-    SETTINGS["background_image_brightness"] = min(1.65, max(0.35, float(
-        SETTINGS.get("background_image_brightness", 1.0))))
+    SETTINGS["background_image_brightness"] = min(
+        1.65, max(0.35, float(SETTINGS.get("background_image_brightness", 1.0)))
+    )
     SETTINGS["background_image_auto_theme"] = bool(
-        SETTINGS.get("background_image_auto_theme", True))
+        SETTINGS.get("background_image_auto_theme", True)
+    )
     SETTINGS["background_image_parallax"] = bool(
-        SETTINGS.get("background_image_parallax", False))
-    SETTINGS["background_image_parallax_strength"] = min(2.0, max(
-        0.0, float(SETTINGS.get("background_image_parallax_strength", 1.0))))
-    SETTINGS["background_image_parallax_fps"] = min(60, max(
-        5, int(SETTINGS.get("background_image_parallax_fps", 30))))
-    SETTINGS["seek_hover_time"] = bool(
-        SETTINGS.get("seek_hover_time", True))
+        SETTINGS.get("background_image_parallax", False)
+    )
+    SETTINGS["background_image_parallax_strength"] = min(
+        2.0, max(0.0, float(SETTINGS.get("background_image_parallax_strength", 1.0)))
+    )
+    SETTINGS["background_image_parallax_fps"] = min(
+        60, max(5, int(SETTINGS.get("background_image_parallax_fps", 30)))
+    )
+    SETTINGS["seek_hover_time"] = bool(SETTINGS.get("seek_hover_time", True))
     if "weather_enabled" not in data:
         SETTINGS["weather_enabled"] = bool(SETTINGS.get("rain_enabled", False))
     SETTINGS["weather_enabled"] = bool(SETTINGS.get("weather_enabled", False))
@@ -712,63 +752,113 @@ def apply_settings_data(data=None):
         SETTINGS["weather_effect"] = "rain"
     SETTINGS["rain_enabled"] = bool(SETTINGS.get("rain_enabled", False))
     for prefix in ("rain", "snow"):
-        SETTINGS[f"{prefix}_intensity"] = min(1.0, max(
-            0.0, float(SETTINGS.get(f"{prefix}_intensity",
-                                    DEFAULTS[f"{prefix}_intensity"]))))
-        SETTINGS[f"{prefix}_length"] = min(1.6, max(
-            0.05, float(SETTINGS.get(f"{prefix}_length",
-                                     DEFAULTS[f"{prefix}_length"]))))
-        SETTINGS[f"{prefix}_thickness"] = min(2.6, max(
-            0.3, float(SETTINGS.get(f"{prefix}_thickness",
-                                    DEFAULTS[f"{prefix}_thickness"]))))
-        SETTINGS[f"{prefix}_direction"] = min(55.0, max(
-            -55.0, float(SETTINGS.get(f"{prefix}_direction",
-                                      DEFAULTS[f"{prefix}_direction"]))))
-    SETTINGS["rain_fall_speed"] = min(2.5, max(
-        0.25, float(SETTINGS.get("rain_fall_speed", 1.0))))
-    SETTINGS["snow_size"] = min(2.2, max(
-        0.45, float(SETTINGS.get(
-            "snow_size", SETTINGS.get("snow_thickness", 1.0)))))
-    SETTINGS["snow_spin_speed"] = min(3.0, max(
-        0.0, float(SETTINGS.get("snow_spin_speed", 1.0))))
-    SETTINGS["snow_fall_speed"] = min(2.5, max(
-        0.25, float(SETTINGS.get("snow_fall_speed", 1.0))))
-    SETTINGS["custom_intensity"] = min(1.0, max(
-        0.0, float(SETTINGS.get("custom_intensity",
-                                SETTINGS.get("snow_intensity", 0.42)))))
-    SETTINGS["custom_size"] = min(5.0, max(
-        0.45, float(SETTINGS.get("custom_size",
-                                 SETTINGS.get("snow_size", 1.0)))))
-    SETTINGS["custom_spin_speed"] = min(3.0, max(
-        0.0, float(SETTINGS.get("custom_spin_speed",
-                                SETTINGS.get("snow_spin_speed", 1.0)))))
-    SETTINGS["custom_fall_speed"] = min(2.5, max(
-        0.25, float(SETTINGS.get("custom_fall_speed",
-                                 SETTINGS.get("snow_fall_speed", 1.0)))))
+        SETTINGS[f"{prefix}_intensity"] = min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    SETTINGS.get(f"{prefix}_intensity", DEFAULTS[f"{prefix}_intensity"])
+                ),
+            ),
+        )
+        SETTINGS[f"{prefix}_length"] = min(
+            1.6,
+            max(
+                0.05,
+                float(SETTINGS.get(f"{prefix}_length", DEFAULTS[f"{prefix}_length"])),
+            ),
+        )
+        SETTINGS[f"{prefix}_thickness"] = min(
+            2.6,
+            max(
+                0.3,
+                float(
+                    SETTINGS.get(f"{prefix}_thickness", DEFAULTS[f"{prefix}_thickness"])
+                ),
+            ),
+        )
+        SETTINGS[f"{prefix}_direction"] = min(
+            55.0,
+            max(
+                -55.0,
+                float(
+                    SETTINGS.get(f"{prefix}_direction", DEFAULTS[f"{prefix}_direction"])
+                ),
+            ),
+        )
+    SETTINGS["rain_fall_speed"] = min(
+        2.5, max(0.25, float(SETTINGS.get("rain_fall_speed", 1.0)))
+    )
+    SETTINGS["snow_size"] = min(
+        2.2,
+        max(
+            0.45, float(SETTINGS.get("snow_size", SETTINGS.get("snow_thickness", 1.0)))
+        ),
+    )
+    SETTINGS["snow_spin_speed"] = min(
+        3.0, max(0.0, float(SETTINGS.get("snow_spin_speed", 1.0)))
+    )
+    SETTINGS["snow_fall_speed"] = min(
+        2.5, max(0.25, float(SETTINGS.get("snow_fall_speed", 1.0)))
+    )
+    SETTINGS["custom_intensity"] = min(
+        1.0,
+        max(
+            0.0,
+            float(
+                SETTINGS.get("custom_intensity", SETTINGS.get("snow_intensity", 0.42))
+            ),
+        ),
+    )
+    SETTINGS["custom_size"] = min(
+        5.0,
+        max(0.45, float(SETTINGS.get("custom_size", SETTINGS.get("snow_size", 1.0)))),
+    )
+    SETTINGS["custom_spin_speed"] = min(
+        3.0,
+        max(
+            0.0,
+            float(
+                SETTINGS.get("custom_spin_speed", SETTINGS.get("snow_spin_speed", 1.0))
+            ),
+        ),
+    )
+    SETTINGS["custom_fall_speed"] = min(
+        2.5,
+        max(
+            0.25,
+            float(
+                SETTINGS.get("custom_fall_speed", SETTINGS.get("snow_fall_speed", 1.0))
+            ),
+        ),
+    )
     if "custom_symbols" not in data:
         SETTINGS["custom_symbols"] = SETTINGS.get(
-            "snow_symbols", DEFAULTS["custom_symbols"])
+            "snow_symbols", DEFAULTS["custom_symbols"]
+        )
     raw_symbols = str(
         SETTINGS.get("custom_symbols", DEFAULTS["custom_symbols"]) or ""
     ).strip()
     symbols = [s.strip()[:4] for s in raw_symbols.split(",") if s.strip()]
     SETTINGS["custom_symbols"] = (
-        ",".join(symbols[:24]) if symbols else DEFAULTS["custom_symbols"])
-    SETTINGS["custom_image"] = str(
-        SETTINGS.get("custom_image", "") or "").strip()
-    SETTINGS["lightning_enabled"] = bool(
-        SETTINGS.get("lightning_enabled", False))
-    SETTINGS["lightning_size"] = min(2.0, max(
-        0.3, float(SETTINGS.get("lightning_size", 1.0))))
-    SETTINGS["lightning_thickness"] = min(3.0, max(
-        0.4, float(SETTINGS.get("lightning_thickness", 1.0))))
-    SETTINGS["lightning_intensity"] = min(2.5, max(
-        0.0, float(SETTINGS.get("lightning_intensity", 0.55))))
-    SETTINGS["lightning_duration"] = min(1.5, max(
-        0.05, float(SETTINGS.get("lightning_duration", 0.18))))
+        ",".join(symbols[:24]) if symbols else DEFAULTS["custom_symbols"]
+    )
+    SETTINGS["custom_image"] = str(SETTINGS.get("custom_image", "") or "").strip()
+    SETTINGS["lightning_enabled"] = bool(SETTINGS.get("lightning_enabled", False))
+    SETTINGS["lightning_size"] = min(
+        2.0, max(0.3, float(SETTINGS.get("lightning_size", 1.0)))
+    )
+    SETTINGS["lightning_thickness"] = min(
+        3.0, max(0.4, float(SETTINGS.get("lightning_thickness", 1.0)))
+    )
+    SETTINGS["lightning_intensity"] = min(
+        2.5, max(0.0, float(SETTINGS.get("lightning_intensity", 0.55)))
+    )
+    SETTINGS["lightning_duration"] = min(
+        1.5, max(0.05, float(SETTINGS.get("lightning_duration", 0.18)))
+    )
     random_duration = SETTINGS.get("lightning_random_duration", False)
-    if ("lightning_random_duration" not in data
-            and "lightning_duration_random" in data):
+    if "lightning_random_duration" not in data and "lightning_duration_random" in data:
         random_duration = data.get("lightning_duration_random", False)
     SETTINGS["lightning_random_duration"] = bool(random_duration)
     SETTINGS.pop("lightning_duration_random", None)
@@ -776,83 +866,102 @@ def apply_settings_data(data=None):
         raw = str(SETTINGS.get(key, "") or "").strip()
         c = QColor(raw) if raw else QColor()
         SETTINGS[key] = c.name(QColor.HexRgb) if c.isValid() else ""
-    SETTINGS["marquee_enabled"] = bool(
-        SETTINGS.get("marquee_enabled", True))
-    SETTINGS["marquee_edge_fade"] = bool(
-        SETTINGS.get("marquee_edge_fade", True))
+    SETTINGS["marquee_enabled"] = bool(SETTINGS.get("marquee_enabled", True))
+    SETTINGS["marquee_edge_fade"] = bool(SETTINGS.get("marquee_edge_fade", True))
     SETTINGS["marquee_speed"] = min(
-        80.0, max(10.0, float(SETTINGS.get("marquee_speed", 27.0))))
+        80.0, max(10.0, float(SETTINGS.get("marquee_speed", 27.0)))
+    )
     SETTINGS["marquee_hold"] = min(
-        5.0, max(0.5, float(SETTINGS.get("marquee_hold", 1.5))))
-    SETTINGS["title_size"] = min(
-        1.8, max(0.6, float(SETTINGS.get("title_size", 1.0))))
+        5.0, max(0.5, float(SETTINGS.get("marquee_hold", 1.5)))
+    )
+    SETTINGS["title_size"] = min(1.8, max(0.6, float(SETTINGS.get("title_size", 1.0))))
     SETTINGS["artist_size"] = min(
-        1.8, max(0.6, float(SETTINGS.get("artist_size", 1.0))))
+        1.8, max(0.6, float(SETTINGS.get("artist_size", 1.0)))
+    )
     if SETTINGS.get("art_mode") not in ("cover", "vinyl", "pulse", "audio"):
         SETTINGS["art_mode"] = "cover"
     SETTINGS["art_cover_size"] = min(
-        1.4, max(0.6, float(SETTINGS.get("art_cover_size", 1.0))))
+        1.4, max(0.6, float(SETTINGS.get("art_cover_size", 1.0)))
+    )
     SETTINGS["art_vinyl_size"] = min(
-        1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0))))
+        1.35, max(0.7, float(SETTINGS.get("art_vinyl_size", 1.0)))
+    )
     SETTINGS["audio_feedback_thickness"] = min(
-        2.5, max(0.4, float(SETTINGS.get("audio_feedback_thickness", 1.0))))
+        2.5, max(0.4, float(SETTINGS.get("audio_feedback_thickness", 1.0)))
+    )
     SETTINGS["audio_feedback_sensitivity"] = min(
-        3.0, max(0.2, float(SETTINGS.get("audio_feedback_sensitivity", 1.0))))
+        3.0, max(0.2, float(SETTINGS.get("audio_feedback_sensitivity", 1.0)))
+    )
     if SETTINGS.get("audio_feedback_shape") not in ("ring", "bars", "blob"):
         SETTINGS["audio_feedback_shape"] = "ring"
-    SETTINGS["audio_feedback_spin"] = bool(
-        SETTINGS.get("audio_feedback_spin", False))
-    SETTINGS["audio_feedback_halo"] = bool(
-        SETTINGS.get("audio_feedback_halo", True))
+    SETTINGS["audio_feedback_spin"] = bool(SETTINGS.get("audio_feedback_spin", False))
+    SETTINGS["audio_feedback_halo"] = bool(SETTINGS.get("audio_feedback_halo", True))
     SETTINGS["audio_feedback_spin_speed"] = min(
-        2.5, max(0.01, float(SETTINGS.get("audio_feedback_spin_speed", 1.0))))
-    SETTINGS["audio_cover_pulse"] = bool(
-        SETTINGS.get("audio_cover_pulse", True))
+        2.5, max(0.01, float(SETTINGS.get("audio_feedback_spin_speed", 1.0)))
+    )
+    SETTINGS["audio_cover_pulse"] = bool(SETTINGS.get("audio_cover_pulse", True))
     SETTINGS["audio_cover_pulse_strength"] = min(
-        2.0, max(0.2, float(SETTINGS.get("audio_cover_pulse_strength", 1.0))))
-    SETTINGS["show_vinyl_center"] = bool(
-        SETTINGS.get("show_vinyl_center", True))
+        2.0, max(0.2, float(SETTINGS.get("audio_cover_pulse_strength", 1.0)))
+    )
+    SETTINGS["show_vinyl_center"] = bool(SETTINGS.get("show_vinyl_center", True))
     SETTINGS["vinyl_center_size"] = min(
-        1.4, max(0.4, float(SETTINGS.get("vinyl_center_size", 1.0))))
+        1.4, max(0.4, float(SETTINGS.get("vinyl_center_size", 1.0)))
+    )
     SETTINGS["show_tonearm"] = bool(SETTINGS.get("show_tonearm", True))
     SETTINGS["tonearm_speed"] = min(
-        2.5, max(0.4, float(SETTINGS.get("tonearm_speed", 1.0))))
+        2.5, max(0.4, float(SETTINGS.get("tonearm_speed", 1.0)))
+    )
     SETTINGS["vinyl_spin_speed"] = min(
-        2.5, max(0.4, float(SETTINGS.get("vinyl_spin_speed", 1.0))))
+        2.5, max(0.4, float(SETTINGS.get("vinyl_spin_speed", 1.0)))
+    )
     SETTINGS["show_cover"] = bool(SETTINGS.get("show_cover", True))
-    SETTINGS["custom_cover"] = str(
-        SETTINGS.get("custom_cover", "") or "").strip()
-    SETTINGS["fallback_cover"] = str(
-        SETTINGS.get("fallback_cover", "") or "").strip()
-    SETTINGS["cover_blur"] = round(min(
-        14.0, max(0.0, float(SETTINGS.get("cover_blur", 0.0)))), 1)
+    SETTINGS["custom_cover"] = str(SETTINGS.get("custom_cover", "") or "").strip()
+    SETTINGS["fallback_cover"] = str(SETTINGS.get("fallback_cover", "") or "").strip()
+    SETTINGS["cover_blur"] = round(
+        min(14.0, max(0.0, float(SETTINGS.get("cover_blur", 0.0)))), 1
+    )
     if SETTINGS.get("cover_shape") not in ("rounded", "square", "circle"):
         SETTINGS["cover_shape"] = "rounded"
     SETTINGS["cover_radius_strength"] = min(
-        2.0, max(0.0, float(SETTINGS.get("cover_radius_strength", 1.0))))
+        2.0, max(0.0, float(SETTINGS.get("cover_radius_strength", 1.0)))
+    )
     SETTINGS["cover_border"] = bool(SETTINGS.get("cover_border", False))
     SETTINGS["cover_border_width"] = min(
-        8.0, max(1.0, float(SETTINGS.get("cover_border_width", 2.0))))
+        8.0, max(1.0, float(SETTINGS.get("cover_border_width", 2.0)))
+    )
     SETTINGS["cover_border_opacity"] = min(
-        1.0, max(0.0, float(SETTINGS.get("cover_border_opacity", 0.85))))
+        1.0, max(0.0, float(SETTINGS.get("cover_border_opacity", 0.85)))
+    )
     SETTINGS["show_fps"] = bool(SETTINGS.get("show_fps", False))
-    for key in ("show_btn_shuffle", "show_btn_prev",
-                "show_btn_next", "show_btn_repeat",
-                "show_edit_button"):
+    for key in (
+        "show_btn_shuffle",
+        "show_btn_prev",
+        "show_btn_next",
+        "show_btn_repeat",
+        "show_edit_button",
+    ):
         SETTINGS[key] = bool(SETTINGS.get(key, True))
     SETTINGS["control_button_size"] = min(
-        1.6, max(0.7, float(SETTINGS.get("control_button_size", 1.0))))
+        1.6, max(0.7, float(SETTINGS.get("control_button_size", 1.0)))
+    )
     SETTINGS["control_button_spacing"] = min(
-        2.2, max(0.4, float(SETTINGS.get("control_button_spacing", 1.0))))
+        2.2, max(0.4, float(SETTINGS.get("control_button_spacing", 1.0)))
+    )
     SETTINGS["font"] = safe_font_family(SETTINGS.get("font"))
     SETTINGS["auto_color_strength"] = min(
-        1.0, max(0.0, float(SETTINGS.get("auto_color_strength", 1.0))))
+        1.0, max(0.0, float(SETTINGS.get("auto_color_strength", 1.0)))
+    )
     if SETTINGS.get("card_preset") not in [k for k, _ in CARD_PRESETS]:
         SETTINGS["card_preset"] = "standard"
     SETTINGS["anim"] = "full"
     SETTINGS["hotkey"] = str(SETTINGS.get("hotkey", "")).strip()
-    for key in ("hotkey_play", "hotkey_prev", "hotkey_next",
-                "hotkey_vol_up", "hotkey_vol_down"):
+    for key in (
+        "hotkey_play",
+        "hotkey_prev",
+        "hotkey_next",
+        "hotkey_vol_up",
+        "hotkey_vol_down",
+    ):
         SETTINGS[key] = str(SETTINGS.get(key, "")).strip()
     for key in ("settings_x", "settings_y"):
         if key in SETTINGS:
@@ -866,29 +975,35 @@ def apply_settings_data(data=None):
         SETTINGS["seek_style"] = "wave"
     if SETTINGS.get("seek_thumb") not in [k for k, _ in SEEK_THUMBS]:
         SETTINGS["seek_thumb"] = "hover"
-    if SETTINGS.get("seek_thumb_shape") not in [
-            k for k, _ in SEEK_THUMB_SHAPES]:
+    if SETTINGS.get("seek_thumb_shape") not in [k for k, _ in SEEK_THUMB_SHAPES]:
         SETTINGS["seek_thumb_shape"] = "circle"
-    if SETTINGS.get("progress_time_mode") not in [
-            k for k, _ in PROGRESS_TIME_MODES]:
+    if SETTINGS.get("progress_time_mode") not in [k for k, _ in PROGRESS_TIME_MODES]:
         SETTINGS["progress_time_mode"] = "current"
     SETTINGS["progress_time_anim_enabled"] = bool(
-        SETTINGS.get("progress_time_anim_enabled", True))
+        SETTINGS.get("progress_time_anim_enabled", True)
+    )
     if SETTINGS.get("progress_time_anim_style") not in [
-            k for k, _ in PROGRESS_TIME_ANIM_STYLES]:
+        k for k, _ in PROGRESS_TIME_ANIM_STYLES
+    ]:
         SETTINGS["progress_time_anim_style"] = "fade"
-    SETTINGS["progress_time_spacing"] = min(8.0, max(
-        -2.0, float(SETTINGS.get("progress_time_spacing", 0.0))))
+    SETTINGS["progress_time_spacing"] = min(
+        8.0, max(-2.0, float(SETTINGS.get("progress_time_spacing", 0.0)))
+    )
     SETTINGS["seek_wave_amp"] = min(
-        2.0, max(0.0, float(SETTINGS.get("seek_wave_amp", 1.0))))
+        2.0, max(0.0, float(SETTINGS.get("seek_wave_amp", 1.0)))
+    )
     SETTINGS["seek_wave_speed"] = min(
-        2.5, max(0.25, float(SETTINGS.get("seek_wave_speed", 1.0))))
+        2.5, max(0.25, float(SETTINGS.get("seek_wave_speed", 1.0)))
+    )
     SETTINGS["seek_glow_strength"] = min(
-        2.0, max(0.0, float(SETTINGS.get("seek_glow_strength", 1.0))))
+        2.0, max(0.0, float(SETTINGS.get("seek_glow_strength", 1.0)))
+    )
     SETTINGS["seek_length"] = min(
-        1.3, max(0.2, float(SETTINGS.get("seek_length", 1.0))))
+        1.3, max(0.2, float(SETTINGS.get("seek_length", 1.0)))
+    )
     SETTINGS["seek_thumb_size"] = min(
-        1.5, max(0.2, float(SETTINGS.get("seek_thumb_size", 1.0))))
+        1.5, max(0.2, float(SETTINGS.get("seek_thumb_size", 1.0)))
+    )
     if SETTINGS.get("auto_theme") not in [k for k, _ in AUTO_THEME_MODES]:
         SETTINGS["auto_theme"] = "solid"
     if SETTINGS["source"] not in [k for k, _ in SOURCE_MODES]:
@@ -896,7 +1011,8 @@ def apply_settings_data(data=None):
     if SETTINGS["controls_align"] not in [k for k, _ in CONTROLS_ALIGN]:
         SETTINGS["controls_align"] = "center"
     SETTINGS["custom_themes"] = normalize_custom_themes(
-        SETTINGS.get("custom_themes", []))
+        SETTINGS.get("custom_themes", [])
+    )
     held = SETTINGS.get("held_theme")
     if isinstance(held, dict):
         colors = held.get("colors")
@@ -906,24 +1022,33 @@ def apply_settings_data(data=None):
                 c = _valid_hex(raw)
                 if c is not None:
                     norm.append(c)
-            SETTINGS["held_theme"] = {
-                "key": str(held.get("key", "")).strip(),
-                "name": str(held.get("name", "")).strip(),
-                "colors": norm,
-            } if norm else None
+            SETTINGS["held_theme"] = (
+                {
+                    "key": str(held.get("key", "")).strip(),
+                    "name": str(held.get("name", "")).strip(),
+                    "colors": norm,
+                }
+                if norm
+                else None
+            )
         else:
             SETTINGS["held_theme"] = None
     else:
         SETTINGS["held_theme"] = None
     cg = SETTINGS.get("custom_grad")
-    if (isinstance(cg, (list, tuple)) and len(cg) == 2
-            and all(QColor(str(c)).isValid() for c in cg)):
+    if (
+        isinstance(cg, (list, tuple))
+        and len(cg) == 2
+        and all(QColor(str(c)).isValid() for c in cg)
+    ):
         SETTINGS["custom_grad"] = [QColor(str(c)).name() for c in cg]
     else:
         SETTINGS["custom_grad"] = list(DEFAULTS["custom_grad"])
     _migrate_legacy_custom_theme()
-    if (SETTINGS["theme"] not in [k for k, _, _ in all_themes()]
-            and _held_theme_spec() is None):
+    if (
+        SETTINGS["theme"] not in [k for k, _, _ in all_themes()]
+        and _held_theme_spec() is None
+    ):
         SETTINGS["theme"] = "auto"
     return SETTINGS
 
@@ -967,8 +1092,7 @@ def theme_spec():
     for key, _, spec in all_themes():
         if key == SETTINGS["theme"]:
             if spec == "custom":
-                cg = SETTINGS.get("custom_grad",
-                                  DEFAULTS["custom_grad"])
+                cg = SETTINGS.get("custom_grad", DEFAULTS["custom_grad"])
                 return (str(cg[0]), str(cg[1]))
             return spec
     held = _held_theme_spec()
@@ -1014,6 +1138,7 @@ def Sf(v: float) -> float:
 
 # ---- 動畫模式 ----
 
+
 def anim_on() -> bool:
     return bool(SETTINGS.get("anim_enabled", True)) and SETTINGS["anim"] != "off"
 
@@ -1051,6 +1176,7 @@ def aa(p: QPainter):
 
 # ---- 動畫 ----
 
+
 class _AnimManager(QObject):
     """全域動畫計時器：所有 Anim 共用一個 PreciseTimer，無動畫時自動停止。"""
 
@@ -1080,7 +1206,7 @@ class _AnimManager(QObject):
     def _tick(self):
         now = time.monotonic()
         for a in list(self._active):
-            if not shiboken6.isValid(a):     # 宿主元件已被 deleteLater 回收
+            if not shiboken6.isValid(a):  # 宿主元件已被 deleteLater 回收
                 self.remove(a)
                 continue
             a._step(now)
@@ -1116,7 +1242,7 @@ class Anim(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._v0, self._v1 = 0.0, 1.0
-        self._dur = 0.2          # 秒
+        self._dur = 0.2  # 秒
         self._curve = QEasingCurve(QEasingCurve.Linear)
         self._t0 = 0.0
         self._running = False
@@ -1168,10 +1294,10 @@ _SHADOW_CAP = 12
 _SHADOW_TPL_CAP = 16
 
 
-def _blur_rounded(W: int, H: int, radius: float, B: int,
-                  alpha: int) -> QPixmap:
+def _blur_rounded(W: int, H: int, radius: float, B: int, alpha: int) -> QPixmap:
     """高斯模糊產生 (W+2B)×(H+2B) 的圓角矩形陰影（裝置像素，未設 dpr）。"""
     from PySide6.QtWidgets import QGraphicsBlurEffect, QGraphicsScene
+
     src = QPixmap(W, H)
     src.fill(Qt.transparent)
     p = QPainter(src)
@@ -1188,21 +1314,22 @@ def _blur_rounded(W: int, H: int, radius: float, B: int,
     out = QPixmap(W + B * 2, H + B * 2)
     out.fill(Qt.transparent)
     p = QPainter(out)
-    scene.render(p, QRectF(0, 0, out.width(), out.height()),
-                 QRectF(-B, -B, W + B * 2, H + B * 2))
+    scene.render(
+        p, QRectF(0, 0, out.width(), out.height()), QRectF(-B, -B, W + B * 2, H + B * 2)
+    )
     p.end()
     return out
 
 
-def soft_shadow(w: int, h: int, radius: float, blur: int = 18,
-                alpha: int = 150, dpr: float = 1.0) -> QPixmap:
+def soft_shadow(
+    w: int, h: int, radius: float, blur: int = 18, alpha: int = 150, dpr: float = 1.0
+) -> QPixmap:
     """預先模糊好的圓角矩形陰影貼圖（快取）。
 
     用 9-宮格拼出任意尺寸，避免 QGraphicsDropShadowEffect 每幀重做高斯模糊。
     回傳貼圖比 (w, h) 大 blur 邊距，繪製時座標往左上偏 blur。
     """
-    key = (int(w * dpr), int(h * dpr), round(radius * dpr * 2),
-           int(blur * dpr), alpha)
+    key = (int(w * dpr), int(h * dpr), round(radius * dpr * 2), int(blur * dpr), alpha)
     pm = _SHADOW_CACHE.get(key)
     if pm is not None:
         _SHADOW_CACHE.move_to_end(key)
@@ -1211,8 +1338,8 @@ def soft_shadow(w: int, h: int, radius: float, blur: int = 18,
     W, H, B = int(w * dpr), int(h * dpr), int(blur * dpr)
     R = radius * dpr
     OW, OH = W + B * 2, H + B * 2
-    m = int(math.ceil(R)) + B * 3     # 角區尺寸（含模糊外擴的安全餘量）
-    s = 2                             # 可拉伸中段寬
+    m = int(math.ceil(R)) + B * 3  # 角區尺寸（含模糊外擴的安全餘量）
+    s = 2  # 可拉伸中段寬
 
     if OW >= 2 * m + s and OH >= 2 * m + s:
         tkey = (round(R * 2), B, alpha)
@@ -1236,15 +1363,12 @@ def soft_shadow(w: int, h: int, radius: float, blur: int = 18,
         p.drawPixmap(OW - m, OH - m, tpl, T - m, T - m, m, m)
         # 四邊與中心：取中段窄帶拉伸（帶內各行/列相同，拉伸不失真）
         p.drawPixmap(QRectF(m, 0, OW - 2 * m, m), tpl, QRectF(m, 0, s, m))
-        p.drawPixmap(QRectF(m, OH - m, OW - 2 * m, m),
-                     tpl, QRectF(m, T - m, s, m))
+        p.drawPixmap(QRectF(m, OH - m, OW - 2 * m, m), tpl, QRectF(m, T - m, s, m))
         p.drawPixmap(QRectF(0, m, m, OH - 2 * m), tpl, QRectF(0, m, m, s))
-        p.drawPixmap(QRectF(OW - m, m, m, OH - 2 * m),
-                     tpl, QRectF(T - m, m, m, s))
-        p.drawPixmap(QRectF(m, m, OW - 2 * m, OH - 2 * m),
-                     tpl, QRectF(m, m, s, s))
+        p.drawPixmap(QRectF(OW - m, m, m, OH - 2 * m), tpl, QRectF(T - m, m, m, s))
+        p.drawPixmap(QRectF(m, m, OW - 2 * m, OH - 2 * m), tpl, QRectF(m, m, s, s))
         p.end()
-    else:                             # 尺寸太小放不下模板角區：直接模糊
+    else:  # 尺寸太小放不下模板角區：直接模糊
         out = _blur_rounded(W, H, R, B, alpha)
 
     out.setDevicePixelRatio(dpr)
@@ -1258,16 +1382,16 @@ def soft_shadow(w: int, h: int, radius: float, blur: int = 18,
 
 # token（出現在 SMTC app id 中）→ 顯示名稱、進程 exe
 _SOURCE_APPS = [
-    ("spotify",          "SPOTIFY", ["spotify.exe"]),
-    ("msedge",           "EDGE",    ["msedge.exe"]),
-    ("edge",             "EDGE",    ["msedge.exe"]),
-    ("chrome",           "CHROME",  ["chrome.exe"]),
-    ("firefox",          "FIREFOX", ["firefox.exe"]),
-    ("mozilla",          "FIREFOX", ["firefox.exe"]),
-    ("308046b0af4a39cb", "FIREFOX", ["firefox.exe"]),   # Firefox 安裝雜湊 AUMID
-    ("opera",            "OPERA",   ["opera.exe"]),
-    ("brave",            "BRAVE",   ["brave.exe"]),
-    ("vivaldi",          "VIVALDI", ["vivaldi.exe"]),
+    ("spotify", "SPOTIFY", ["spotify.exe"]),
+    ("msedge", "EDGE", ["msedge.exe"]),
+    ("edge", "EDGE", ["msedge.exe"]),
+    ("chrome", "CHROME", ["chrome.exe"]),
+    ("firefox", "FIREFOX", ["firefox.exe"]),
+    ("mozilla", "FIREFOX", ["firefox.exe"]),
+    ("308046b0af4a39cb", "FIREFOX", ["firefox.exe"]),  # Firefox 安裝雜湊 AUMID
+    ("opera", "OPERA", ["opera.exe"]),
+    ("brave", "BRAVE", ["brave.exe"]),
+    ("vivaldi", "VIVALDI", ["vivaldi.exe"]),
 ]
 
 BROWSER_TOKENS = [t for t, _, _ in _SOURCE_APPS if t != "spotify"]
@@ -1291,9 +1415,10 @@ def icon_family() -> str:
     global _ICON_FAMILY
     if _ICON_FAMILY is None:
         fams = set(QFontDatabase.families())
-        _ICON_FAMILY = next((f for f in ("Segoe Fluent Icons",
-                                         "Segoe MDL2 Assets") if f in fams),
-                            "Segoe UI Symbol")
+        _ICON_FAMILY = next(
+            (f for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets") if f in fams),
+            "Segoe UI Symbol",
+        )
     return _ICON_FAMILY
 
 
@@ -1311,12 +1436,15 @@ def ui_font(px: int, weight=QFont.Normal) -> QFont:
 
 # ---- 顏色 ----
 
+
 def blend(a: QColor, b: QColor, t: float) -> QColor:
     """RGB 內插（含 alpha）。"""
-    return QColor(round(a.red() + (b.red() - a.red()) * t),
-                  round(a.green() + (b.green() - a.green()) * t),
-                  round(a.blue() + (b.blue() - a.blue()) * t),
-                  round(a.alpha() + (b.alpha() - a.alpha()) * t))
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+        round(a.alpha() + (b.alpha() - a.alpha()) * t),
+    )
 
 
 def fmt_time(sec: float) -> str:
@@ -1350,9 +1478,9 @@ def _fallback_cover_pair(c: QColor) -> tuple[QColor, QColor]:
     h, s, v, _ = base.getHsv()
     if h < 0:
         h = 220
-    other = QColor.fromHsv((h + 34) % 360,
-                           min(255, round(s * 0.92)),
-                           max(82, round(v * 0.76)))
+    other = QColor.fromHsv(
+        (h + 34) % 360, min(255, round(s * 0.92)), max(82, round(v * 0.76))
+    )
     return base, other
 
 
@@ -1361,12 +1489,12 @@ def _scaled_rgb_bytes(img: QImage, n: int) -> tuple[bytes, int, int, int]:
 
     用 constBits() 一次拿整張 buffer，省去每像素跨 C++/Python 建 QColor 的成本。
     """
-    small = img.scaled(n, n, Qt.IgnoreAspectRatio,
-                       Qt.SmoothTransformation).convertToFormat(
-                           QImage.Format_RGB32)
+    small = img.scaled(
+        n, n, Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+    ).convertToFormat(QImage.Format_RGB32)
     w, h = small.width(), small.height()
     bpl = small.bytesPerLine()
-    data = bytes(small.constBits())     # 複製一次（幾 KB），之後索引便宜
+    data = bytes(small.constBits())  # 複製一次（幾 KB），之後索引便宜
     return data, w, h, bpl
 
 
@@ -1395,7 +1523,7 @@ def dominant_color(img: QImage) -> QColor:
             mx = r if r >= g else g
             if b > mx:
                 mx = b
-            if mx < 26:         # 接近全黑的像素不具代表性
+            if mx < 26:  # 接近全黑的像素不具代表性
                 continue
             mn = r if r <= g else g
             if b < mn:
@@ -1417,7 +1545,7 @@ def dominant_color(img: QImage) -> QColor:
         best = max(buckets.values(), key=lambda a: a[4])
         c = QColor(best[0] // best[3], best[1] // best[3], best[2] // best[3])
         h, s, v, _ = c.getHsv()
-        if h < 0:               # 無色相（灰階封面）給個沉穩的藍灰
+        if h < 0:  # 無色相（灰階封面）給個沉穩的藍灰
             result = QColor.fromHsv(220, 40, 180)
         else:
             s = max(s, 110) if s > 35 else s
@@ -1477,9 +1605,9 @@ def cover_gradient(img: QImage) -> tuple[QColor, QColor]:
         candidates = []
         for acc in buckets.values():
             n = max(1.0, acc[3])
-            color = _fit_cover_color(QColor(round(acc[0] / n),
-                                            round(acc[1] / n),
-                                            round(acc[2] / n)))
+            color = _fit_cover_color(
+                QColor(round(acc[0] / n), round(acc[1] / n), round(acc[2] / n))
+            )
             candidates.append((color, acc[4]))
         candidates.sort(key=lambda item: item[1], reverse=True)
         c0, score0 = candidates[0]
